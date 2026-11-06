@@ -4,11 +4,13 @@ mod library;
 mod releases;
 
 use gpui::{
-    App, Application, Bounds, Context, PathPromptOptions, SharedString, TitlebarOptions, Window,
-    WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    App, Application, Bounds, Context, KeyBinding, Menu, MenuItem, PathPromptOptions, SharedString,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 use library::{Addon, Client, Definition};
 use std::{cmp::Ordering, collections::HashMap, path::PathBuf, sync::Arc};
+
+gpui::actions!(astral, [Quit]);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -556,6 +558,20 @@ fn main() {
         return;
     }
     Application::new().run(move |cx: &mut App| {
+        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.bind_keys([KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "cmd-q"
+            } else {
+                "ctrl-q"
+            },
+            Quit,
+            None,
+        )]);
+        cx.set_menus(vec![Menu {
+            name: "Astral Native".into(),
+            items: vec![MenuItem::action("Quit Astral Native", Quit)],
+        }]);
         let bounds = Bounds::centered(None, size(px(1080.), px(720.)), cx);
         cx.open_window(
             WindowOptions {
