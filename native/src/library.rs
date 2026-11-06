@@ -59,6 +59,7 @@ pub struct Definition {
     pub repo: Option<String>,
     pub bundled: Option<bool>,
     pub description: Option<String>,
+    pub mark: Option<String>,
 }
 
 impl Definition {
