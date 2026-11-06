@@ -123,6 +123,7 @@ name = "astral-native"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "image",
  "regex",
  "serde",
  "serde_json",

@@ -60,6 +60,7 @@ pub struct Definition {
     pub bundled: Option<bool>,
     pub description: Option<String>,
     pub mark: Option<String>,
+    pub local: Option<bool>,
 }
 
 impl Definition {
@@ -83,7 +84,7 @@ impl Definition {
     }
 
     pub fn source(&self) -> &'static str {
-        if self.bundled == Some(true) {
+        if self.bundled == Some(true) || self.local == Some(true) {
             "Astral"
         } else if self.repo.is_some() {
             "GitHub"
@@ -104,6 +105,8 @@ pub struct Addon {
     pub version: String,
     pub source: &'static str,
     pub modules: Vec<String>,
+    #[serde(skip_serializing)]
+    pub artwork: Option<std::sync::Arc<gpui::Image>>,
 }
 
 fn toc(dir: &Path, folder: &str, client: Client) -> io::Result<Option<HashMap<String, String>>> {
@@ -134,7 +137,7 @@ fn toc(dir: &Path, folder: &str, client: Client) -> io::Result<Option<HashMap<St
                 .filter_map(|line| {
                     let (key, value) = line.strip_prefix("##")?.split_once(':')?;
                     let key = key.trim();
-                    matches!(key, "Title" | "Version")
+                    matches!(key, "Title" | "Version" | "IconTexture")
                         .then(|| (key.to_owned(), value.trim().to_owned()))
                 })
                 .collect(),
@@ -182,7 +185,7 @@ pub fn validate_root(root: &Path, client: Client) -> io::Result<()> {
 
 pub fn scan(root: &Path, client: Client, catalog: &[Definition]) -> io::Result<Vec<Addon>> {
     validate_root(root, client)?;
-    let base = root.join("Interface").join("AddOns");
+    let base = root.join("Interface").join("AddOns").canonicalize()?;
     let mut folders = Vec::new();
     for entry in fs::read_dir(&base)? {
         let entry = entry?;
@@ -224,6 +227,9 @@ pub fn scan(root: &Path, client: Client, catalog: &[Definition]) -> io::Result<V
             folder: definition.folder.clone(),
             source: definition.source(),
             version,
+            artwork: meta
+                .get("IconTexture")
+                .and_then(|reference| crate::artwork::load(&base, reference)),
             modules,
         });
     }
@@ -242,11 +248,13 @@ pub fn scan(root: &Path, client: Client, catalog: &[Definition]) -> io::Result<V
                     .cloned()
                     .unwrap_or_else(|| "Unknown".into()),
                 source: "Manual",
+                artwork: meta
+                    .get("IconTexture")
+                    .and_then(|reference| crate::artwork::load(&base, reference)),
                 modules: vec![folder.clone()],
                 folder,
             });
         }
     }
-    addons.sort_by_cached_key(|addon| addon.name.to_lowercase());
     Ok(addons)
 }

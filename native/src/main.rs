@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod artwork;
 mod library;
 mod releases;
 
@@ -29,6 +30,7 @@ struct Astral {
     client: Client,
     page: Page,
     filter: Filter,
+    brand_icon: Arc<gpui::Image>,
     client_icons: [Arc<gpui::Image>; 2],
     roots: [Option<PathBuf>; 2],
     catalog: Arc<Vec<Definition>>,
@@ -47,6 +49,10 @@ impl Astral {
             client: Client::Retail,
             page: Page::Library,
             filter: Filter::All,
+            brand_icon: Arc::new(gpui::Image::from_bytes(
+                gpui::ImageFormat::Png,
+                include_bytes!("../../assets/icon.png").to_vec(),
+            )),
             client_icons: [
                 Arc::new(gpui::Image::from_bytes(
                     gpui::ImageFormat::Png,
@@ -176,7 +182,7 @@ impl Astral {
                 None => "Review version",
             },
             Some(Err(_)) => "Check failed",
-            None if addon.source == "GitHub" => "Unchecked",
+            None if addon.source == "GitHub" => "Not checked",
             None => "",
         }
     }
@@ -227,6 +233,19 @@ fn label(text: impl Into<SharedString>) -> gpui::Div {
     div().text_sm().text_color(rgb(0x9ca3af)).child(text.into())
 }
 
+fn tab(id: &'static str, name: &'static str, active: bool) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .cursor_pointer()
+        .py_2()
+        .text_sm()
+        .border_b_2()
+        .border_color(rgb(if active { 0x597eff } else { 0x101114 }))
+        .text_color(rgb(if active { 0xf2f3f5 } else { 0x9ca3af }))
+        .hover(|style| style.text_color(rgb(0xffffff)))
+        .child(name)
+}
+
 fn button(id: &'static str, text: &'static str, active: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
@@ -247,12 +266,33 @@ impl Astral {
             .find(|source| source.folder == addon.folder && source.supports(self.client))
     }
 
-    fn tile(&self, addon: &Addon, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
-        let folder = addon.folder.clone();
+    fn addon_icon(&self, addon: &Addon, size: f32) -> gpui::Div {
         let mark = self
             .definition(addon)
             .and_then(|source| source.mark.clone())
             .unwrap_or_else(|| addon.name.chars().take(2).collect());
+        let artwork = addon
+            .artwork
+            .clone()
+            .or_else(|| (addon.source == "Astral").then(|| self.brand_icon.clone()));
+        let tile = div()
+            .size(px(size))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgb(0x191b20))
+            .text_color(rgb(0xaebfff))
+            .text_xl()
+            .font_weight(gpui::FontWeight::BOLD);
+        match artwork {
+            Some(image) => tile.child(gpui::img(image).size(px(size - 20.))),
+            None => tile.child(mark),
+        }
+    }
+
+    fn tile(&self, addon: &Addon, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let folder = addon.folder.clone();
         let status = self.update_status(addon);
         let status_color = match status {
             "Update available" => 0x96adff,
@@ -264,27 +304,15 @@ impl Astral {
             .id(SharedString::from(format!("addon:{folder}")))
             .flex_1()
             .min_w_0()
-            .h(px(112.))
+            .h(px(120.))
             .flex()
             .items_center()
             .gap_3()
             .border_t_1()
-            .border_color(rgb(0x555861))
+            .border_color(rgb(0x999b9f))
             .cursor_pointer()
             .hover(|style| style.bg(rgb(0x191b20)))
-            .child(
-                div()
-                    .size(px(66.))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(rgb(0x20242c))
-                    .text_color(rgb(0xaebfff))
-                    .text_xl()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child(mark),
-            )
+            .child(self.addon_icon(addon, 84.))
             .child(
                 div()
                     .min_w_0()
@@ -314,7 +342,7 @@ impl Astral {
                             .child(status),
                     ),
             )
-            .child(div().pr_2().text_color(rgb(0x9ca3af)).child("›"))
+            .child(div().pr_2().text_color(rgb(0x9ca3af)).child("⋯"))
             .on_click(cx.listener(move |app, _, _, cx| {
                 app.selected = Some(folder.clone());
                 cx.notify();
@@ -347,6 +375,7 @@ impl Astral {
                     cx.notify();
                 })),
             ))
+            .child(self.addon_icon(addon, 70.))
             .child(
                 div()
                     .text_3xl()
@@ -425,10 +454,27 @@ impl Render for Astral {
                             .gap_2()
                             .child(
                                 div()
-                                    .size(px(24.))
-                                    .rounded_full()
-                                    .bg(rgb(0xeceef3))
-                                    .shadow_sm(),
+                                    .relative()
+                                    .w(px(43.))
+                                    .h(px(34.))
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .right_0()
+                                            .top_0()
+                                            .size(px(34.))
+                                            .rounded_full()
+                                            .bg(rgb(0x4e78ff)),
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .left_0()
+                                            .top_0()
+                                            .size(px(34.))
+                                            .rounded_full()
+                                            .bg(rgb(0xf2f3f5)),
+                                    ),
                             )
                             .child(
                                 div()
@@ -443,7 +489,7 @@ impl Render for Astral {
                             (Page::Discover, "discover", "Discover"),
                         ]
                         .map(|(page, id, name)| {
-                            button(id, name, self.page == page).on_click(cx.listener(
+                            tab(id, name, self.page == page).on_click(cx.listener(
                                 move |app, _, _, cx| {
                                     app.page = page;
                                     app.selected = None;
@@ -576,7 +622,7 @@ impl Render for Astral {
                         (Filter::Manual, "manual", "Manual"),
                     ]
                     .map(|(filter, id, name)| {
-                        button(id, name, self.filter == filter).on_click(cx.listener(
+                        tab(id, name, self.filter == filter).on_click(cx.listener(
                             move |app, _, _, cx| {
                                 app.filter = filter;
                                 app.selected = None;
