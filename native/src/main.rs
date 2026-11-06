@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod artwork;
+mod icons;
 mod library;
 mod releases;
 
@@ -11,7 +12,7 @@ use gpui::{
 use library::{Addon, Client, Definition};
 use std::{cmp::Ordering, collections::HashMap, path::PathBuf, sync::Arc};
 
-gpui::actions!(astral, [Quit]);
+gpui::actions!(astral, [Quit, FindAddon, DismissOverlay]);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -26,14 +27,21 @@ enum Filter {
     Manual,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToolbarMenu {
+    Client,
+    Tools,
+}
+
 struct Astral {
     client: Client,
     page: Page,
     filter: Filter,
     query: String,
     search_focus: gpui::FocusHandle,
-    client_menu: bool,
-    tools_menu: bool,
+    menu: Option<ToolbarMenu>,
+    light_theme: bool,
+    root_focus: gpui::FocusHandle,
     brand_icon: Arc<gpui::Image>,
     client_icons: [Arc<gpui::Image>; 2],
     roots: [Option<PathBuf>; 2],
@@ -55,8 +63,9 @@ impl Astral {
             filter: Filter::All,
             query: String::new(),
             search_focus: cx.focus_handle(),
-            client_menu: false,
-            tools_menu: false,
+            menu: None,
+            light_theme: false,
+            root_focus: cx.focus_handle(),
             brand_icon: Arc::new(gpui::Image::from_bytes(
                 gpui::ImageFormat::Png,
                 include_bytes!("../../assets/icon.png").to_vec(),
@@ -237,38 +246,154 @@ impl Astral {
     }
 }
 
-fn label(text: impl Into<SharedString>) -> gpui::Div {
-    div().text_sm().text_color(rgb(0x9ca3af)).child(text.into())
+fn icon(path: &'static str, size: f32, color: u32) -> gpui::Svg {
+    gpui::svg()
+        .path(path)
+        .size(px(size))
+        .flex_shrink_0()
+        .text_color(rgb(color))
 }
 
-fn tab(id: &'static str, name: &'static str, active: bool) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .cursor_pointer()
-        .py_2()
-        .text_sm()
-        .border_b_2()
-        .border_color(rgb(if active { 0x597eff } else { 0x101114 }))
-        .text_color(rgb(if active { 0xf2f3f5 } else { 0x9ca3af }))
-        .hover(|style| style.text_color(rgb(0xffffff)))
-        .child(name)
+#[derive(Clone, Copy)]
+struct Palette {
+    background: u32,
+    text: u32,
+    muted: u32,
+    accent: u32,
+    line: u32,
+    rule: u32,
+    hover: u32,
+    panel: u32,
+    error: u32,
+    success: u32,
 }
 
-fn button(id: &'static str, text: &'static str, active: bool) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .cursor_pointer()
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .text_sm()
-        .bg(rgb(if active { 0x315feb } else { 0x202328 }))
-        .hover(|style| style.bg(rgb(if active { 0x426cf1 } else { 0x2d3139 })))
-        .child(text)
+impl Palette {
+    fn new(light: bool) -> Self {
+        if light {
+            Self {
+                background: 0xfdfcf9,
+                text: 0x101114,
+                muted: 0x666970,
+                accent: 0x0057ff,
+                line: 0xd7d6d4,
+                rule: 0x77787c,
+                hover: 0xf3f2ef,
+                panel: 0xffffff,
+                error: 0xa92920,
+                success: 0x067658,
+            }
+        } else {
+            Self {
+                background: 0x101114,
+                text: 0xf2f1ed,
+                muted: 0xa0a3ac,
+                accent: 0x7996ff,
+                line: 0x353740,
+                rule: 0x999b9f,
+                hover: 0x24262c,
+                panel: 0x191b20,
+                error: 0xffad9e,
+                success: 0x62c5a3,
+            }
+        }
+    }
+    fn label(self, text: impl Into<SharedString>) -> gpui::Div {
+        div()
+            .text_sm()
+            .text_color(rgb(self.muted))
+            .child(text.into())
+    }
+
+    fn tab(self, id: &'static str, name: &'static str, active: bool) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(id)
+            .cursor_pointer()
+            .py_2()
+            .text_sm()
+            .border_b_2()
+            .border_color(rgb(if active { self.accent } else { self.background }))
+            .text_color(rgb(if active { self.text } else { self.muted }))
+            .hover(move |style| style.text_color(rgb(self.text)))
+            .child(name)
+    }
+
+    fn button(self, id: &'static str, name: &'static str) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(id)
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .h(px(39.))
+            .px_3()
+            .rounded(px(5.))
+            .border_1()
+            .border_color(rgb(self.line))
+            .text_size(px(12.))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .hover(move |style| style.bg(rgb(self.hover)))
+            .child(name)
+    }
+
+    fn icon_button(self, id: &'static str, glyph: &'static str) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(id)
+            .size(px(32.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(move |style| style.bg(rgb(self.hover)))
+            .child(icon(glyph, 18., self.muted))
+    }
+
+    fn menu_row(
+        self,
+        id: &'static str,
+        glyph: &'static str,
+        name: &'static str,
+    ) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .gap_3()
+            .px_3()
+            .h(px(40.))
+            .rounded_md()
+            .cursor_pointer()
+            .text_size(px(13.))
+            .hover(move |style| style.bg(rgb(self.hover)))
+            .child(icon(glyph, 16., self.muted))
+            .child(name)
+    }
 }
 
 impl Astral {
+    fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.page = Page::Library;
+        self.menu = None;
+        self.selected = None;
+        self.search_focus.focus(window);
+        cx.notify();
+    }
+
+    fn toggle_menu(&mut self, menu: ToolbarMenu, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = if self.menu == Some(menu) {
+            None
+        } else {
+            Some(menu)
+        };
+        self.selected = None;
+        self.root_focus.focus(window);
+        cx.notify();
+    }
+
     fn search_box(&self, window: &Window, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let palette = Palette::new(self.light_theme);
         let focused = self.search_focus.is_focused(window);
         let value = if self.query.is_empty() {
             "Find an addon…".into()
@@ -286,14 +411,18 @@ impl Astral {
             .px_3()
             .rounded_md()
             .border_1()
-            .border_color(rgb(if focused { 0x597eff } else { 0x353740 }))
+            .border_color(rgb(if focused {
+                palette.accent
+            } else {
+                palette.line
+            }))
             .text_sm()
             .text_color(rgb(if self.query.is_empty() {
-                0x9ca3af
+                palette.muted
             } else {
-                0xf2f3f5
+                palette.text
             }))
-            .child("⌕")
+            .child(icon("search", 15., palette.muted))
             .child(div().flex_1().min_w_0().truncate().child(value))
             .when(!self.query.is_empty(), |field| {
                 field.child(
@@ -301,7 +430,7 @@ impl Astral {
                         .id("clear-search")
                         .cursor_pointer()
                         .px_1()
-                        .child("×")
+                        .child(icon("close", 14., palette.muted))
                         .on_click(cx.listener(|app, _, _, cx| {
                             app.query.clear();
                             cx.notify();
@@ -358,6 +487,7 @@ impl Astral {
     }
 
     fn addon_icon(&self, addon: &Addon, size: f32) -> gpui::Div {
+        let palette = Palette::new(self.light_theme);
         let mark = self
             .definition(addon)
             .and_then(|source| source.mark.clone())
@@ -372,8 +502,8 @@ impl Astral {
             .flex()
             .items_center()
             .justify_center()
-            .bg(rgb(0x191b20))
-            .text_color(rgb(0xaebfff))
+            .bg(rgb(palette.panel))
+            .text_color(rgb(palette.accent))
             .text_xl()
             .font_weight(gpui::FontWeight::BOLD);
         match artwork {
@@ -383,13 +513,14 @@ impl Astral {
     }
 
     fn tile(&self, addon: &Addon, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let palette = Palette::new(self.light_theme);
         let folder = addon.folder.clone();
         let status = self.update_status(addon);
         let status_color = match status {
-            "Update available" => 0x96adff,
-            "Up to date" => 0x62c5a3,
-            "Check failed" => 0xffad9e,
-            _ => 0x9ca3af,
+            "Update available" => palette.accent,
+            "Up to date" => palette.success,
+            "Check failed" => palette.error,
+            _ => palette.muted,
         };
         div()
             .id(SharedString::from(format!("addon:{folder}")))
@@ -400,9 +531,9 @@ impl Astral {
             .items_center()
             .gap_3()
             .border_t_1()
-            .border_color(rgb(0x999b9f))
+            .border_color(rgb(palette.rule))
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(0x191b20)))
+            .hover(move |style| style.bg(rgb(palette.panel)))
             .child(self.addon_icon(addon, 84.))
             .child(
                 div()
@@ -419,7 +550,16 @@ impl Astral {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(label(addon.source))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .when(addon.source == "GitHub", |source| {
+                                source.child(icon("github", 12., palette.text))
+                            })
+                            .child(palette.label(addon.source)),
+                    )
                     .child(
                         div()
                             .text_size(px(12.))
@@ -433,7 +573,7 @@ impl Astral {
                             .child(status),
                     ),
             )
-            .child(div().pr_2().text_color(rgb(0x9ca3af)).child("⋯"))
+            .child(div().pr_2().child(icon("more", 15., palette.muted)))
             .on_click(cx.listener(move |app, _, _, cx| {
                 app.selected = Some(folder.clone());
                 cx.notify();
@@ -441,6 +581,7 @@ impl Astral {
     }
 
     fn details(&self, addon: &Addon, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let palette = Palette::new(self.light_theme);
         let definition = self.definition(addon);
         let repo = definition.and_then(|source| source.repo.clone());
         div()
@@ -454,18 +595,22 @@ impl Astral {
             .flex_col()
             .gap_4()
             .p_6()
-            .bg(rgb(0x191b20))
+            .bg(rgb(palette.panel))
             .border_l_1()
-            .border_color(rgb(0x343741))
+            .border_color(rgb(palette.line))
             .shadow_lg()
             .overflow_y_scroll()
             .occlude()
-            .child(div().flex().justify_end().child(
-                button("close-details", "Close", false).on_click(cx.listener(|app, _, _, cx| {
-                    app.selected = None;
-                    cx.notify();
-                })),
-            ))
+            .child(
+                div().flex().justify_end().child(
+                    palette
+                        .icon_button("close-details", "close")
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.selected = None;
+                            cx.notify();
+                        })),
+                ),
+            )
             .child(self.addon_icon(addon, 70.))
             .child(
                 div()
@@ -475,20 +620,20 @@ impl Astral {
             )
             .when_some(
                 definition.and_then(|source| source.description.clone()),
-                |drawer, description| drawer.child(label(description)),
+                |drawer, description| drawer.child(palette.label(description)),
             )
             .child(
                 div()
                     .border_t_1()
-                    .border_color(rgb(0x343741))
+                    .border_color(rgb(palette.line))
                     .pt_4()
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(label(format!("Installed version  ·  {}", addon.version)))
-                    .child(label(format!("Source  ·  {}", addon.source)))
+                    .child(palette.label(format!("Installed version  ·  {}", addon.version)))
+                    .child(palette.label(format!("Source  ·  {}", addon.source)))
                     .when_some(self.checks.get(&addon.folder), |details, check| {
-                        details.child(label(match check {
+                        details.child(palette.label(match check {
                             Ok(release) => format!("Latest release  ·  {}", release.tag),
                             Err(error) => error.clone(),
                         }))
@@ -497,7 +642,7 @@ impl Astral {
             .child(
                 div()
                     .border_t_1()
-                    .border_color(rgb(0x343741))
+                    .border_color(rgb(palette.line))
                     .pt_4()
                     .flex()
                     .flex_col()
@@ -507,13 +652,21 @@ impl Astral {
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("Installed modules"),
                     )
-                    .children(addon.modules.iter().cloned().map(label)),
+                    .children(
+                        addon
+                            .modules
+                            .iter()
+                            .cloned()
+                            .map(|module| palette.label(module)),
+                    ),
             )
             .when_some(repo, |drawer, repo| {
                 drawer.child(
-                    button("addon-source", "View on GitHub", false).on_click(move |_, _, cx| {
-                        cx.open_url(&format!("https://github.com/{repo}"))
-                    }),
+                    palette
+                        .button("addon-source", "View on GitHub")
+                        .on_click(move |_, _, cx| {
+                            cx.open_url(&format!("https://github.com/{repo}"))
+                        }),
                 )
             })
     }
@@ -521,6 +674,7 @@ impl Astral {
 
 impl Render for Astral {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = Palette::new(self.light_theme);
         let client = self.client;
         let library = self.page == Page::Library;
         let two_columns = window.viewport_size().width >= px(960.);
@@ -533,7 +687,7 @@ impl Render for Astral {
             .pl(px(if cfg!(target_os = "macos") { 94. } else { 38. }))
             .pr(px(38.))
             .border_b_1()
-            .border_color(rgb(0x2a2c32))
+            .border_color(rgb(palette.line))
             .child(
                 div()
                     .flex()
@@ -556,7 +710,7 @@ impl Render for Astral {
                                             .top_0()
                                             .size(px(34.))
                                             .rounded_full()
-                                            .bg(rgb(0x4e78ff)),
+                                            .bg(rgb(palette.accent)),
                                     )
                                     .child(
                                         div()
@@ -565,7 +719,7 @@ impl Render for Astral {
                                             .top_0()
                                             .size(px(34.))
                                             .rounded_full()
-                                            .bg(rgb(0xf2f3f5)),
+                                            .bg(rgb(palette.text)),
                                     ),
                             )
                             .child(
@@ -581,13 +735,13 @@ impl Render for Astral {
                             (Page::Discover, "discover", "Discover"),
                         ]
                         .map(|(page, id, name)| {
-                            tab(id, name, self.page == page).on_click(cx.listener(
-                                move |app, _, _, cx| {
+                            palette
+                                .tab(id, name, self.page == page)
+                                .on_click(cx.listener(move |app, _, _, cx| {
                                     app.page = page;
                                     app.selected = None;
                                     cx.notify();
-                                },
-                            ))
+                                }))
                         }),
                     ),
             )
@@ -597,89 +751,126 @@ impl Render for Astral {
                     .items_center()
                     .gap_3()
                     .child(
-                        button("client-menu", client.label(), false)
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(gpui::img(self.client_icons[self.index()].clone()).size(px(22.)))
-                            .child("⌄")
+                        palette
+                            .button("client-menu", "")
+                            .w(px(136.))
+                            .justify_between()
+                            .child(gpui::img(self.client_icons[self.index()].clone()).size(px(24.)))
+                            .child(client.label())
+                            .child(icon("chevron", 14., palette.muted))
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.toggle_menu(ToolbarMenu::Client, window, cx);
+                            })),
+                    )
+                    .child(
+                        palette
+                            .icon_button("quick-find", "search")
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.focus_search(window, cx);
+                            })),
+                    )
+                    .child(
+                        palette
+                            .icon_button(
+                                "appearance",
+                                if self.light_theme { "moon" } else { "sun" },
+                            )
                             .on_click(cx.listener(|app, _, _, cx| {
-                                app.client_menu = !app.client_menu;
-                                app.tools_menu = false;
+                                app.light_theme = !app.light_theme;
+                                app.menu = None;
                                 cx.notify();
                             })),
                     )
-                    .child(button("tools-menu", "Tools ⋯", false).on_click(cx.listener(
-                        |app, _, _, cx| {
-                            app.tools_menu = !app.tools_menu;
-                            app.client_menu = false;
-                            cx.notify();
-                        },
-                    ))),
+                    .child(
+                        palette
+                            .icon_button("tools-menu", "more")
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.toggle_menu(ToolbarMenu::Tools, window, cx);
+                            })),
+                    ),
             );
 
-        let menu = div()
-            .id("toolbar-menu")
-            .absolute()
-            .right(px(36.))
-            .top(px(65.))
-            .w(px(184.))
-            .p_2()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .rounded_md()
-            .bg(rgb(0x191b20))
-            .border_1()
-            .border_color(rgb(0x353740))
-            .shadow_lg()
-            .occlude()
-            .when(self.client_menu, |menu| {
-                menu.children(
-                    [
-                        (Client::Retail, "pick-retail"),
-                        (Client::Forever, "pick-forever"),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (target, id))| {
-                        button(id, target.label(), client == target)
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(gpui::img(self.client_icons[index].clone()).size(px(20.)))
-                            .on_click(cx.listener(move |app, _, _, cx| {
-                                app.client_menu = false;
-                                if app.client != target {
-                                    app.client = target;
-                                    app.filter = Filter::All;
-                                    app.query.clear();
+        let menu = self.menu.map(|kind| {
+            let mut panel = div()
+                .id("toolbar-menu")
+                .absolute()
+                .top(px(67.))
+                .right(px(if kind == ToolbarMenu::Client {
+                    170.
+                } else {
+                    38.
+                }))
+                .w(px(if kind == ToolbarMenu::Client {
+                    186.
+                } else {
+                    260.
+                }))
+                .p_2()
+                .flex()
+                .flex_col()
+                .rounded(px(8.))
+                .bg(rgb(palette.panel))
+                .border_1()
+                .border_color(rgb(palette.line))
+                .shadow_lg()
+                .occlude();
+            match kind {
+                ToolbarMenu::Client => {
+                    for (index, target) in [Client::Retail, Client::Forever].into_iter().enumerate()
+                    {
+                        panel = panel.child(
+                            div()
+                                .id(("choose-client", index))
+                                .h(px(40.))
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .px_3()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .text_size(px(13.))
+                                .hover(move |style| style.bg(rgb(palette.hover)))
+                                .child(gpui::img(self.client_icons[index].clone()).size(px(22.)))
+                                .child(div().flex_1().child(target.label()))
+                                .when(target == client, |row| {
+                                    row.child(icon("check", 16., palette.accent))
+                                })
+                                .on_click(cx.listener(move |app, _, _, cx| {
+                                    app.menu = None;
+                                    if app.client != target {
+                                        app.client = target;
+                                        app.filter = Filter::All;
+                                        app.query.clear();
+                                        app.refresh(cx);
+                                    }
+                                    cx.notify();
+                                })),
+                        );
+                    }
+                }
+                ToolbarMenu::Tools => {
+                    panel = panel
+                        .child(
+                            palette
+                                .menu_row("refresh", "refresh", "Rescan addons")
+                                .on_click(cx.listener(|app, _, _, cx| {
+                                    app.menu = None;
                                     app.refresh(cx);
-                                }
-                                cx.notify();
-                            }))
-                    }),
-                )
-            })
-            .when(self.tools_menu, |menu| {
-                menu.child(
-                    button("refresh", "Rescan addons", false).on_click(cx.listener(
-                        |app, _, _, cx| {
-                            app.tools_menu = false;
-                            app.refresh(cx);
-                        },
-                    )),
-                )
-                .child(
-                    button("choose", "Choose WoW folder", false).on_click(cx.listener(
-                        |app, _, _, cx| {
-                            app.tools_menu = false;
-                            cx.notify();
-                            app.choose_root(cx);
-                        },
-                    )),
-                )
-            });
+                                })),
+                        )
+                        .child(
+                            palette
+                                .menu_row("choose", "folder", "Choose WoW folder")
+                                .on_click(cx.listener(|app, _, _, cx| {
+                                    app.menu = None;
+                                    cx.notify();
+                                    app.choose_root(cx);
+                                })),
+                        );
+                }
+            }
+            panel
+        });
 
         let can_check = !self.checking
             && !self.scanning
@@ -703,7 +894,7 @@ impl Render for Astral {
                                 .font_weight(gpui::FontWeight::BOLD)
                                 .child(if library { "Library" } else { "Discover" }),
                         )
-                        .child(label(if library {
+                        .child(palette.label(if library {
                             format!("{} addons", self.addons.len())
                         } else {
                             format!(
@@ -720,18 +911,23 @@ impl Render for Astral {
                     library,
                     |actions| {
                         actions.child(
-                            button(
-                                "updates",
-                                if self.checking {
-                                    "Checking…"
-                                } else {
-                                    "Check for updates"
-                                },
-                                can_check,
-                            )
-                            .when(can_check, |button| {
-                                button.on_click(cx.listener(|app, _, _, cx| app.check_updates(cx)))
-                            }),
+                            palette
+                                .button(
+                                    "updates",
+                                    if self.checking {
+                                        "Checking…"
+                                    } else {
+                                        "Check for updates"
+                                    },
+                                )
+                                .flex_row_reverse()
+                                .child(icon("refresh", 15., palette.muted))
+                                .when(!can_check, |button| button.opacity(0.55).cursor_default())
+                                .when(can_check, |button| {
+                                    button.on_click(
+                                        cx.listener(|app, _, _, cx| app.check_updates(cx)),
+                                    )
+                                }),
                         )
                     },
                 ));
@@ -782,25 +978,30 @@ impl Render for Astral {
                                 (Filter::Manual, "manual", "Manual"),
                             ]
                             .map(|(filter, id, name)| {
-                                tab(id, name, self.filter == filter).on_click(cx.listener(
-                                    move |app, _, _, cx| {
+                                palette
+                                    .tab(id, name, self.filter == filter)
+                                    .on_click(cx.listener(move |app, _, _, cx| {
                                         app.filter = filter;
                                         app.selected = None;
                                         cx.notify();
-                                    },
-                                ))
+                                    }))
                             }),
                         ),
                     )
                     .child(self.search_box(window, cx)),
             );
             if let Some(error) = &self.error {
-                list = list.child(div().py_2().text_color(rgb(0xffad9e)).child(error.clone()));
+                list = list.child(
+                    div()
+                        .py_2()
+                        .text_color(rgb(palette.error))
+                        .child(error.clone()),
+                );
             }
             if self.scanning {
-                list = list.child(label("Scanning addons…"));
+                list = list.child(palette.label("Scanning addons…"));
             } else if matches.is_empty() {
-                list = list.child(label(match self.filter {
+                list = list.child(palette.label(match self.filter {
                     _ if !query.is_empty() => "No addons match your search.",
                     Filter::Updates if self.checks.is_empty() => {
                         "Check for updates to see available releases."
@@ -838,7 +1039,7 @@ impl Render for Astral {
                     .gap_4()
                     .py_4()
                     .border_t_1()
-                    .border_color(rgb(0x383b44))
+                    .border_color(rgb(palette.line))
                     .child(
                         div()
                             .flex()
@@ -850,7 +1051,7 @@ impl Render for Astral {
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .child(source.name.clone()),
                             )
-                            .child(label(source.description.clone().unwrap_or_default())),
+                            .child(palette.label(source.description.clone().unwrap_or_default())),
                     );
                 if let Some(repo) = source.repo.clone() {
                     row = row.child(
@@ -859,7 +1060,7 @@ impl Render for Astral {
                             .flex_shrink_0()
                             .cursor_pointer()
                             .text_sm()
-                            .text_color(rgb(0x96adff))
+                            .text_color(rgb(palette.accent))
                             .child(if installed {
                                 "Installed · GitHub"
                             } else {
@@ -870,7 +1071,7 @@ impl Render for Astral {
                             }),
                     );
                 } else {
-                    row = row.child(label(if installed {
+                    row = row.child(palette.label(if installed {
                         "Installed"
                     } else {
                         source.source()
@@ -885,11 +1086,37 @@ impl Render for Astral {
             .relative()
             .flex()
             .flex_col()
-            .bg(rgb(0x101114))
-            .text_color(rgb(0xf2f3f5))
+            .bg(rgb(palette.background))
+            .text_color(rgb(palette.text))
             .child(top)
             .child(content.child(list))
-            .when(self.client_menu || self.tools_menu, |app| app.child(menu))
+            .track_focus(&self.root_focus)
+            .on_action(cx.listener(|app, _: &FindAddon, window, cx| app.focus_search(window, cx)))
+            .on_action(cx.listener(|app, _: &DismissOverlay, window, cx| {
+                if app.menu.take().is_some() || app.selected.take().is_some() {
+                    cx.notify();
+                } else if app.search_focus.is_focused(window) {
+                    app.query.clear();
+                    app.root_focus.focus(window);
+                    cx.notify();
+                }
+            }))
+            .when_some(menu, |app, menu| {
+                app.child(
+                    div()
+                        .id("menu-dismiss")
+                        .absolute()
+                        .top(px(59.))
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.menu = None;
+                            cx.notify();
+                        })),
+                )
+                .child(menu)
+            })
             .when_some(
                 self.selected
                     .as_ref()
@@ -959,36 +1186,56 @@ fn main() {
         }
         return;
     }
-    Application::new().run(move |cx: &mut App| {
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new(
-            if cfg!(target_os = "macos") {
-                "cmd-q"
-            } else {
-                "ctrl-q"
-            },
-            Quit,
-            None,
-        )]);
-        cx.set_menus(vec![Menu {
-            name: "Astral Native".into(),
-            items: vec![MenuItem::action("Quit Astral Native", Quit)],
-        }]);
-        let bounds = Bounds::centered(None, size(px(1240.), px(800.)), cx);
-        cx.open_window(
-            WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Astral Native".into()),
-                    appears_transparent: cfg!(target_os = "macos"),
-                    traffic_light_position: Some(gpui::point(px(18.), px(29.))),
-                }),
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(720.), px(480.))),
-                ..Default::default()
-            },
-            |_, cx| cx.new(|cx| Astral::new(roots, cx)),
-        )
-        .expect("open Astral window");
-        cx.activate(true);
-    });
+    Application::new()
+        .with_assets(icons::Icons)
+        .run(move |cx: &mut App| {
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.bind_keys([KeyBinding::new(
+                if cfg!(target_os = "macos") {
+                    "cmd-q"
+                } else {
+                    "ctrl-q"
+                },
+                Quit,
+                None,
+            )]);
+            cx.bind_keys([
+                KeyBinding::new(
+                    if cfg!(target_os = "macos") {
+                        "cmd-k"
+                    } else {
+                        "ctrl-k"
+                    },
+                    FindAddon,
+                    None,
+                ),
+                KeyBinding::new("escape", DismissOverlay, None),
+            ]);
+            cx.set_menus(vec![Menu {
+                name: "Astral Native".into(),
+                items: vec![MenuItem::action("Quit Astral Native", Quit)],
+            }]);
+            let bounds = Bounds::centered(None, size(px(1240.), px(800.)), cx);
+            cx.open_window(
+                WindowOptions {
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Astral Native".into()),
+                        appears_transparent: cfg!(target_os = "macos"),
+                        traffic_light_position: Some(gpui::point(px(18.), px(29.))),
+                    }),
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_min_size: Some(size(px(720.), px(480.))),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    cx.new(|cx| {
+                        let app = Astral::new(roots, cx);
+                        app.root_focus.focus(window);
+                        app
+                    })
+                },
+            )
+            .expect("open Astral window");
+            cx.activate(true);
+        });
 }
