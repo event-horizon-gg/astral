@@ -14,3 +14,5 @@ cloud/.dev.vars
 public/preview.json
 docs/*installation.json
 prototypes/
+
+/native/target/
