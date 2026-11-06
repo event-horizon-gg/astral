@@ -163,13 +163,24 @@ fn plain_title(text: &str) -> String {
     result
 }
 
-pub fn scan(root: &Path, client: Client, catalog: &[Definition]) -> io::Result<Vec<Addon>> {
+pub fn validate_root(root: &Path, client: Client) -> io::Result<()> {
     if root.file_name().and_then(|name| name.to_str()) != Some(client.folder()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("Choose the {} folder.", client.folder()),
         ));
     }
+    if !root.join("Interface").join("AddOns").is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "The selected folder has no Interface/AddOns directory.",
+        ));
+    }
+    Ok(())
+}
+
+pub fn scan(root: &Path, client: Client, catalog: &[Definition]) -> io::Result<Vec<Addon>> {
+    validate_root(root, client)?;
     let base = root.join("Interface").join("AddOns");
     let mut folders = Vec::new();
     for entry in fs::read_dir(&base)? {

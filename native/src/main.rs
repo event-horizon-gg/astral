@@ -63,6 +63,7 @@ impl Astral {
         self.addons.clear();
         self.checks.clear();
         self.scanning = false;
+        self.checking = false;
         if let Some(root) = self.roots[self.index()].clone() {
             let client = self.client;
             let catalog = self.catalog.clone();
@@ -134,8 +135,10 @@ impl Astral {
                 }
             }
             let _ = this.update(cx, |app, cx| {
-                app.checking = false;
-                cx.notify();
+                if app.scan_id == scan_id {
+                    app.checking = false;
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -172,8 +175,17 @@ impl Astral {
             let _ = this.update(cx, |app, cx| match result {
                 Ok(Some(paths)) => {
                     if let Some(path) = paths.into_iter().next() {
+                        if let Err(error) = library::validate_root(&path, client) {
+                            if app.client == client {
+                                app.error = Some(error.to_string());
+                                app.page = Page::Library;
+                                cx.notify();
+                            }
+                            return;
+                        }
                         app.roots[index] = Some(path);
                         if app.client == client {
+                            app.page = Page::Library;
                             app.refresh(cx);
                         }
                     }
@@ -361,6 +373,10 @@ impl Render for Astral {
                 list = list.child(
                     div()
                         .id(SharedString::from(format!("addon:{folder}")))
+                        .flex_shrink_0()
+                        .when(self.selected.as_ref() == Some(&folder), |row| {
+                            row.bg(rgb(0x1b263e))
+                        })
                         .flex()
                         .items_center()
                         .gap_4()
