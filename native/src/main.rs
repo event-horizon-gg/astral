@@ -30,6 +30,10 @@ struct Astral {
     client: Client,
     page: Page,
     filter: Filter,
+    query: String,
+    search_focus: gpui::FocusHandle,
+    client_menu: bool,
+    tools_menu: bool,
     brand_icon: Arc<gpui::Image>,
     client_icons: [Arc<gpui::Image>; 2],
     roots: [Option<PathBuf>; 2],
@@ -49,6 +53,10 @@ impl Astral {
             client: Client::Retail,
             page: Page::Library,
             filter: Filter::All,
+            query: String::new(),
+            search_focus: cx.focus_handle(),
+            client_menu: false,
+            tools_menu: false,
             brand_icon: Arc::new(gpui::Image::from_bytes(
                 gpui::ImageFormat::Png,
                 include_bytes!("../../assets/icon.png").to_vec(),
@@ -260,6 +268,89 @@ fn button(id: &'static str, text: &'static str, active: bool) -> gpui::Stateful<
 }
 
 impl Astral {
+    fn search_box(&self, window: &Window, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let focused = self.search_focus.is_focused(window);
+        let value = if self.query.is_empty() {
+            "Find an addon…".into()
+        } else {
+            self.query.clone()
+        };
+        div()
+            .id("addon-search")
+            .track_focus(&self.search_focus)
+            .w(px(204.))
+            .h(px(39.))
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(if focused { 0x597eff } else { 0x353740 }))
+            .text_sm()
+            .text_color(rgb(if self.query.is_empty() {
+                0x9ca3af
+            } else {
+                0xf2f3f5
+            }))
+            .child("⌕")
+            .child(div().flex_1().min_w_0().truncate().child(value))
+            .when(!self.query.is_empty(), |field| {
+                field.child(
+                    div()
+                        .id("clear-search")
+                        .cursor_pointer()
+                        .px_1()
+                        .child("×")
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.query.clear();
+                            cx.notify();
+                        })),
+                )
+            })
+            .on_click(cx.listener(|app, _, window, _| app.search_focus.focus(window)))
+            .on_key_down(cx.listener(|app, event: &gpui::KeyDownEvent, window, cx| {
+                let key = &event.keystroke;
+                let command = key.modifiers.platform || key.modifiers.control;
+                let changed = match key.key.as_str() {
+                    "backspace" if command => {
+                        app.query.clear();
+                        true
+                    }
+                    "backspace" => app.query.pop().is_some(),
+                    "escape" => {
+                        app.query.clear();
+                        window.blur();
+                        true
+                    }
+                    "v" if command => {
+                        if let Some(value) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                            app.query
+                                .extend(value.chars().filter(|ch| !ch.is_control()).take(128));
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ if !command => {
+                        if let Some(value) = &key.key_char {
+                            app.query
+                                .extend(value.chars().filter(|ch| !ch.is_control()));
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                };
+                if changed {
+                    app.selected = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+    }
+
     fn definition(&self, addon: &Addon) -> Option<&Definition> {
         self.catalog
             .iter()
@@ -434,12 +525,13 @@ impl Render for Astral {
         let library = self.page == Page::Library;
         let two_columns = window.viewport_size().width >= px(960.);
         let top = div()
-            .h(px(66.))
+            .h(px(76.))
             .flex_shrink_0()
             .flex()
             .items_center()
             .justify_between()
-            .px_8()
+            .pl(px(if cfg!(target_os = "macos") { 94. } else { 38. }))
+            .pr(px(38.))
             .border_b_1()
             .border_color(rgb(0x2a2c32))
             .child(
@@ -500,69 +592,133 @@ impl Render for Astral {
                     ),
             )
             .child(
-                div().flex().items_center().gap_2().children(
-                    [(Client::Retail, "retail"), (Client::Forever, "forever")]
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, (target, id))| {
-                            let icon = self.client_icons[index].clone();
-                            button(id, target.label(), client == target)
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(gpui::img(icon).size(px(22.)))
-                                .on_click(cx.listener(move |app, _, _, cx| {
-                                    if app.client != target {
-                                        app.client = target;
-                                        app.filter = Filter::All;
-                                        app.refresh(cx);
-                                    }
-                                }))
-                        }),
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        button("client-menu", client.label(), false)
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(gpui::img(self.client_icons[self.index()].clone()).size(px(22.)))
+                            .child("⌄")
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.client_menu = !app.client_menu;
+                                app.tools_menu = false;
+                                cx.notify();
+                            })),
+                    )
+                    .child(button("tools-menu", "Tools ⋯", false).on_click(cx.listener(
+                        |app, _, _, cx| {
+                            app.tools_menu = !app.tools_menu;
+                            app.client_menu = false;
+                            cx.notify();
+                        },
+                    ))),
             );
+
+        let menu = div()
+            .id("toolbar-menu")
+            .absolute()
+            .right(px(36.))
+            .top(px(65.))
+            .w(px(184.))
+            .p_2()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .rounded_md()
+            .bg(rgb(0x191b20))
+            .border_1()
+            .border_color(rgb(0x353740))
+            .shadow_lg()
+            .occlude()
+            .when(self.client_menu, |menu| {
+                menu.children(
+                    [
+                        (Client::Retail, "pick-retail"),
+                        (Client::Forever, "pick-forever"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (target, id))| {
+                        button(id, target.label(), client == target)
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(gpui::img(self.client_icons[index].clone()).size(px(20.)))
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                app.client_menu = false;
+                                if app.client != target {
+                                    app.client = target;
+                                    app.filter = Filter::All;
+                                    app.query.clear();
+                                    app.refresh(cx);
+                                }
+                                cx.notify();
+                            }))
+                    }),
+                )
+            })
+            .when(self.tools_menu, |menu| {
+                menu.child(
+                    button("refresh", "Rescan addons", false).on_click(cx.listener(
+                        |app, _, _, cx| {
+                            app.tools_menu = false;
+                            app.refresh(cx);
+                        },
+                    )),
+                )
+                .child(
+                    button("choose", "Choose WoW folder", false).on_click(cx.listener(
+                        |app, _, _, cx| {
+                            app.tools_menu = false;
+                            cx.notify();
+                            app.choose_root(cx);
+                        },
+                    )),
+                )
+            });
 
         let can_check = !self.checking
             && !self.scanning
             && self.addons.iter().any(|addon| addon.source == "GitHub");
-        let header = div()
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_4()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(50.))
-                            .line_height(px(56.))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .child(if library { "Library" } else { "Discover" }),
-                    )
-                    .child(label(if library {
-                        format!("{} addons", self.addons.len())
-                    } else {
-                        format!(
-                            "{} addons for {}",
-                            self.catalog
-                                .iter()
-                                .filter(|source| source.supports(client))
-                                .count(),
-                            client.label()
+        let header =
+            div()
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_4()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_size(px(56.))
+                                .line_height(px(62.))
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .child(if library { "Library" } else { "Discover" }),
                         )
-                    })),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .flex_shrink_0()
-                    .when(library, |actions| {
+                        .child(label(if library {
+                            format!("{} addons", self.addons.len())
+                        } else {
+                            format!(
+                                "{} addons for {}",
+                                self.catalog
+                                    .iter()
+                                    .filter(|source| source.supports(client))
+                                    .count(),
+                                client.label()
+                            )
+                        })),
+                )
+                .child(div().flex().items_center().gap_2().flex_shrink_0().when(
+                    library,
+                    |actions| {
                         actions.child(
                             button(
                                 "updates",
@@ -577,16 +733,8 @@ impl Render for Astral {
                                 button.on_click(cx.listener(|app, _, _, cx| app.check_updates(cx)))
                             }),
                         )
-                    })
-                    .child(
-                        button("refresh", "Rescan", false)
-                            .on_click(cx.listener(|app, _, _, cx| app.refresh(cx))),
-                    )
-                    .child(
-                        button("choose", "WoW folder", false)
-                            .on_click(cx.listener(|app, _, _, cx| app.choose_root(cx))),
-                    ),
-            );
+                    },
+                ));
 
         let mut list = div()
             .id("collection")
@@ -601,13 +749,19 @@ impl Render for Astral {
             .flex()
             .flex_col()
             .gap_5()
-            .px_8()
-            .py_7()
+            .px(px(38.))
+            .pt(px(40.))
+            .pb_4()
             .child(header);
         if library {
+            let query = self.query.trim().to_lowercase();
             let matches: Vec<_> = self
                 .addons
                 .iter()
+                .filter(|addon| {
+                    addon.name.to_lowercase().contains(&query)
+                        || addon.folder.to_lowercase().contains(&query)
+                })
                 .filter(|addon| match self.filter {
                     Filter::All => true,
                     Filter::Updates => self.update_status(addon) == "Update available",
@@ -615,22 +769,30 @@ impl Render for Astral {
                 })
                 .collect();
             content = content.child(
-                div().flex().gap_2().children(
-                    [
-                        (Filter::All, "all", "All addons"),
-                        (Filter::Updates, "filter-updates", "Updates"),
-                        (Filter::Manual, "manual", "Manual"),
-                    ]
-                    .map(|(filter, id, name)| {
-                        tab(id, name, self.filter == filter).on_click(cx.listener(
-                            move |app, _, _, cx| {
-                                app.filter = filter;
-                                app.selected = None;
-                                cx.notify();
-                            },
-                        ))
-                    }),
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div().flex().gap_5().children(
+                            [
+                                (Filter::All, "all", "All addons"),
+                                (Filter::Updates, "filter-updates", "Updates"),
+                                (Filter::Manual, "manual", "Manual"),
+                            ]
+                            .map(|(filter, id, name)| {
+                                tab(id, name, self.filter == filter).on_click(cx.listener(
+                                    move |app, _, _, cx| {
+                                        app.filter = filter;
+                                        app.selected = None;
+                                        cx.notify();
+                                    },
+                                ))
+                            }),
+                        ),
+                    )
+                    .child(self.search_box(window, cx)),
             );
             if let Some(error) = &self.error {
                 list = list.child(div().py_2().text_color(rgb(0xffad9e)).child(error.clone()));
@@ -639,6 +801,7 @@ impl Render for Astral {
                 list = list.child(label("Scanning addons…"));
             } else if matches.is_empty() {
                 list = list.child(label(match self.filter {
+                    _ if !query.is_empty() => "No addons match your search.",
                     Filter::Updates if self.checks.is_empty() => {
                         "Check for updates to see available releases."
                     }
@@ -726,6 +889,7 @@ impl Render for Astral {
             .text_color(rgb(0xf2f3f5))
             .child(top)
             .child(content.child(list))
+            .when(self.client_menu || self.tools_menu, |app| app.child(menu))
             .when_some(
                 self.selected
                     .as_ref()
@@ -810,12 +974,13 @@ fn main() {
             name: "Astral Native".into(),
             items: vec![MenuItem::action("Quit Astral Native", Quit)],
         }]);
-        let bounds = Bounds::centered(None, size(px(1080.), px(720.)), cx);
+        let bounds = Bounds::centered(None, size(px(1240.), px(800.)), cx);
         cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
                     title: Some("Astral Native".into()),
-                    ..Default::default()
+                    appears_transparent: cfg!(target_os = "macos"),
+                    traffic_light_position: Some(gpui::point(px(18.), px(29.))),
                 }),
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(720.), px(480.))),
