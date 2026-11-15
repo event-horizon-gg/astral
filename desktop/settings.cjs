@@ -117,7 +117,7 @@ function decode(payload) {
   }
   return bundle;
 }
-async function apply(root, account, payload, data, running) {
+async function apply(root, account, payload, data, running, commit = async () => {}) {
   const bundle = decode(payload);
   if (await running()) throw Error('Close WoW before applying settings.');
   const base = await accountRoot(root, account);
@@ -173,6 +173,7 @@ async function apply(root, account, payload, data, running) {
       files: changed,
       time: new Date().toISOString(),
     });
+    await commit();
     return files.length;
   } catch (e) {
     for (const f of changed.reverse()) {

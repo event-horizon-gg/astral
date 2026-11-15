@@ -52,7 +52,7 @@ export default function CloudPanel({ s, call, busy, notify }) {
     let result;
     if (confirm.type === 'device') result = await call('revokeDevice', confirm.item.id);
     else if (confirm.type === 'restore')
-      result = await call('restoreCloud', confirm.item.id, info.revision);
+      result = await call('restoreCloud', confirm.item.id, confirm.revision);
     else result = await call('deleteCloud', typed);
     if (result) {
       notify(
@@ -135,7 +135,7 @@ export default function CloudPanel({ s, call, busy, notify }) {
                       <button
                         className="text-button"
                         disabled={busy || s.running}
-                        onClick={() => setConfirm({ type: 'restore', item: h })}
+                        onClick={() => setConfirm({ type: 'restore', item: h, revision: info.revision })}
                       >
                         Restore
                       </button>
@@ -235,7 +235,11 @@ export default function CloudPanel({ s, call, busy, notify }) {
               </button>
               <button
                 className={'button ' + (confirm.type === 'delete' ? 'danger' : 'primary')}
-                disabled={busy || (confirm.type === 'delete' && typed !== 'DELETE')}
+                disabled={
+                  busy ||
+                  (confirm.type === 'restore' && s.running) ||
+                  (confirm.type === 'delete' && typed !== 'DELETE')
+                }
                 onClick={action}
               >
                 {confirm.type === 'delete'

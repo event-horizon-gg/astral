@@ -30,6 +30,8 @@ const profilePreviews = new Map();
 const clients = require('./clients.cjs');
 const credentials = require('./credentials.cjs').create(safeStorage);
 const { AppUpdates } = require('./app-updates.cjs');
+const { createReferenceFixture } = require('./ui-fixture.cjs');
+const fixture = createReferenceFixture(app, process.argv);
 let appUpdates;
 const ackArgument = process.argv.indexOf('--astral-update-ack');
 let updateAck = ackArgument >= 0 ? process.argv[ackArgument + 1] : null;
@@ -38,7 +40,7 @@ async function acknowledgeUpdate() {
   await fs.writeFile(path.join(data, 'app-updates', 'ack-' + updateAck), 'ready', { mode: 0o600 });
   updateAck = null;
 }
-const scheduledLaunch = process.argv.includes('--daily-update');
+const scheduledLaunch = !fixture && process.argv.includes('--daily-update');
 let foregroundRequested = false;
 let backgroundUpdates = {
   enabled: false,
@@ -147,7 +149,11 @@ async function state() {
     config.account = acc[0];
     await persist();
   }
-  const session = await engine.json(path.join(data, 'session.json'), null);
+  const session = fixture
+    ? fixture.accountName
+      ? { name: fixture.accountName }
+      : null
+    : await engine.json(path.join(data, 'session.json'), null);
   const type = flavors.flavor(config.root);
   const parent = path.dirname(config.root);
   const clients = [];
@@ -156,7 +162,8 @@ async function state() {
     ['forever', '_forever_', 'Forever'],
   ]) {
     const root = path.join(parent, folder);
-    if (await engine.exists(root)) clients.push({ id, root, label });
+    if (fixture ? fixture.roots.has(root) : await engine.exists(root))
+      clients.push({ id, root, label });
   }
   const artwork = new Map(inventory.addons.filter((a) => a.icon).map((a) => [a.id, a.icon]));
   let addonChoices = { rows: [] };
@@ -193,31 +200,41 @@ async function state() {
     accounts: acc,
     cloudConfigured: !!config.service,
     signedIn: !!session,
+    ...(fixture?.dialog && { fixtureDialog: fixture.dialog }),
+    ...(fixture && {
+      fixtureTheme: fixture.theme,
+      fixturePage: fixture.page,
+      fixtureToast: fixture.toast,
+    }),
     startup: !!config.startup,
     autoUpdates: config.autoUpdates !== false,
     backgroundUpdates,
     appVersion: app.getVersion(),
     appUpdates: { ...appUpdates?.status, enabled: config.appUpdateChecks !== false },
-    legacyBackups: await engine.exists(
-      path.join(
-        process.platform === 'win32'
-          ? process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
-          : path.join(os.homedir(), 'Library', 'Application Support'),
-        'Astral RaiderIO',
-        'Backups',
-      ),
-    ),
+    legacyBackups:
+      !fixture &&
+      (await engine.exists(
+        path.join(
+          process.platform === 'win32'
+            ? process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
+            : path.join(os.homedir(), 'Library', 'Application Support'),
+          'Astral RaiderIO',
+          'Backups',
+        ),
+      )),
     updateIgnored: config.updateIgnored?.[type] || [],
     dailyUpdates: await updater.status(data),
     suite: type === 'forever' ? { id: 'forever', addons: suites.FOREVER } : null,
     addonActivity: await addonActivity.list(data, config.root),
-    legacyRio: await engine.exists(
-      path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.joaoseixas.astral-raiderio.plist'),
-    ),
+    legacyRio:
+      !fixture &&
+      (await engine.exists(
+        path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.joaoseixas.astral-raiderio.plist'),
+      )),
     accountName: session?.name || '',
     machine: os.hostname(),
     platform: process.platform,
-    running: await engine.gameRunning().catch(() => null),
+    running: fixture ? false : await engine.gameRunning().catch(() => null),
     backups: await engine.backups(data, config.root),
     progress,
     lastError,
@@ -262,6 +279,9 @@ function handle(name, fn) {
     if (event.sender !== win?.webContents || event.senderFrame !== win?.webContents.mainFrame)
       throw Error('Untrusted caller.');
     try {
+      const sample = fixture?.response(name);
+      if (sample !== undefined) return structuredClone(sample);
+      fixture?.assertAction(name);
       lastError = null;
       return await (mutations.has(name) ? exclusive(() => fn(...args)) : fn(...args));
     } catch (e) {
@@ -276,7 +296,10 @@ async function initialize() {
   await fs.mkdir(data, { recursive: true });
   config = await engine.json(path.join(data, 'config.json'), {});
   if (!config.service) config.service = 'https://astral-sync.astral-joaoseixas.workers.dev';
-  if (!config.root) config.root = await engine.defaultRoot();
+  if (fixture) {
+    config.root = fixture.root;
+    config.spaces = {};
+  } else if (!config.root) config.root = await engine.defaultRoot();
   if (!config.device) config.device = crypto.randomUUID();
   if (config.autoUpdates === undefined) config.autoUpdates = true;
   appUpdates = new AppUpdates({
@@ -288,7 +311,7 @@ async function initialize() {
   await persist();
 }
 async function configureSchedule() {
-  if (!app.isPackaged) return;
+  if (fixture || !app.isPackaged) return;
   try {
     backgroundUpdates = await scheduler.ensure({
       executable: process.execPath,
@@ -554,7 +577,11 @@ async function main() {
     const root = config.root,
       account = config.account,
       type = syncScope();
-    const old = await request('/profiles/' + type + '/history/' + id);
+    const route = '/profiles/' + type;
+    const latest = await request(route + '/current');
+    if ((latest.revision || 0) !== revision)
+      throw Error('The cloud backup changed. Refresh cloud backups before restoring.');
+    const old = await request(route + '/history/' + id);
     const verified = settings.inspect(old.payload);
     if (old.hash && old.hash !== verified.hash)
       throw Error('The cloud backup checksum does not match.');
@@ -589,16 +616,19 @@ async function main() {
     });
     send({});
     if (await engine.gameRunning()) throw Error('WoW started. Restore deferred.');
-    const result = await request('/profiles/' + type + '/history/' + id + '/restore', {
-      method: 'POST',
-      body: { revision, hash: verified.hash },
-    });
+    let result;
     await settings.apply(
       root,
       account,
       profilePolicy.encode(target).payload,
       data,
       engine.gameRunning,
+      async () => {
+        result = await request(route + '/history/' + id + '/restore', {
+          method: 'POST',
+          body: { revision, hash: verified.hash },
+        });
+      },
     );
     config.syncProfilePending = false;
     config.lastHash = (await settings.capture(root, account, data)).hash;
@@ -701,7 +731,7 @@ async function main() {
     return state();
   });
   handle('client', async (type) => {
-    config = await clients.select(config, { type });
+    config = await clients.select(config, { type }, fixture?.allowsAddonDirectory);
     releases = {};
     send({});
     await persist();
@@ -872,7 +902,7 @@ async function main() {
     }
     throw Error('Sign-in expired. Try connecting again.');
   });
-  handle('sync', async (choice, expectedScope, expectedRevision) => {
+  handle('sync', async (choice, expectedScope, expectedRevision, expectedReview) => {
     const scope = syncScope();
     if (expectedScope && expectedScope !== scope)
       throw Error('The sync profile changed. Try again.');
@@ -922,6 +952,7 @@ async function main() {
         lastRemoteHash: config.lastRemoteHash,
         choice,
         expectedRevision,
+        expectedReview,
         device: config.device,
         request,
         onProgress: send,
@@ -965,9 +996,10 @@ async function main() {
     return shell.openPath(path.join(data, 'backups'));
   });
   win = new BrowserWindow({
-    show: !process.argv.includes('--background'),
-    width: 1250,
-    height: 840,
+    show: !!fixture || !process.argv.includes('--background'),
+    width: fixture?.viewport.width ?? 1250,
+    height: fixture?.viewport.height ?? 840,
+    useContentSize: !!fixture,
     minWidth: 980,
     minHeight: 680,
     title: 'Astral',
@@ -981,7 +1013,7 @@ async function main() {
     },
   });
   win.on('close', (event) => {
-    if (!app.isQuitting) {
+    if (!fixture && !app.isQuitting) {
       event.preventDefault();
       win.hide();
     }
@@ -989,25 +1021,27 @@ async function main() {
   const icon = nativeImage
     .createFromPath(path.join(__dirname, '../assets/icon.png'))
     .resize({ width: 18, height: 18 });
-  tray = new Tray(icon);
-  tray.setToolTip('Astral');
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      {
-        label: 'Open Astral',
-        click: () => {
-          win.show();
-          win.focus();
+  if (!fixture) {
+    tray = new Tray(icon);
+    tray.setToolTip('Astral');
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        {
+          label: 'Open Astral',
+          click: () => {
+            win.show();
+            win.focus();
+          },
         },
-      },
-      { type: 'separator' },
-      { label: 'Quit Astral', click: () => app.quit() },
-    ]),
-  );
-  tray.on('click', () => {
-    win.show();
-    win.focus();
-  });
+        { type: 'separator' },
+        { label: 'Quit Astral', click: () => app.quit() },
+      ]),
+    );
+    tray.on('click', () => {
+      win.show();
+      win.focus();
+    });
+  }
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e, url) => {
     if (!url.startsWith('file://') && !url.startsWith('http://127.0.0.1:5173/')) e.preventDefault();
@@ -1015,6 +1049,7 @@ async function main() {
   win.webContents.session.setPermissionRequestHandler((_, __, cb) => cb(false));
   if (process.argv.includes('--dev')) await win.loadURL('http://127.0.0.1:5173');
   else await win.loadFile(path.join(__dirname, '../dist/index.html'));
+  if (fixture) return;
   await acknowledgeUpdate();
   const checkApp = () => {
     if (
@@ -1065,7 +1100,8 @@ async function main() {
       });
   }, 15000);
 }
-if (!app.requestSingleInstanceLock({ scheduled: scheduledLaunch, updateAck })) app.quit();
+if (!fixture && !app.requestSingleInstanceLock({ scheduled: scheduledLaunch, updateAck }))
+  app.quit();
 else {
   app.on('second-instance', (_event, args, _directory, extra) => {
     if (extra?.scheduled || args.includes('--daily-update')) {

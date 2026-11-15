@@ -1,6 +1,6 @@
 import React from 'react';
 import useDialog from './useDialog.js';
-export default function ProfileReview({ plan, name, busy, onClose, onApply }) {
+export default function ProfileReview({ plan, name, busy, running, onClose, onApply }) {
   const ref = useDialog(!!plan, () => !busy && onClose());
   if (!plan) return null;
   const label = (value) => (value === null ? 'Varies by character' : value ? 'On' : 'Off');
@@ -35,6 +35,7 @@ export default function ProfileReview({ plan, name, busy, onClose, onApply }) {
             Connect or install first: {plan.missing.map((a) => a.name).join(', ')}.
           </p>
         )}
+        {running && <p role="status">Close WoW before applying changes.</p>}
         {plan.changes.length > 0 ? (
           <div className="control-list">
             {plan.changes.map((addon) => (
@@ -55,7 +56,7 @@ export default function ProfileReview({ plan, name, busy, onClose, onApply }) {
         )}
         {plan.changedSettings.length > 0 && (
           <details>
-            <summary>Changed settings</summary>
+            <summary tabIndex={0}>Changed settings</summary>
             <ul>
               {plan.changedSettings.map((file) => (
                 <li key={file}>{file}</li>
@@ -69,7 +70,7 @@ export default function ProfileReview({ plan, name, busy, onClose, onApply }) {
           </button>
           <button
             className="button primary"
-            disabled={busy || !!plan.missing?.length}
+            disabled={busy || running || !!plan.missing?.length}
             onClick={onApply}
           >
             {name ? 'Save and switch' : 'Apply choices'}

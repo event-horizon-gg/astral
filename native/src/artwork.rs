@@ -124,10 +124,28 @@ pub fn load(base: &Path, reference: &str) -> Option<Arc<gpui::Image>> {
     limits.max_alloc = Some(16 * 1024 * 1024);
     reader.limits(limits);
     let decoded = reader.decode().ok()?;
+    display_image(decoded)
+}
+
+// The sprite atlas has no mipmaps. Filter large textures before upload so
+// minification retains smooth edges, with two pixels per point at 64pt.
+fn display_image(decoded: image::DynamicImage) -> Option<Arc<gpui::Image>> {
+    let decoded = if decoded.width() > 128 || decoded.height() > 128 {
+        decoded.resize(128, 128, image::imageops::FilterType::Lanczos3)
+    } else {
+        decoded
+    };
     let mut png = Cursor::new(Vec::new());
     decoded.write_to(&mut png, image::ImageFormat::Png).ok()?;
     Some(Arc::new(gpui::Image::from_bytes(
         gpui::ImageFormat::Png,
         png.into_inner(),
     )))
+}
+
+pub fn bundled(bytes: &'static [u8]) -> Arc<gpui::Image> {
+    image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
+        .ok()
+        .and_then(display_image)
+        .expect("bundled artwork must be a valid PNG")
 }

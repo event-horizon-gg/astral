@@ -90,10 +90,23 @@ function App() {
     [selected, setSelected] = useState(null),
     [dialog, setDialog] = useState(null),
     [snapshot, setSnapshot] = useState(null),
-    [command, setCommand] = useState(false);
+    [commandRequested, setCommand] = useState(false);
   const setS = (value) => setState({ ...value, loaded: true });
   const accountRef = useRef(null),
-    toolsRef = useRef(null);
+    toolsRef = useRef(null),
+    reviewDialogRef = useRef(null);
+  const syncDialogOpen = Boolean(dialog?.conflict || dialog?.incomplete);
+  const reviewDialogOpen = syncDialogOpen || Boolean(dialog?.restore);
+  const command = commandRequested && !reviewDialogOpen;
+  useEffect(() => {
+    if (!reviewDialogOpen) return;
+    setCommand(false);
+    const previous = document.activeElement;
+    reviewDialogRef.current?.querySelector('button')?.focus();
+    return () => {
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [reviewDialogOpen, dialog?.conflict, dialog?.restore]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('astral-theme', theme);
@@ -166,7 +179,13 @@ function App() {
     if (api) {
       api
         .state()
-        .then(setS)
+        .then((state) => {
+          setS(state);
+          if (state.fixtureTheme) setTheme(state.fixtureTheme);
+          if (state.fixturePage) setPage(state.fixturePage);
+          if (state.fixtureDialog) setDialog(state.fixtureDialog);
+          if (state.fixtureToast) setToast(state.fixtureToast);
+        })
         .catch((e) => {
           setLoadError(e.message);
           notify(e.message, true);
@@ -179,7 +198,7 @@ function App() {
             .sync('auto')
             .then((r) => {
               if (r.conflict || r.incomplete) {
-                const signature = JSON.stringify([r.scope, r.revision, r.missing]);
+                const signature = JSON.stringify([r.scope, r.revision, r.review, r.missing]);
                 if (r.state) setS(r.state);
                 if (signature === lastAutomaticSyncIssue.current) return;
                 lastAutomaticSyncIssue.current = signature;
@@ -220,9 +239,14 @@ function App() {
     const fn = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
+        if (reviewDialogRef.current) return;
         setCommand((v) => !v);
       }
       if (e.key === 'Escape') {
+        if (reviewDialogRef.current) {
+          setDialog(null);
+          return;
+        }
         setAccountOpen(false);
         setToolsOpen(false);
         setDialog(null);
@@ -1164,10 +1188,27 @@ function App() {
         >
           <div
             className={'modal ' + (command ? 'command-modal' : '')}
+            ref={reviewDialogOpen ? reviewDialogRef : undefined}
             role="dialog"
             aria-modal="true"
-            aria-label={command ? 'Quick find' : 'Review change'}
+            aria-label={reviewDialogOpen ? undefined : command ? 'Quick find' : 'Review change'}
+            aria-labelledby={reviewDialogOpen ? 'review-dialog-title' : undefined}
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={
+              reviewDialogOpen
+                ? (event) => {
+                    if (event.key !== 'Tab') return;
+                    const buttons = [
+                      ...event.currentTarget.querySelectorAll('button:not(:disabled)'),
+                    ];
+                    if (!buttons.length) return;
+                    event.preventDefault();
+                    const current = buttons.indexOf(document.activeElement);
+                    const next = current === -1 ? 0 : current + (event.shiftKey ? -1 : 1);
+                    buttons[(next + buttons.length) % buttons.length].focus();
+                  }
+                : undefined
+            }
           >
             {command ? (
               <>
@@ -1194,7 +1235,7 @@ function App() {
             ) : dialog?.incomplete ? (
               <>
                 <Package size={26} />
-                <h2>Some addons need a source</h2>
+                <h2 id="review-dialog-title">Some addons need a source</h2>
                 <p>
                   Your current UI and bindings were kept. Install these addons, then sync again.
                 </p>
@@ -1221,7 +1262,7 @@ function App() {
             ) : dialog?.conflict ? (
               <>
                 <Layers size={26} />
-                <h2>Choose which setup to keep</h2>
+                <h2 id="review-dialog-title">Choose which setup to keep</h2>
                 <p>
                   Choose what to sync with the selected profile. Astral saves a local backup before
                   applying cloud settings.
@@ -1231,7 +1272,8 @@ function App() {
                     className="button secondary"
                     onClick={async () => {
                       setDialog(null);
-                      await call('sync', 'cloud', dialog.scope, dialog.revision);
+                      if (!s.fixtureDialog)
+                        await call('sync', 'cloud', dialog.scope, dialog.revision, dialog.review);
                     }}
                   >
                     Use cloud setup
@@ -1240,7 +1282,8 @@ function App() {
                     className="button primary"
                     onClick={async () => {
                       setDialog(null);
-                      await call('sync', 'local', dialog.scope, dialog.revision);
+                      if (!s.fixtureDialog)
+                        await call('sync', 'local', dialog.scope, dialog.revision, dialog.review);
                     }}
                   >
                     Use this computer
@@ -1250,7 +1293,7 @@ function App() {
             ) : (
               <>
                 <History size={26} />
-                <h2>Restore {dialog.restore?.name}?</h2>
+                <h2 id="review-dialog-title">Restore {dialog.restore?.name}?</h2>
                 <p>
                   Restore the previous addon files from {time(dialog.restore?.time)}. Your saved
                   settings stay in place.

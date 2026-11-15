@@ -131,8 +131,10 @@ export default function SyncProfiles({ s, busy, call }) {
         plan={plan}
         name={plan?.name}
         busy={busy}
+        running={s.running}
         onClose={() => setPlan(null)}
         onApply={async () => {
+          if (busy || s.running) return;
           await call('applyProfile', plan.token);
           setPlan(null);
         }}

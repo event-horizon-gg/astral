@@ -3,6 +3,25 @@ const settings = require('./settings.cjs');
 const packages = require('./library-sync.cjs');
 const policy = require('./profile-policy.cjs');
 const { flavor, syncAction } = require('./flavors.cjs');
+const { isDeepStrictEqual } = require('node:util');
+const { createHash } = require('node:crypto');
+
+function checkLocalSetup(before, after, installing) {
+  const previousScopes = Object.entries(before.addonSelection.scopes);
+  const currentScopes = after.addonSelection.scopes;
+  const same = isDeepStrictEqual(before.files, after.files) &&
+    isDeepStrictEqual(before.input, after.input) &&
+    previousScopes.length === Object.keys(currentScopes).length &&
+    previousScopes.every(([scope, choices]) => {
+      if (!Object.hasOwn(currentScopes, scope)) return false;
+      const old = new Map(Object.entries(choices).map(([name, value]) => [name.toLowerCase(), value]));
+      const current = new Map(Object.entries(currentScopes[scope]).map(([name, value]) => [name.toLowerCase(), value]));
+      return [...old].every(([name, value]) => current.get(name) === value) &&
+        (installing || [...current].every(([name, value]) => !value || old.has(name)));
+    });
+  if (!same) throw Error('Your settings changed during sync. Try again.');
+}
+
 async function run({
   root,
   account,
@@ -13,6 +32,7 @@ async function run({
   lastRemoteHash,
   choice,
   expectedRevision,
+  expectedReview,
   device,
   request,
   onProgress = () => {},
@@ -25,8 +45,14 @@ async function run({
   const libraryRoute = '/profiles/' + flavor(root) + '/library';
   let local = account ? await store.capture(root, account, data) : null;
   const remote = local ? await request(route) : null;
-  if (remote && expectedRevision !== undefined && expectedRevision !== remote.revision)
+  if (expectedRevision !== undefined && expectedRevision !== remote?.revision)
     throw Error('The cloud backup changed. Sync again to review it.');
+  const review = () =>
+    createHash('sha256')
+      .update(JSON.stringify([root, account, scope, local?.hash, remote?.revision, remote?.hash, remote?.payload]))
+      .digest('hex');
+  if (expectedReview !== undefined && expectedReview !== review())
+    throw Error('Your local setup or the cloud backup changed. Sync again to review it.');
   if (choice === 'cloud' && !remote?.revision) throw Error('No cloud backup is available.');
   const action = local ? syncAction(local, remote, lastHash, choice, lastRemoteHash) : 'library';
   if (action === 'conflict')
@@ -34,6 +60,7 @@ async function run({
       conflict: true,
       scope,
       revision: remote.revision,
+      review: review(),
       localFiles: local.files,
       remoteTime: remote.updated,
     };
@@ -75,7 +102,11 @@ async function run({
     plan,
     api,
     onProgress,
-    afterInstall: () => store.apply(root, account, preserve.payload, data, api.gameRunning),
+    afterInstall: async () => {
+      const current = await store.capture(root, account, data);
+      checkLocalSetup(original, store.decode(current.payload), true);
+      await store.apply(root, account, preserve.payload, data, api.gameRunning);
+    },
   });
   // Don't apply a half-installed profile. Keep its current UI/bindings and
   // report packages for which this device has no connected, reviewed source.
@@ -93,6 +124,9 @@ async function run({
     if (latest.revision !== remote.revision || latest.hash !== remote.hash)
       throw Error('The cloud backup changed during installation. Sync again.');
   }
+  const current = await store.capture(root, account, data);
+  if (plan.queue.length) checkLocalSetup(original, store.decode(current.payload), false);
+  else if (current.hash !== local.hash) throw Error('Your settings changed during sync. Try again.');
   const encoded = policy.encode(target);
   // This also keeps newly installed shared addons disabled in profiles that
   // never opted into them. The Handheld policy opts into ConsolePort explicitly.

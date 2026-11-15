@@ -82,8 +82,10 @@ export default function AddonChoices({ s, busy, call, notify }) {
       <ProfileReview
         plan={plan}
         busy={busy}
+        running={s.running}
         onClose={() => setPlan(null)}
         onApply={async () => {
+          if (busy || s.running) return;
           const result = await call('applyProfile', plan.token);
           setPlan(null);
           if (result) {

@@ -1,0 +1,46 @@
+name: Verify native Astral on Windows
+
+on:
+  push:
+    branches: [codex/native-verification]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-verification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    # Standard public-repository compute only. Do not add caches, uploaded
+    # artifacts, release publishing or paid/custom runners to this check.
+    if: ${{ !github.event.repository.private }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_TERM_COLOR: always
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      ASTRAL_TEST_ELECTRON_CODEC: node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install settings-codec dependencies
+        run: npm ci --omit=dev
+      - name: Select stable Rust
+        run: rustup default stable
+      - name: Build and verify the Windows package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = & ./native/package-windows.ps1
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+            throw 'The Windows package was not created.'
+          }
+          $env:ASTRAL_TEST_WINDOWS_ARCHIVE = $archive
+          cargo test --locked --manifest-path native/Cargo.toml -- --include-ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

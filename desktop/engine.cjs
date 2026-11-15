@@ -105,7 +105,7 @@ async function targetInterface(root) {
 async function inventory(root, data) {
   const dir = path.join(root, 'Interface', 'AddOns');
   const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
-  const folders = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+  const folders = entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
   const groups = [];
   const claimed = new Set();
   for (const item of await definitions(root, data)) {
@@ -117,14 +117,17 @@ async function inventory(root, data) {
         (item.prefix && n.startsWith(item.prefix + '_')) ||
         (item.id === 'ellesmere' && n.startsWith('EllesmereUI')),
     );
-    family.forEach((n) => claimed.add(n));
-    const files = await fs.readdir(path.join(dir, item.folder));
+    const files = (await fs.readdir(path.join(dir, item.folder), { withFileTypes: true }))
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort();
     const file =
       [
         ...(flavor(root) === 'forever' ? [item.folder + '_Camelot.toc'] : []),
         item.folder + '_Mainline.toc',
         item.folder + '.toc',
       ].find((f) => files.includes(f)) || files.find((f) => f.endsWith('.toc'));
+    family.forEach((n) => claimed.add(n));
     const meta = file ? toc(await fs.readFile(path.join(dir, item.folder, file), 'utf8')) : {};
     if (item.versionCompanion) {
       const companion = path.join(dir, item.versionCompanion);
@@ -159,9 +162,13 @@ async function inventory(root, data) {
     });
   }
   for (const name of folders.filter((f) => !claimed.has(f))) {
-    const files = await fs.readdir(path.join(dir, name));
+    const files = (await fs.readdir(path.join(dir, name), { withFileTypes: true }))
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort();
     const file = files.find((f) => f === name + '.toc') || files.find((f) => f.endsWith('.toc'));
-    const meta = file ? toc(await fs.readFile(path.join(dir, name, file), 'utf8')) : {};
+    if (!file) continue;
+    const meta = toc(await fs.readFile(path.join(dir, name, file), 'utf8'));
     groups.push({
       id: 'local:' + name,
       name: (meta.Title || name).replace(/\|c[0-9a-f]{8}|\|r/gi, ''),

@@ -7,7 +7,13 @@ local function isForever()
 end
 
 local function controllerBarsAvailable()
-    return isForever() or (C_AddOns and C_AddOns.IsAddOnLoaded("ConsolePort_Bar"))
+    if isForever() then
+        local styles = Enum and Enum.InputDeviceInterfaceType
+        local interface = C_InputInterfaceStyle
+        return styles and styles.Gamepad ~= nil and interface and interface.GetCurrentStyle
+            and interface.GetCurrentStyle() == styles.Gamepad
+    end
+    return C_AddOns and C_AddOns.IsAddOnLoaded("ConsolePort_Bar")
 end
 
 local function hideDesktopBars(profile)
@@ -110,6 +116,7 @@ end
 -- visibility policy on login so using the desktop profile picker needs no slash
 -- command or manual action-bar setup. Never create a second controller HUD.
 local frame = CreateFrame("Frame")
+local warnedAboutController
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("PLAYER_REGEN_ENABLED")
 frame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
@@ -120,9 +127,17 @@ local function applyManagedProfile()
     if not (eui and eui.GetActiveProfileName and eui.GetProfileList
         and eui.SaveCurrentAsProfile and eui.SwitchProfile) then return end
     if AstralProfileMode == "handheld" and not controllerBarsAvailable() then
-        message("Enable ConsolePort and its Action Bar module for Retail Handheld.")
+        if not warnedAboutController then
+            warnedAboutController = true
+            if isForever() then
+                message("Choose Gamepad in Options > Gameplay, then reload the UI to apply Handheld.")
+            else
+                message("Enable ConsolePort and its Action Bar module for Retail Handheld.")
+            end
+        end
         return
     end
+    warnedAboutController = nil
     AstralProfilesDB = AstralProfilesDB or {}
     local db = AstralProfilesDB
     local active = eui.GetActiveProfileName()
