@@ -45,6 +45,25 @@ test('Electron comparison uses temporary data and accepts only fixture clients a
     '--sync-conflict',
   ]);
   assert.deepEqual(conflict.dialog, { conflict: true });
+  const review = reference.createReferenceFixture(app, [
+    '--ui-fixture',
+    fixture,
+    '--profile-review',
+  ]);
+  assert.equal(review.page, 'Your setup');
+  assert.equal(review.dialog, null);
+  assert.equal(review.profileReview.name, 'Handheld');
+  assert.equal(review.profileReview.handheld, 'retail');
+  assert.equal(review.profileReview.packages[0].name, 'ConsolePort');
+  assert.throws(() => review.assertAction('applyProfile'), /unavailable/);
+  assert.throws(() =>
+    reference.createReferenceFixture(app, [
+      '--ui-fixture',
+      fixture,
+      '--profile-review',
+      '--sync-conflict',
+    ]),
+  );
   assert.throws(() => conflict.assertAction('sync'), /unavailable/);
   const missing = reference.createReferenceFixture(app, [
     '--ui-fixture',

@@ -123,7 +123,7 @@ pub(crate) fn dialog_panel(id: &'static str, palette: Palette) -> gpui::Stateful
         }])
 }
 
-fn sync_dialog_title(title: impl Into<gpui::SharedString>) -> gpui::Div {
+pub(crate) fn sync_dialog_title(title: impl Into<gpui::SharedString>) -> gpui::Div {
     let title: gpui::SharedString = title.into();
     div()
         .mt(px(20.))
@@ -296,6 +296,7 @@ impl Astral {
 
     pub(crate) fn open_sync_dialog_fixture(&mut self, flag: &str) {
         match flag {
+            "--profile-review" => self.open_profile_review_fixture(),
             "--sync-conflict" => {
                 self.account.sync_conflict = Some(crate::sync_engine::Conflict::fixture());
             }

@@ -28,7 +28,7 @@ impl ProfileReviewFocus {
         }
     }
 
-    pub(crate) fn enter(&mut self, window: &mut Window, cx: &Context<Astral>) {
+    pub(crate) fn enter(&mut self, has_files: bool, window: &mut Window, cx: &Context<Astral>) {
         if !self.open {
             self.open = true;
             if self.return_to.is_none() {
@@ -39,7 +39,11 @@ impl ProfileReviewFocus {
             .iter()
             .any(|item| item.is_focused(window))
         {
-            self.cancel.focus(window);
+            if has_files {
+                self.files.focus(window);
+            } else {
+                self.cancel.focus(window);
+            }
         }
     }
 
@@ -606,6 +610,13 @@ impl Astral {
         dismissed
     }
 
+    pub(crate) fn open_profile_review_fixture(&mut self) {
+        if self.fixture {
+            self.settings_backups.review = Some(ProfileReview::fixture(self.preferences.client));
+            self.settings_backups.show_review_files = false;
+        }
+    }
+
     pub fn local_profile_review(&self, palette: Palette, cx: &Context<Self>) -> Option<gpui::Div> {
         if !matches!(self.page, crate::Page::Settings | crate::Page::Account) {
             return None;
@@ -620,7 +631,25 @@ impl Astral {
             && self.settings_backups.review.is_some()
     }
 
+    pub(crate) fn profile_review_has_files(&self) -> bool {
+        (self.local_profile_review_open()
+            && self
+                .settings_backups
+                .review
+                .as_ref()
+                .is_some_and(|review| !review.changed.is_empty()))
+            || self.cloud_profile_review_has_files()
+    }
+
     fn apply_profile_review(&mut self, cloud: bool, cx: &mut Context<Self>) {
+        if self.fixture {
+            self.show_notification(
+                "This action is unavailable in the reference fixture.",
+                true,
+                cx,
+            );
+            return;
+        }
         if self.profile_game_running()
             || self.addon_batch_running()
             || self.settings_backups.writing
@@ -669,12 +698,21 @@ impl Astral {
             }
             cx.notify();
         };
+        let caption = |text: String| {
+            palette
+                .label(text)
+                .text_size(px(12.))
+                .line_height(px(22.8))
+                .text_color(rgb(0x8da898))
+                .mt(px(13.))
+                .mb(px(25.))
+        };
         div().absolute().size_full().top_0().left_0().flex().items_center().justify_center()
             .child(div().id("profile-review-backdrop").absolute().top(px(78.)).left_0().right_0().bottom_0()
                 .bg(gpui::rgba(0x050b08b3)).occlude()
                 .on_click(cx.listener(move |app, _, _, cx| { app.cancel_profile_review(cloud, cx); })))
             .child(crate::account::dialog_panel("profile-review-dialog", palette)
-                .max_h(gpui::relative(0.85)).overflow_y_scroll().gap_3()
+                .max_h(gpui::relative(0.85)).overflow_y_scroll().block().gap_0()
                 .on_key_down(move |event, window, cx| {
                     if event.keystroke.key != "tab" {
                         return;
@@ -689,21 +727,21 @@ impl Astral {
                     tab_order[index].focus(window);
                     cx.stop_propagation();
                 })
-                .child(div().mt(px(20.)).text_size(px(24.)).line_height(px(29.)).font_weight(gpui::FontWeight::MEDIUM).child(if review.editing_addons {
+                .child(crate::account::sync_dialog_title(if review.editing_addons {
                     "Apply addon choices?".into()
                 } else { format!("Switch to {}?", review.name) }))
-                .when(review.initialized && !review.editing_addons, |dialog| dialog.child(palette.label("This profile starts with your current setup.").text_size(px(12.)).line_height(px(23.))))
-                .child(palette.label(format!("{} UI or binding files will change. Your current setup is saved before applying.", review.changed.len())).text_size(px(12.)).line_height(px(23.)))
-                .when(!review.packages.is_empty(), |dialog| dialog.child(palette.label(format!("Install: {}.", review.packages.join(", "))).text_size(px(12.)).line_height(px(23.))))
-                .when(review.handheld, |dialog| dialog.child(palette.label(if retail {
+                .when(review.initialized && !review.editing_addons, |dialog| dialog.child(caption("This profile starts with your current setup.".into())))
+                .child(caption(format!("{} UI or binding files will change. Your current setup is saved before applying.", review.changed.len())))
+                .when(!review.packages.is_empty(), |dialog| dialog.child(caption(format!("Install: {}.", review.packages.join(", ")))))
+                .when(review.handheld, |dialog| dialog.child(caption(if retail {
                     "ConsolePort will be enabled and the four desktop action bars hidden."
                 } else {
                     "The four desktop action bars will be hidden. The native controller HUD stays visible."
-                }).text_size(px(12.)).line_height(px(23.))))
-                .when_some(review.blocker.as_ref(), |dialog, error| dialog.child(palette.label(error.clone()).text_size(px(12.)).line_height(px(23.)).text_color(rgb(palette.error))))
-                .when(self.profile_game_running(), |dialog| dialog.child(palette.label("Close WoW before applying changes.").text_color(rgb(palette.error))))
+                }.into())))
+                .when_some(review.blocker.as_ref(), |dialog, error| dialog.child(caption(error.clone())))
+                .when(self.profile_game_running(), |dialog| dialog.child(caption("Close WoW before applying changes.".into())))
                 .when(!review.addon_changes.is_empty(), |dialog| dialog.child(
-                    div().id("profile-review-addons").max_h(px(280.)).overflow_y_scroll()
+                    div().id("profile-review-addons").block().max_h(px(280.)).overflow_y_scroll()
                         .children(review.addon_changes.iter().map(|change| {
                             div().flex().items_center().justify_between().gap(px(20.)).py(px(16.)).border_b_1().border_color(rgb(palette.line))
                                 .child(div().text_size(px(13.)).font_weight(gpui::FontWeight::BOLD).child(change.name.clone()))
@@ -711,25 +749,25 @@ impl Astral {
                         }))
                 ))
                 .when(review.addon_changes.is_empty(), |dialog| dialog.child(
-                    palette.label(if review.packages.is_empty() {
+                    caption(if review.packages.is_empty() {
                         "Addon choices stay the same."
                     } else {
                         "Existing addon choices stay the same."
-                    }).text_size(px(12.)),
+                    }.into()),
                 ))
-                .when(has_files, |dialog| dialog.child(div().mt(px(4.)).child(
+                .when(has_files, |dialog| dialog.child(div().block().mt(px(16.)).child(
                     div().id("toggle-profile-review-files").cursor_pointer().flex().items_center().gap(px(5.))
                         .text_size(px(14.))
-                        .child(crate::icon(if show_files { "chevron" } else { "chevron-right" }, 12., palette.text))
+                        .child(if show_files { "▾" } else { "▸" })
                         .child("Changed settings")
                         .track_focus(&files)
                         .focus(move |style| style.border_color(rgb(palette.accent)))
                         .on_click(cx.listener(move |app, _, _, cx| toggle_files(app, cx)))
                 )))
                 .when(show_files, |dialog| dialog.child(
-                    div().id("profile-review-files").max_h(px(190.)).overflow_y_scroll()
+                    div().id("profile-review-files").block().my(px(14.)).pl(px(24.))
                         .children(review.changed.iter().map(|file| {
-                            div().flex().gap(px(6.)).text_size(px(12.)).child("•").child(div().min_w_0().child(file.clone()))
+                            div().flex().gap(px(12.)).text_size(px(12.)).line_height(px(14.4)).child("•").child(div().min_w_0().child(file.clone()))
                         }))
                 ))
                 .child(div().flex().justify_end().gap(px(9.))

@@ -41,6 +41,45 @@ pub struct ProfileReview {
     expires_at: Instant,
 }
 
+impl ProfileReview {
+    pub(crate) fn fixture(client: Client) -> Self {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/profile-review.json"))
+                .expect("profile review fixtures");
+        let value = &fixtures[client.label().to_lowercase()];
+        Self {
+            target: Profile::Handheld,
+            name: value["name"].as_str().unwrap().into(),
+            initialized: value["initialized"].as_bool().unwrap(),
+            changed: serde_json::from_value(value["changedSettings"].clone()).unwrap(),
+            blocker: None,
+            packages: value["packages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["name"].as_str().unwrap().to_owned())
+                .collect(),
+            handheld: true,
+            addon_changes: value["changes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|change| ChoiceChange {
+                    name: change["name"].as_str().unwrap().into(),
+                    before: change["before"].as_bool(),
+                    after: change["enabled"].as_bool(),
+                })
+                .collect(),
+            editing_addons: false,
+            edits: ProfileEdits::new(),
+            preset: true,
+            cloud_name: None,
+            fingerprint: "comparison-only".into(),
+            expires_at: Instant::now(),
+        }
+    }
+}
+
 struct PreparedSwitch {
     review: ProfileReview,
     state: ProfileState,

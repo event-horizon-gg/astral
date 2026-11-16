@@ -76,6 +76,8 @@ Append `--retail` or `--forever` and `--light` or `--dark` to both fixture comma
 
 Append `--signed-in` to compare the account and profile manager with the same fake account and three sample profiles. Both fixture clients block cloud writes and credential access; Electron returns only canned cloud reads. This never signs in to the service.
 
+Append `--profile-review` to compare the profile-switch confirmation using the shared Retail or Forever sample. Applying this sample review is blocked in both clients; it never switches a profile or installs an addon.
+
 Append `--notice` or `--notice-error` to compare success and error notifications. These fixture notices remain visible until dismissed; normal notifications expire after 6.5 seconds. They use no cloud account or network action.
 
 Append `--compact` to target a 1000 × 720 content area in both apps. The default fixture targets 1250 × 840. Fixture sizes target the content area; macOS may constrain a wide window to the available desktop height.
@@ -89,5 +91,14 @@ Build the Mac ZIP with `sh native/package-mac.sh` and place `Astral Native.app` 
 Native uses `native-vX.Y.Z` tags in the Astral repository. The public GitHub workflow builds and verifies both ZIPs, then creates a draft. Run `node scripts/publish-release.mjs --native /path/to/local-private-key.pem` locally to sign and publish that draft. The key stays local. Electron continues to use the repository’s latest Electron release, while native looks for its own signed release.
 
 On Windows, run `cargo test --locked --manifest-path native/Cargo.toml signed_windows_update` with WoW closed. This checks a signed update against temporary executables, including ZIP tampering, successful acknowledgement, and rollback. The test uses Windows PowerShell and an ephemeral signing key.
+
+To check the native HTTP client against the actual Worker handlers locally, use Node 24 or newer:
+
+```sh
+ASTRAL_TEST_ELECTRON_CODEC=node cargo test --locked --manifest-path native/Cargo.toml cloud::worker_tests
+node --test tests/cloud.test.mjs tests/ui-fixture.test.mjs
+```
+
+The HTTP check binds an ephemeral port on `127.0.0.1`, uses fake sessions and an in-memory SQLite database, and kills the server on completion. It covers both game clients, independent profiles, shared libraries, revision conflicts, backup restore/retention and session revocation. It does not access WoW, Battle.net or Cloudflare. Without `ASTRAL_TEST_ELECTRON_CODEC`, the native HTTP check does not run. This validates HTTP/JSON compatibility with the service code in Node; it does not validate the deployed Cloudflare runtime or live cross-device sync.
 
 The Cloudflare API and in-game Lua addons are shared compatibility contracts for this migration. See [remaining parity work](PARITY.md).

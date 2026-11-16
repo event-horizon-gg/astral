@@ -31,6 +31,8 @@ jobs:
           node-version: 24
       - name: Install settings-codec dependencies
         run: npm ci --omit=dev
+      - name: Check service contracts and fixture isolation
+        run: node --test tests/cloud.test.mjs tests/ui-fixture.test.mjs
       - name: Select stable Rust
         run: rustup default stable
       - name: Build and verify the Windows package

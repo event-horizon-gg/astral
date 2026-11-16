@@ -1,0 +1,30 @@
+{
+  "retail": {
+    "target": "handheld",
+    "name": "Handheld",
+    "initialized": true,
+    "handheld": "retail",
+    "changedSettings": [
+      "bindings-cache.wtf",
+      "SavedVariables/EllesmereUI.lua",
+      "SavedVariables/AstralProfiles.lua"
+    ],
+    "changes": [{ "id": "consoleport", "name": "ConsolePort", "before": false, "enabled": true }],
+    "packages": [{ "id": "consoleport", "name": "ConsolePort" }],
+    "missing": []
+  },
+  "forever": {
+    "target": "handheld",
+    "name": "Handheld",
+    "initialized": true,
+    "handheld": "forever",
+    "changedSettings": [
+      "bindings-cache.wtf",
+      "SavedVariables/EllesmereUI.lua",
+      "SavedVariables/AstralProfiles.lua"
+    ],
+    "changes": [],
+    "packages": [],
+    "missing": []
+  }
+}

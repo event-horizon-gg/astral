@@ -205,6 +205,7 @@ async function state() {
       fixtureTheme: fixture.theme,
       fixturePage: fixture.page,
       fixtureToast: fixture.toast,
+      fixtureProfileReview: fixture.profileReview,
     }),
     startup: !!config.startup,
     autoUpdates: config.autoUpdates !== false,

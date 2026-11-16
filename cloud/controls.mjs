@@ -421,6 +421,8 @@ export async function controls(request, env, who, body, random) {
       return json({ ...snapshot, user_id: undefined, payload: await payload(env, id) });
     if (restore && request.method === 'POST') {
       const b = await body(request);
+      if (snapshot.hash && b.hash !== undefined && b.hash !== snapshot.hash)
+        return json({ error: 'The cloud backup checksum does not match.' }, 409);
       if (!snapshot.hash && (!b.hash || !String(b.hash).match(/^[0-9a-f]{64}$/)))
         return json({ error: 'The old backup must be verified before restoration.' }, 400);
       return saveSnapshot(

@@ -16,6 +16,9 @@ export default function SyncProfiles({ s, busy, call }) {
   const [plan, setPlan] = useState(null);
   const active = s.syncProfile || 'regular';
   const ref = useDialog(!!editing, () => !busy && setEditing(null));
+  useEffect(() => {
+    if (s.fixtureProfileReview) setPlan(s.fixtureProfileReview);
+  }, [s.fixtureProfileReview]);
 
   useEffect(() => {
     const cacheKey = 'astral-profile-names:' + JSON.stringify([s.root, s.account]);

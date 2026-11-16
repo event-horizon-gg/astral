@@ -6,6 +6,10 @@ use std::{fmt, time::Duration};
 
 const ORIGIN: &str = "https://astral-sync.astral-joaoseixas.workers.dev";
 
+#[cfg(test)]
+#[path = "cloud_worker_tests.rs"]
+mod worker_tests;
+
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Session {
     token: String,
@@ -160,6 +164,8 @@ struct CloudProfiles {
 #[derive(Clone)]
 pub struct Service {
     agent: ureq::Agent,
+    #[cfg(test)]
+    test_origin: Option<String>,
 }
 
 impl Service {
@@ -231,8 +237,31 @@ impl Service {
 
     pub fn new() -> Self {
         Self {
+            #[cfg(test)]
+            test_origin: None,
             agent: ureq::Agent::config_builder()
                 .https_only(true)
+                .max_redirects(0)
+                .http_status_as_error(false)
+                .timeout_global(Some(Duration::from_secs(15)))
+                .build()
+                .into(),
+        }
+    }
+
+    #[cfg(test)]
+    fn for_loopback(origin: &str) -> Self {
+        let uri: ureq::http::Uri = origin.parse().expect("loopback URI");
+        assert_eq!(uri.scheme_str(), Some("http"));
+        assert_eq!(uri.host(), Some("127.0.0.1"));
+        assert!(uri.port_u16().is_some());
+        assert_eq!(uri.path(), "/");
+        assert!(uri.query().is_none());
+        Self {
+            test_origin: Some(origin.trim_end_matches('/').into()),
+            agent: ureq::Agent::config_builder()
+                .https_only(false)
+                .proxy(None)
                 .max_redirects(0)
                 .http_status_as_error(false)
                 .timeout_global(Some(Duration::from_secs(15)))
@@ -248,9 +277,13 @@ impl Service {
         body: Option<Value>,
         session: Option<&Session>,
     ) -> Result<T, Error> {
+        #[cfg(test)]
+        let origin = self.test_origin.as_deref().unwrap_or(ORIGIN);
+        #[cfg(not(test))]
+        let origin = ORIGIN;
         let mut request = ureq::http::Request::builder()
             .method(method)
-            .uri(format!("{ORIGIN}{route}"))
+            .uri(format!("{origin}{route}"))
             .header("Accept", "application/json");
         if let Some(session) = session {
             session.validate().map_err(Error::new)?;

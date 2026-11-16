@@ -1,47 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import { DatabaseSync } from 'node:sqlite';
+import { DB } from './support/d1.mjs';
 import worker, { hash } from '../cloud/worker.mjs';
-class DB {
-  constructor(sql) {
-    this.db = new DatabaseSync(':memory:');
-    this.db.exec(sql);
-  }
-  prepare(sql) {
-    const native = this.db.prepare(sql);
-    let v = [];
-    const q = {
-      bind(...args) {
-        v = args;
-        return q;
-      },
-      async first() {
-        return native.get(...v) || null;
-      },
-      async all() {
-        return { results: native.all(...v) };
-      },
-      async run() {
-        const r = native.run(...v);
-        return { meta: { changes: Number(r.changes) } };
-      },
-    };
-    return q;
-  }
-  async batch(items) {
-    this.db.exec('BEGIN');
-    try {
-      const r = [];
-      for (const q of items) r.push(await q.run());
-      this.db.exec('COMMIT');
-      return r;
-    } catch (e) {
-      this.db.exec('ROLLBACK');
-      throw e;
-    }
-  }
-}
 async function fixture(t) {
   const DBi = new DB(
     await fs.readFile(new URL('../cloud/migrations/0001_initial.sql', import.meta.url), 'utf8'),
@@ -323,6 +284,16 @@ test('cloud controls isolate devices, history and restored versions', async (t) 
   assert.equal(info.devices[0].hash, undefined);
   assert.equal(info.history.length, 1);
   const id = info.history[0].id;
+  const restorePath = '/profiles/retail/history/' + id + '/restore';
+  const mismatched = await worker.fetch(
+    req(restorePath, 'POST', { revision: 1, hash: 'b'.repeat(64) }, a),
+    e,
+  );
+  assert.equal(mismatched.status, 409);
+  assert.match((await mismatched.json()).error, /checksum/);
+  const unchanged = await (await worker.fetch(req('/cloud/retail', 'GET', null, a), e)).json();
+  assert.equal(unchanged.revision, 1);
+  assert.equal(unchanged.history.length, 1);
   assert.equal(
     (await worker.fetch(req('/profiles/retail/history/' + id, 'GET', null, b), e)).status,
     404,
@@ -332,7 +303,7 @@ test('cloud controls isolate devices, history and restored versions', async (t) 
     404,
   );
   const restored = await worker.fetch(
-    req('/profiles/retail/history/' + id + '/restore', 'POST', { revision: 1 }, a),
+    req(restorePath, 'POST', { revision: 1, hash: snapshot(0).hash }, a),
     e,
   );
   assert.equal(restored.status, 200);

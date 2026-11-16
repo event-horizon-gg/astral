@@ -2214,7 +2214,8 @@ impl Render for Astral {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.validate_account_profile_picker(window);
         if self.local_profile_review_open() || self.cloud_profile_review_open() {
-            self.profile_review_focus.enter(window, cx);
+            self.profile_review_focus
+                .enter(self.profile_review_has_files(), window, cx);
         } else {
             self.profile_review_focus.leave(window, &self.root_focus);
         }
@@ -3457,7 +3458,9 @@ fn main() {
                 fixture_light = Some(flag == "--light");
                 true
             }
-            Some(flag @ ("--sync-conflict" | "--sync-missing")) if fixture_dialog.is_none() => {
+            Some(flag @ ("--sync-conflict" | "--sync-missing" | "--profile-review"))
+                if fixture_dialog.is_none() =>
+            {
                 fixture_dialog = Some(flag.to_owned());
                 true
             }
@@ -3497,7 +3500,7 @@ fn main() {
         });
         if fixture.is_none() || !valid {
             eprintln!(
-                "Usage: astral-native --ui-fixture <fixture-directory> [--scan | [--retail | --forever] [--light | --dark] [--compact | --wide] [--library | --discover | --account | --activity | --sources | --settings] [--sync-conflict | --sync-missing] [--signed-in] [--notice | --notice-error]]"
+                "Usage: astral-native --ui-fixture <fixture-directory> [--scan | [--retail | --forever] [--light | --dark] [--compact | --wide] [--library | --discover | --account | --activity | --sources | --settings] [--sync-conflict | --sync-missing | --profile-review] [--signed-in] [--notice | --notice-error]]"
             );
             std::process::exit(2);
         }
@@ -3700,7 +3703,10 @@ fn main() {
                             fixture_light.unwrap_or(false),
                             cx,
                         );
-                        if let Some(page) = fixture_page {
+                        if let Some(page) = fixture_page.or_else(|| {
+                            (fixture_dialog.as_deref() == Some("--profile-review"))
+                                .then_some(Page::Account)
+                        }) {
                             app.navigate(page, window, cx);
                         }
                         if fixture_signed_in {

@@ -16,6 +16,7 @@ const pages = {
   '--settings': 'Settings',
 };
 const dialogs = {
+  '--profile-review': null,
   '--sync-conflict': { conflict: true },
   '--sync-missing': {
     incomplete: true,
@@ -41,7 +42,7 @@ function createReferenceFixture(app, argv) {
       [client, theme, dialog, viewport, page, signedIn || null, notice].filter(Boolean).length
   )
     throw Error(
-      'Use --ui-fixture <fixture-directory> [--retail | --forever] [--light | --dark] [--compact | --wide] [--library | --discover | --account | --activity | --sources | --settings] [--sync-conflict | --sync-missing] [--signed-in] [--notice | --notice-error].',
+      'Use --ui-fixture <fixture-directory> [--retail | --forever] [--light | --dark] [--compact | --wide] [--library | --discover | --account | --activity | --sources | --settings] [--sync-conflict | --sync-missing | --profile-review] [--signed-in] [--notice | --notice-error].',
     );
 
   const base = fs.realpathSync(argv[index + 1]);
@@ -126,7 +127,10 @@ function createReferenceFixture(app, argv) {
       return undefined;
     },
     root,
-    page: pages[page] || 'Addons',
+    profileReview: dialog === '--profile-review'
+      ? structuredClone(require('../native/fixtures/profile-review.json')[path.basename(root) === '_forever_' ? 'forever' : 'retail'])
+      : null,
+    page: pages[page] || (dialog === '--profile-review' ? 'Your setup' : 'Addons'),
     theme: theme?.slice(2) || 'dark',
     viewport:
       viewport === '--compact'

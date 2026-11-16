@@ -25,7 +25,7 @@ const groups = [
   ['--light', '--dark'],
   ['--compact', '--wide'],
   ['--library', '--discover', '--account', '--activity', '--sources', '--settings'],
-  ['--sync-conflict', '--sync-missing'],
+  ['--sync-conflict', '--sync-missing', '--profile-review'],
   ['--signed-in'],
   ['--notice', '--notice-error'],
 ];
@@ -67,6 +67,7 @@ function copyDependency(name) {
   for (const dependency of Object.keys(info.dependencies || {})) copyDependency(dependency);
 }
 copyDependency('yauzl');
+fs.cpSync(path.join(__dirname, 'fixtures'), path.join(reference, 'native/fixtures'), { recursive: true });
 const fixture = path.join(directory, 'fixture');
 let clients = 0;
 for (const client of ['_retail_', '_forever_']) {
