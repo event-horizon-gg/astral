@@ -173,3 +173,21 @@ test('Mac application archives permit internal framework links but reject traver
     await assert.rejects(inspectZip(file));
   }
 });
+
+test('native release archives use the same path and link checks within their own bundle', async (t) => {
+  const data = await fixture(t),
+    file = path.join(data, 'native.zip');
+  const info = { 'Astral Native.app/Contents/Info.plist': '<plist/>' };
+  await fs.writeFile(file, zip(info));
+  await inspectZip(file, 'Astral Native.app');
+  await assert.rejects(inspectZip(file));
+  await assert.rejects(inspectZip(file, '../anything'));
+  for (const entry of [
+    { 'Astral Native.app/link': { data: '../../escape', mode: 0o120777 } },
+    { 'Astral.app/Contents/file': 'another app' },
+    { 'Astral Native.app/Contents/file': 'one', 'Astral Native.app/Contents/FILE': 'two' },
+  ]) {
+    await fs.writeFile(file, zip({ ...info, ...entry }));
+    await assert.rejects(inspectZip(file, 'Astral Native.app'));
+  }
+});

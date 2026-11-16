@@ -743,8 +743,8 @@ impl Astral {
                 .when(!review.addon_changes.is_empty(), |dialog| dialog.child(
                     div().id("profile-review-addons").block().max_h(px(280.)).overflow_y_scroll()
                         .children(review.addon_changes.iter().map(|change| {
-                            div().flex().items_center().justify_between().gap(px(20.)).py(px(16.)).border_b_1().border_color(rgb(palette.line))
-                                .child(div().text_size(px(13.)).font_weight(gpui::FontWeight::BOLD).child(change.name.clone()))
+                            div().flex().items_center().justify_between().gap(px(20.)).py(px(16.)).text_size(px(12.)).line_height(px(14.)).border_b_1().border_color(rgb(palette.line))
+                                .child(div().font_weight(gpui::FontWeight::BOLD).child(change.name.clone()))
                                 .child(palette.label(format!("{} → {}", choice_label(change.before), choice_label(change.after))).text_size(px(12.)))
                         }))
                 ))
@@ -757,11 +757,16 @@ impl Astral {
                 ))
                 .when(has_files, |dialog| dialog.child(div().block().mt(px(16.)).child(
                     div().id("toggle-profile-review-files").cursor_pointer().flex().items_center().gap(px(5.))
-                        .text_size(px(14.))
+                        .text_size(px(14.)).line_height(px(17.))
                         .child(if show_files { "▾" } else { "▸" })
                         .child("Changed settings")
                         .track_focus(&files)
-                        .focus(move |style| style.border_color(rgb(palette.accent)))
+                        .focus(move |style| style.bg(rgb(palette.panel)).shadow(vec![gpui::BoxShadow {
+                            color: rgb(if cfg!(target_os = "macos") { 0x99c8ff } else { palette.accent }).into(),
+                            offset: gpui::point(px(0.), px(0.)),
+                            blur_radius: px(0.),
+                            spread_radius: px(2.),
+                        }]))
                         .on_click(cx.listener(move |app, _, _, cx| toggle_files(app, cx)))
                 )))
                 .when(show_files, |dialog| dialog.child(
@@ -772,14 +777,16 @@ impl Astral {
                 ))
                 .child(div().flex().justify_end().gap(px(9.))
                     .child(palette.button("cancel-profile-review", "Cancel")
+                        .h(px(38.)).font_weight(gpui::FontWeight(550.))
                         .track_focus(&cancel)
-                        .focus(move |style| style.border_color(rgb(palette.accent)))
+                        .focus(move |style| style.bg(rgb(palette.panel)).shadow(palette.focus_ring_on(palette.panel)))
                         .on_click(cx.listener(move |app, _, _, cx| app.cancel_profile_review(cloud, cx))))
                     .child(palette.primary_button("apply-profile-review", if review.editing_addons { "Apply choices" } else { "Save and switch" })
+                        .h(px(38.)).font_weight(gpui::FontWeight(550.))
                         .track_focus(&apply)
                         .when(blocked, |button| button.opacity(0.55).cursor_default())
                         .when(!blocked, |button| button
-                            .focus(move |style| style.border_color(rgb(palette.text)))
+                            .focus(move |style| style.shadow(palette.focus_ring_on(palette.panel)))
                             .on_click(cx.listener(move |app, _, _, cx| app.apply_profile_review(cloud, cx)))))))
     }
 
@@ -1151,7 +1158,9 @@ impl Astral {
         font.weight = gpui::FontWeight(650.);
         let select_width = options
             .iter()
-            .map(|(_, name, _)| {
+            .map(|(_, name, _)| name)
+            .chain(std::iter::once(&selected_name))
+            .map(|name| {
                 let line = window.text_system().shape_line(
                     name.clone().into(),
                     px(14.),
@@ -1167,7 +1176,8 @@ impl Astral {
                 );
                 f32::from(line.width) + 40.
             })
-            .fold(113_f32, f32::max);
+            .fold(0_f32, f32::max)
+            .ceil();
         let selected = palette
             .button("account-active-profile", selected_name)
             .h(px(34.))

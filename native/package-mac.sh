@@ -35,7 +35,8 @@ cat >"$app/Contents/Info.plist" <<PLIST
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-/usr/bin/codesign --force --sign - "$app"
+identity="${ASTRAL_MAC_SIGN_IDENTITY:--}"
+/usr/bin/codesign --force --sign "$identity" "$app"
 /usr/bin/codesign --verify --deep --strict "$app"
 archive="Astral-Native-$version-mac-$arch.zip"
 (cd "$stage" && /usr/bin/zip -q -r "$archive" 'Astral Native.app')

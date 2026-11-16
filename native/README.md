@@ -22,6 +22,8 @@ Open the profile button at the top right, then use the **Profile** picker on **P
 
 Open the profile button at the top right, choose **Profiles & sync**, then **Connect Battle.net** and finish sign-in in your browser. The Account page lists your connected devices and can remove their access. The Rust preview uses the existing Astral service and saves its session in macOS Keychain or Windows Credential Manager.
 
+Background sign-in lookups on macOS do not open authentication dialogs. If Keychain access is unavailable, Astral reports it without waiting for a prompt. Explicit sign-in still uses the normal credential-storage flow.
+
 Use **Profiles & sync → Manage profiles** to create, rename, delete, or select profiles shared across computers. Close WoW before switching. On first use, a profile starts from a copy of the current local setup. Choose **Sync now** to fetch its cloud settings.
 
 With WoW closed, choose **Account → Sync now** to sync the active Regular or Handheld profile for the selected game client. If both copies differ, review the cloud backup date and choose which version to keep. Astral installs missing addons from connected sources before applying the cloud snapshot. If a required addon needs a manual download, Astral lists it and keeps the current settings in place. Cooldown Manager layouts are included in local backups. The cross-app sync format currently covers the same layout files as Electron.
@@ -62,15 +64,7 @@ npm start -- --ui-fixture /path/to/fixture
 
 The Electron reference starts in a signed-out state with fresh app data under the fixture directory. It reads the sample inventory and lets you switch clients. The Rust preview stores its preferences under the fixture and skips system startup changes, credential access, automatic sync, and background updates. Its manual package and profile actions can still change the sample files. Both windows open at 1250 × 840.
 
-On macOS, prepare isolated, ad hoc signed comparison bundles with:
-
-```sh
-node native/prepare-comparison.cjs --fixture /path/to/sample --electron-app /path/to/development/Electron.app --retail --light --compact --account
-```
-
-The helper copies the sample clients into a temporary directory and prints both app paths. It does not launch them or install them into Applications. Use the printed apps for comparisons and close them afterwards. The development Electron runtime must contain `default_app.asar`, with no packaged product `app.asar`. UI flags match those of `--ui-fixture`. Keep Electron as the actual bundle executable; shell-wrapping it can break relaunches and `app.isPackaged` detection. Native fixture sign-in remains blocked at the handler even when the button has its normal enabled appearance.
-
-Use `--wide` for a matching 1920 × 1000 comparison instead of `--compact`. During iteration, `--native-binary native/target/debug/astral-native` can use a debug build; verify the release build again before updating the installed preview.
+On this Mac, use the installed, already-approved **Astral** and **Astral Native Preview** apps for visual comparisons. Update the existing app in place; do not generate or launch temporary comparison app bundles or new identities. Those triggered repeated macOS permission prompts and stalled unattended checks. Disposable fixture files remain suitable for automated tests.
 
 Append `--retail` or `--forever` and `--light` or `--dark` to both fixture commands to start in the same client and theme. The default is dark with Retail selected when present. Append `--sync-conflict` or `--sync-missing` to open the same sync dialog without a cloud session. The conflict buttons dismiss the sample dialog.
 
@@ -87,6 +81,8 @@ Add one of `--library`, `--discover`, `--account`, `--activity`, `--sources`, or
 **Settings → Astral updates** checks the latest stable Astral release for a signed native manifest and verifies the package before staging it. With WoW closed, **Update & restart** installs the package and waits for the new app window. If startup fails, it restores the previous version.
 
 Build the Mac ZIP with `sh native/package-mac.sh` and place `Astral Native.app` in a writable folder. On Windows x64, build the ZIP with `powershell -File native/package-windows.ps1` and extract `astral-native.exe` into `%LOCALAPPDATA%\Programs\Astral Native` for the first install. Later updates replace the executable in that location.
+
+For installed Mac updates and published releases, configure the persistent certificate through `ASTRAL_MAC_SIGN_IDENTITY`. Unconfigured CI builds still use an ad-hoc signature for isolated checks. Do not repeatedly install those builds: their per-build identity invalidates earlier Keychain approvals. The publisher requires the persistent certificate's fingerprint and rejects ad-hoc Mac packages. See [release signing](../docs/releases.md).
 
 Native uses `native-vX.Y.Z` tags in the Astral repository. The public GitHub workflow builds and verifies both ZIPs, then creates a draft. Run `node scripts/publish-release.mjs --native /path/to/local-private-key.pem` locally to sign and publish that draft. The key stays local. Electron continues to use the repository’s latest Electron release, while native looks for its own signed release.
 

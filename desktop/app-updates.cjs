@@ -58,7 +58,10 @@ async function smallJSON(response) {
   return JSON.parse(text);
 }
 // ZIP extraction uses ditto to retain framework symlinks. Inspect every entry first.
-async function inspectZip(file) {
+async function inspectZip(file, bundle = 'Astral.app') {
+  if (!['Astral.app', 'Astral Native.app'].includes(bundle))
+    throw Error('Unsupported application bundle.');
+  const prefix = bundle + '/';
   const yauzl = require('yauzl');
   return new Promise((resolve, reject) => {
     yauzl.open(file, { lazyEntries: true, validateEntrySizes: true }, (error, zip) => {
@@ -78,7 +81,7 @@ async function inspectZip(file) {
         const name = entry.fileName;
         const normalized = name.normalize('NFD').toLowerCase().replace(/\/$/, '');
         if (
-          !name.startsWith('Astral.app/') ||
+          !name.startsWith(prefix) ||
           name.includes('\\') ||
           name.split('/').some((p) => p === '..' || p === '.') ||
           canonical.has(normalized) ||
@@ -114,7 +117,7 @@ async function inspectZip(file) {
                 target.includes('\0') ||
                 target.includes('\\') ||
                 path.posix.isAbsolute(target) ||
-                !resolved.startsWith('Astral.app/')
+                !resolved.startsWith(prefix)
               )
                 return fail(Error('Archive link escapes the application.'));
               links.push(name);
@@ -137,7 +140,7 @@ async function inspectZip(file) {
           )
         )
           return reject(Error('Archive writes through a link.'));
-        if (!names.has('Astral.app/Contents/Info.plist'))
+        if (!names.has(prefix + 'Contents/Info.plist'))
           return reject(Error('Application is missing from the archive.'));
         resolve();
       });

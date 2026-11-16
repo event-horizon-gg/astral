@@ -433,7 +433,10 @@ impl Astral {
         } else if self.daily_waiting || self.profile_game_running() {
             "Waiting for WoW to close".into()
         } else if let Some(checked_at) = last_check {
-            format!("Last check · {}", crate::activity::age(checked_at / 1000))
+            format!(
+                "Last check {}",
+                crate::activity::activity_time(checked_at / 1000)
+            )
         } else {
             "First daily check is pending".into()
         };

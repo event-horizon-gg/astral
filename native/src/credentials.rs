@@ -2,10 +2,13 @@ use std::io;
 
 #[cfg(target_os = "macos")]
 mod platform {
+    use security_framework::os::macos::keychain::SecKeychain;
     use security_framework::passwords::{
         delete_generic_password, get_generic_password, set_generic_password,
     };
-    use std::io;
+    use std::{io, sync::Mutex};
+
+    static KEYCHAIN_ACCESS: Mutex<()> = Mutex::new(());
 
     const SERVICE: &str = "com.joaoseixas.astral-native";
     const ACCOUNT: &str = "Battle.net session";
@@ -15,23 +18,76 @@ mod platform {
         io::Error::other("Unlock macOS Keychain, then try again.")
     }
 
+    fn background_read<T>(read: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+        // This flag is process-wide. Serialize every Astral Keychain operation
+        // so an explicit sign-in cannot inherit a background read's policy.
+        let _access = KEYCHAIN_ACCESS.lock().map_err(|_| unavailable())?;
+        let allowed = SecKeychain::user_interaction_allowed().map_err(|_| unavailable())?;
+        // Keep an existing noninteractive policy unchanged. The framework guard
+        // restores interaction on drop, including when the read returns an error.
+        let _policy = if allowed {
+            Some(SecKeychain::disable_user_interaction().map_err(|_| unavailable())?)
+        } else {
+            None
+        };
+        read()
+    }
+
     pub fn load() -> io::Result<Option<Vec<u8>>> {
-        match get_generic_password(SERVICE, ACCOUNT) {
+        background_read(|| match get_generic_password(SERVICE, ACCOUNT) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.code() == ITEM_NOT_FOUND => Ok(None),
             Err(_) => Err(unavailable()),
-        }
+        })
     }
 
     pub fn save(bytes: &[u8]) -> io::Result<()> {
+        let _access = KEYCHAIN_ACCESS.lock().map_err(|_| unavailable())?;
         set_generic_password(SERVICE, ACCOUNT, bytes).map_err(|_| unavailable())
     }
 
     pub fn remove() -> io::Result<()> {
+        let _access = KEYCHAIN_ACCESS.lock().map_err(|_| unavailable())?;
         match delete_generic_password(SERVICE, ACCOUNT) {
             Ok(()) => Ok(()),
             Err(error) if error.code() == ITEM_NOT_FOUND => Ok(()),
             Err(_) => Err(unavailable()),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn background_keychain_reads_restore_interaction_after_success_and_failure() {
+            let previous = SecKeychain::user_interaction_allowed().unwrap();
+            let check = || {
+                assert!(!SecKeychain::user_interaction_allowed().unwrap());
+            };
+            background_read(|| {
+                check();
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(SecKeychain::user_interaction_allowed().unwrap(), previous);
+            let failed: io::Result<()> = background_read(|| {
+                check();
+                Err(io::Error::other("Synthetic credential error"))
+            });
+            assert!(failed.is_err());
+            assert_eq!(SecKeychain::user_interaction_allowed().unwrap(), previous);
+            if previous {
+                let _existing_policy = SecKeychain::disable_user_interaction().unwrap();
+                background_read(|| {
+                    check();
+                    Ok(())
+                })
+                .unwrap();
+                assert!(!SecKeychain::user_interaction_allowed().unwrap());
+            }
+            assert_eq!(SecKeychain::user_interaction_allowed().unwrap(), previous);
+            // No actual credential or Keychain contents are queried in this test.
         }
     }
 }

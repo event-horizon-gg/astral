@@ -600,7 +600,11 @@ struct Palette {
 
 impl Palette {
     fn focus_ring(self) -> Vec<gpui::BoxShadow> {
-        [(self.accent, 6.), (self.background, 4.)]
+        self.focus_ring_on(self.background)
+    }
+
+    fn focus_ring_on(self, background: u32) -> Vec<gpui::BoxShadow> {
+        [(self.accent, 6.), (background, 4.)]
             .into_iter()
             .map(|(color, spread)| gpui::BoxShadow {
                 color: rgb(color).into(),
@@ -795,17 +799,18 @@ impl Palette {
     ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
+            .w_full()
             .flex()
             .items_center()
-            .gap_3()
-            .px_3()
+            .gap_0()
+            .px(px(10.))
             .h(px(42.))
             .rounded_md()
             .cursor_pointer()
             .text_size(px(12.))
             .hover(move |style| style.bg(rgb(self.hover)))
-            .child(icon(glyph, 16., self.muted))
-            .child(name)
+            .child(icon(glyph, if glyph == "cloud" { 17. } else { 16. }, self.text).mr(px(12.)))
+            .child(div().flex_1().child(name))
     }
 
     fn settings_section(
@@ -859,7 +864,7 @@ impl Palette {
             .border_color(rgb(self.line))
             .text_size(px(12.))
             .child(label)
-            .child(self.checkbox_mark(Some(checked), 14.))
+            .child(self.checkbox_mark(Some(checked), 13.))
             .when(!enabled, |row| row.opacity(0.55))
             .when(enabled, |row| {
                 row.focusable()
@@ -1533,6 +1538,16 @@ impl Astral {
             .map(|source| source.id.clone());
         let ready = release.is_some();
         let artwork = self.addon_icon(addon, if compact { 62. } else { 84. });
+        // The reference's three explicit grid rows total 83px. Its 84px
+        // artwork can overflow that track without increasing the row height.
+        let artwork = div()
+            .w(px(if compact { 62. } else { 84. }))
+            .h(px(if compact { 70. } else { 83. }))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(artwork.when(compact, |artwork| artwork.h(px(70.))));
         let version = if definition.is_some_and(|source| source.id == "rio") {
             RAIDER_IO_VERSION
                 .find(&addon.version)
@@ -1586,7 +1601,7 @@ impl Astral {
                     .min_w_0()
                     .flex_1()
                     .cursor_pointer()
-                    .child(artwork.when(compact, |artwork| artwork.h(px(70.))))
+                    .child(artwork)
                     .child(
                         div()
                             .min_w_0()
@@ -1619,9 +1634,13 @@ impl Astral {
                                     "Astral" => "drive",
                                     _ => "globe",
                                 },
-                                12.,
+                                if addon.source == "GitHub" { 13. } else { 12. },
                                 if addon.source == "GitHub" {
-                                    palette.text
+                                    if self.preferences.light_theme {
+                                        0x000000
+                                    } else {
+                                        0xffffff
+                                    }
                                 } else {
                                     palette.muted
                                 },
@@ -2627,7 +2646,8 @@ impl Render for Astral {
                                 .child(
                                     div()
                                         .text_size(px(13.))
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .line_height(px(15.6))
+                                        .font_weight(gpui::FontWeight::BOLD)
                                         .child(
                                             account_name
                                                 .unwrap_or("Your Astral account")
@@ -2640,6 +2660,7 @@ impl Render for Astral {
                                                 .gap(px(6.))
                                                 .mt(px(6.))
                                                 .text_size(px(10.))
+                                                .line_height(px(12.))
                                                 .text_color(rgb(palette.muted))
                                                 .child(div().size(px(6.)).rounded_full().bg(rgb(
                                                     if connected {
@@ -2660,11 +2681,12 @@ impl Render for Astral {
                             keyboard_button(
                                 palette
                                     .menu_row("profiles-and-sync", "cloud", "Profiles & sync")
+                                    .h(px(43.))
                                     .track_focus(&self.account_first_focus)
                                     .child(div().ml_auto().child(icon(
                                         "chevron-right",
                                         14.,
-                                        palette.muted,
+                                        palette.text,
                                     ))),
                                 palette,
                                 cx.listener(|app, _: &(), window, cx| {
@@ -2687,12 +2709,17 @@ impl Render for Astral {
                                     .py(px(13.))
                                     .child(icon("refresh", 16., palette.text))
                                     .child(
-                                        div().text_size(px(12.)).child("Last sync").child(
-                                            palette
-                                                .label(self.last_sync_label())
-                                                .mt(px(5.))
-                                                .text_size(px(10.)),
-                                        ),
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(px(14.4))
+                                            .child("Last sync")
+                                            .child(
+                                                palette
+                                                    .label(self.last_sync_label())
+                                                    .mt(px(5.))
+                                                    .text_size(px(10.))
+                                                    .line_height(px(12.)),
+                                            ),
                                     ),
                             )
                         })
@@ -2700,17 +2727,18 @@ impl Render for Astral {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(9.))
+                                .gap_0()
                                 .px(px(10.))
                                 .py(px(12.))
                                 .text_size(px(11.))
+                                .line_height(px(13.2))
                                 .text_color(rgb(palette.muted))
-                                .child(icon("monitor", 15., palette.muted))
-                                .child(if cfg!(target_os = "windows") {
+                                .child(icon("monitor", 15., palette.muted).mr(px(9.)))
+                                .child(div().flex_1().child(if cfg!(target_os = "windows") {
                                     "This Windows PC"
                                 } else {
                                     "This Mac"
-                                })
+                                }))
                                 .child(div().ml_auto().text_size(px(10.)).child(
                                     if self.profile_game_running() {
                                         "WoW running"
@@ -2722,6 +2750,7 @@ impl Render for Astral {
                         .when(connected, |panel| {
                             let signout = palette
                                 .menu_row("account-menu-signout", "logout", "Sign out")
+                                .h(px(43.))
                                 .mt(px(5.))
                                 .rounded_none()
                                 .border_t_1()
@@ -2764,7 +2793,7 @@ impl Render for Astral {
                         div()
                             .text_size(px(heading_size))
                             .line_height(px(heading_size * 1.06))
-                            .font_weight(gpui::FontWeight(if library { 780. } else { 720. }))
+                            .font_weight(gpui::FontWeight(780.))
                             .child(typography::tracked(
                                 self.page.title(),
                                 heading_size,
@@ -2777,7 +2806,8 @@ impl Render for Astral {
                             palette
                                 .label(format!("{} addons", self.addons.len()))
                                 .mt(px(8.))
-                                .text_size(px(13.)),
+                                .text_size(px(13.))
+                                .line_height(px(20.8)),
                         )
                     }),
             )

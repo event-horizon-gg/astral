@@ -64,6 +64,7 @@ fn cloud_backup_size(bytes: u64) -> String {
 #[derive(Default)]
 pub struct State {
     loaded: bool,
+    credentials_unavailable: bool,
     machine: Option<String>,
     manage_data: bool,
     busy: Option<&'static str>,
@@ -683,10 +684,14 @@ impl Astral {
         if self.account.loaded {
             if self.account.session.is_some() {
                 self.refresh_account(None, cx);
+                return;
             }
-            return;
+            if !self.account.credentials_unavailable {
+                return;
+            }
         }
         self.account.busy = Some("Opening account…");
+        self.account.error = None;
         let task = cx
             .background_executor()
             .spawn(async { credentials::load() });
@@ -694,6 +699,7 @@ impl Astral {
             let result = task.await;
             let _ = this.update(cx, |app, cx| {
                 app.account.loaded = true;
+                app.account.credentials_unavailable = result.is_err();
                 app.account.busy = None;
                 match result {
                     Ok(session) => {
@@ -786,6 +792,7 @@ impl Astral {
                 match result {
                     Ok(session) => {
                         app.account.session = Some(session);
+                        app.account.credentials_unavailable = false;
                         app.refresh_account(None, cx);
                     }
                     Err(error) => app.account.error = Some(error),
@@ -1672,7 +1679,7 @@ impl Astral {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .min_h(px(if backup.current { 20.8 } else { 16.8 }))
+                                    .min_h(px(16.8))
                                     .child(
                                         div()
                                             .text_size(px(13.))
@@ -1750,7 +1757,7 @@ impl Astral {
                                     div()
                                         .flex()
                                         .items_center()
-                                        .min_h(px(if device.current { 20.8 } else { 16.8 }))
+                                        .min_h(px(16.8))
                                         .child(
                                             div()
                                                 .text_size(px(13.))
@@ -2133,13 +2140,19 @@ impl Astral {
             );
         }
         let Some(library) = state.shared[client.index()].as_ref() else {
-            return panel.child(palette.label("Loading library…").text_size(px(14.)));
+            return panel.child(
+                palette
+                    .label("Loading library…")
+                    .text_size(px(14.))
+                    .text_color(rgb(palette.text)),
+            );
         };
         let Some(shared) = library.addons.as_deref() else {
             return panel.child(
                 palette
                     .label("Addons sync across profiles for this game client.")
                     .text_size(px(14.))
+                    .text_color(rgb(palette.text))
                     .line_height(px(17.)),
             );
         };
@@ -2160,13 +2173,15 @@ impl Astral {
                     missing.len()
                 ))
                 .text_size(px(14.))
+                .text_color(rgb(palette.text))
                 .line_height(px(17.)),
         );
         if running && !missing.is_empty() {
             panel = panel.child(
                 palette
                     .label("Close WoW to install addons.")
-                    .text_size(px(14.)),
+                    .text_size(px(14.))
+                    .text_color(rgb(palette.text)),
             );
         }
         for (index, addon) in missing.into_iter().enumerate() {
@@ -2409,7 +2424,7 @@ impl Astral {
             .flex()
             .flex_col()
             .child(identity)
-            .child(div().border_t_1().border_color(rgb(palette.line)));
+            .child(div().h(px(1.)).flex_shrink_0().bg(rgb(palette.line)));
         if let Some(error) = &account.error
             && !self.cloud_profile_manager_open()
         {

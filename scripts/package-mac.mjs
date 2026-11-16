@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { macSigningIdentity } from './mac-signing.mjs';
 const run = promisify(execFile);
 if (process.platform !== 'darwin') throw Error('Build macOS packages on macOS.');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -20,6 +21,7 @@ try {
       '--arm64',
       '--publish',
       'never',
+      `--config.mac.identity=${macSigningIdentity()}`,
       `--config.directories.output=${output}`,
     ],
     { cwd: root, maxBuffer: 10 * 1024 * 1024 },

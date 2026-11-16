@@ -1196,7 +1196,7 @@ impl Astral {
     }
 }
 
-fn activity_time(created: u64) -> String {
+pub(crate) fn activity_time(created: u64) -> String {
     backup_date(created).unwrap_or_else(|| age(created))
 }
 
