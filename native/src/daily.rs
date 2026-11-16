@@ -17,6 +17,12 @@ pub struct Run {
     pub checked_at: u64,
     #[serde(default)]
     pub updates: Vec<batch::DailyUpdate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
+    #[serde(default)]
+    pub deferred: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -29,6 +35,71 @@ pub struct HistoryEntry {
 struct Reports {
     latest: [Option<Run>; 2],
     history: Vec<HistoryEntry>,
+    #[serde(default)]
+    next_check: u64,
+}
+
+#[derive(Clone, Copy)]
+struct Check {
+    id: u64,
+    started_at: u64,
+}
+
+pub struct HistoryGroup<'a> {
+    pub entries: Vec<&'a HistoryEntry>,
+}
+
+impl HistoryGroup<'_> {
+    pub fn checked_at(&self) -> u64 {
+        self.entries
+            .iter()
+            .map(|entry| entry.run.started_at.unwrap_or(entry.run.checked_at))
+            .filter(|time| *time > 0)
+            .min()
+            .unwrap_or(0)
+    }
+
+    pub fn updated(&self) -> usize {
+        self.entries.iter().map(|entry| entry.run.updated).sum()
+    }
+
+    pub fn attention(&self) -> usize {
+        self.entries
+            .iter()
+            .map(|entry| entry.run.errors.len())
+            .sum()
+    }
+
+    pub fn deferred(&self) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.run.deferred || entry.run.errors.iter().any(|error| game_open(error))
+        })
+    }
+}
+
+pub fn grouped_history(history: &[HistoryEntry]) -> Vec<HistoryGroup<'_>> {
+    let mut groups: Vec<HistoryGroup<'_>> = Vec::new();
+    let mut indices = std::collections::HashMap::<u64, usize>::new();
+    for entry in history {
+        let id = entry.run.check_id.filter(|id| *id > 0);
+        let index = id
+            .and_then(|id| indices.get(&id).copied())
+            .unwrap_or_else(|| {
+                let index = groups.len();
+                groups.push(HistoryGroup {
+                    entries: Vec::new(),
+                });
+                if let Some(id) = id {
+                    indices.insert(id, index);
+                }
+                index
+            });
+        groups[index].entries.push(entry);
+    }
+    for group in &mut groups {
+        group.entries.sort_by_key(|entry| entry.client.index());
+    }
+    groups
 }
 
 #[derive(Deserialize)]
@@ -47,14 +118,80 @@ impl Reports {
                 Some(HistoryEntry { client, run })
             })
             .collect();
-        Self { latest, history }
+        Self {
+            latest,
+            history,
+            next_check: 0,
+        }
     }
 
-    fn record(&mut self, path: &Path, client: Client, run: Run) -> io::Result<()> {
+    fn begin_check(&mut self) -> io::Result<Check> {
+        let previous = self
+            .history
+            .iter()
+            .map(|entry| &entry.run)
+            .chain(self.latest.iter().flatten())
+            .filter_map(|run| run.check_id)
+            .max()
+            .unwrap_or(0)
+            .max(self.next_check);
+        self.next_check = previous
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("Update history ID is exhausted."))?;
+        Ok(Check {
+            id: self.next_check,
+            started_at: now_millis(),
+        })
+    }
+
+    fn record(
+        &mut self,
+        path: &Path,
+        client: Client,
+        mut run: Run,
+        check: Check,
+    ) -> io::Result<()> {
+        run.check_id = Some(check.id);
+        run.started_at = Some(check.started_at);
         self.latest[client.index()] = Some(run.clone());
         self.history.insert(0, HistoryEntry { client, run });
-        self.history.truncate(14);
+        let mut seen = std::collections::HashSet::new();
+        let mut count = 0;
+        self.history.retain(|entry| {
+            let id = entry.run.check_id.filter(|id| *id > 0);
+            if id.is_some_and(|id| seen.contains(&id)) {
+                return true;
+            }
+            count += 1;
+            if count > 14 {
+                return false;
+            }
+            if let Some(id) = id {
+                seen.insert(id);
+            }
+            true
+        });
         preferences::save_json(&reports_path(path), self)
+    }
+
+    fn defer_check(&mut self, path: &Path, check: Check) -> io::Result<()> {
+        let mut changed = false;
+        for run in self
+            .history
+            .iter_mut()
+            .map(|entry| &mut entry.run)
+            .chain(self.latest.iter_mut().flatten())
+        {
+            if run.check_id == Some(check.id) {
+                run.deferred = true;
+                run.next_at = run.next_at.min(now() + 60);
+                changed = true;
+            }
+        }
+        if changed {
+            preferences::save_json(&reports_path(path), self)?;
+        }
+        Ok(())
     }
 }
 
@@ -106,6 +243,7 @@ pub fn run_background(path: &Path, roots: [Option<PathBuf>; 2]) -> io::Result<()
     let mut catalog = library::catalog();
     catalog.extend(prefs.projects.iter().cloned());
     let detected = prefs.detected_folders(&roots);
+    let mut check = None;
     for client in Client::ALL {
         let index = client.index();
         let Some(root) = prefs.folders[index].as_ref().or(detected[index].as_ref()) else {
@@ -124,13 +262,24 @@ pub fn run_background(path: &Path, roots: [Option<PathBuf>; 2]) -> io::Result<()
         {
             break;
         }
+        if check.is_none() {
+            check = Some(reports.begin_check()?);
+        }
+        let check = check.unwrap();
         let result = batch::daily_updates(root, client, &catalog, &current.batch_exclusions[index]);
         if let Err(error) = &result
             && game_open(error)
         {
+            reports.defer_check(path, check)?;
             break;
         }
-        reports.record(path, client, report(root.clone(), result))?;
+        let run = report(root.clone(), result);
+        let interrupted = run.errors.iter().any(|error| game_open(error));
+        reports.record(path, client, run, check)?;
+        if interrupted {
+            reports.defer_check(path, check)?;
+            break;
+        }
     }
     Ok(())
 }
@@ -147,10 +296,7 @@ fn report(root: PathBuf, result: Result<batch::DailyCheck, String>) -> Run {
     } else {
         3_600
     };
-    let checked_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    let checked_at = now_millis();
     Run {
         root,
         next_at: checked_at / 1000 + interval,
@@ -158,6 +304,9 @@ fn report(root: PathBuf, result: Result<batch::DailyCheck, String>) -> Run {
         errors,
         checked_at,
         updates,
+        check_id: None,
+        started_at: None,
+        deferred: false,
     }
 }
 
@@ -172,23 +321,34 @@ fn run_checks(
     force: bool,
     mut check: impl FnMut(&Path, Client, &[String]) -> Result<batch::DailyCheck, String>,
 ) -> Result<(), String> {
+    let mut check_id = None;
     for (client, root, excluded) in targets {
         let index = client.index();
         if !force && !is_due(reports.latest[index].as_ref(), &root) {
             continue;
         }
+        if check_id.is_none() {
+            check_id = Some(reports.begin_check().map_err(|error| error.to_string())?);
+        }
+        let check_id = check_id.unwrap();
         let result = check(&root, client, &excluded);
         if let Err(error) = &result
             && game_open(error)
         {
+            reports
+                .defer_check(path, check_id)
+                .map_err(|error| error.to_string())?;
             return Err(error.clone());
         }
         let run = report(root, result);
         let interrupted = run.errors.iter().any(|error| game_open(error));
         reports
-            .record(path, client, run)
+            .record(path, client, run, check_id)
             .map_err(|error| error.to_string())?;
         if interrupted {
+            reports
+                .defer_check(path, check_id)
+                .map_err(|error| error.to_string())?;
             return Err("Close World of Warcraft to finish checking addons.".into());
         }
     }
@@ -491,6 +651,13 @@ fn now() -> u64 {
         .as_secs()
 }
 
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,6 +744,14 @@ mod tests {
                 .all(|run| run.as_ref().unwrap().updated == 1)
         );
         assert_eq!(saved.history.len(), 4);
+        let groups = grouped_history(&saved.history);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].entries.len(), 2);
+        assert!(groups[0].entries[0].client == Client::Retail);
+        assert!(groups[0].entries[1].client == Client::Forever);
+        assert_eq!(groups[0].updated(), 2);
+        assert_eq!(groups[0].attention(), 0);
+        assert!(!groups[0].deferred());
         assert_eq!(saved.history[0].run.updates[0].to, "1.1");
         assert_eq!(
             saved.history[0].run.updates[0].notes,
@@ -606,6 +781,100 @@ mod tests {
         assert_eq!(retail.updated, 1);
         assert!(retail.next_at <= now() + 60);
         assert!(saved.latest[1].is_none());
+        let groups = grouped_history(&saved.history);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].updated(), 1);
+        assert!(groups[0].deferred());
+    }
+
+    #[test]
+    fn opening_wow_before_second_client_preserves_first_client_and_defers_the_check() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("preferences.json");
+        let targets = vec![
+            (Client::Retail, temp.path().join("_retail_"), Vec::new()),
+            (Client::Forever, temp.path().join("_forever_"), Vec::new()),
+        ];
+        let mut reports = Reports::from_latest([None, None]);
+        let result = run_checks(&path, &mut reports, targets, true, |_, client, _| {
+            if client == Client::Forever {
+                return Err("WoW started before changing addon files.".into());
+            }
+            Ok(batch::DailyCheck {
+                updates: vec![updated_addon()],
+                errors: Vec::new(),
+            })
+        });
+        assert!(result.as_ref().is_err_and(|error| game_open(error)));
+        let saved = read_reports(&path, &[None, None]).unwrap();
+        let retail = saved.latest[0].as_ref().unwrap();
+        assert_eq!(retail.updated, 1);
+        assert!(retail.deferred);
+        assert!(retail.next_at <= now() + 60);
+        assert!(saved.latest[1].is_none());
+        let groups = grouped_history(&saved.history);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].updated(), 1);
+        assert!(groups[0].deferred());
+    }
+
+    #[test]
+    fn retention_keeps_fourteen_whole_checks_without_merging_equal_timestamps() -> io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("preferences.json");
+        let mut reports = Reports::from_latest([None, None]);
+        for _ in 0..15 {
+            let mut check = reports.begin_check()?;
+            check.started_at = 1234;
+            for client in Client::ALL {
+                let mut run = report(
+                    temp.path().join(client.index().to_string()),
+                    Ok(batch::DailyCheck {
+                        updates: vec![updated_addon()],
+                        errors: Vec::new(),
+                    }),
+                );
+                run.checked_at = 1234;
+                reports.record(&path, client, run, check)?;
+            }
+        }
+        let saved = read_reports(&path, &[None, None])?;
+        let groups = grouped_history(&saved.history);
+        assert_eq!(saved.history.len(), 28);
+        assert_eq!(groups.len(), 14);
+        assert!(
+            groups
+                .iter()
+                .all(|group| group.entries.len() == 2 && group.updated() == 2)
+        );
+        assert!(groups.iter().all(|group| group.checked_at() == 1234));
+        assert_eq!(groups[0].entries[0].run.check_id, Some(15));
+        assert_eq!(groups[13].entries[0].run.check_id, Some(2));
+
+        // Older report files have no counter; retained IDs still prevent collisions.
+        let mut json = serde_json::to_value(&saved)?;
+        json.as_object_mut().unwrap().remove("next_check");
+        preferences::save_json(&reports_path(&path), &json)?;
+        let mut migrated = read_reports(&path, &[None, None])?;
+        assert_eq!(migrated.begin_check()?.id, 16);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_entries_remain_separate_even_with_identical_timestamps() {
+        let entries: Vec<_> = Client::ALL
+            .into_iter()
+            .map(|client| {
+                let mut run = report(PathBuf::from("example"), Ok(batch::DailyCheck::default()));
+                run.checked_at = 1234;
+                // Zero is also treated as an absent ID for old or partial report files.
+                run.check_id = Some(0);
+                HistoryEntry { client, run }
+            })
+            .collect();
+        let groups = grouped_history(&entries);
+        assert_eq!(groups.len(), 2);
+        assert!(groups.iter().all(|group| group.entries.len() == 1));
     }
 
     #[test]
@@ -625,10 +894,12 @@ mod tests {
         assert!(!is_due(reports.latest[1].as_ref(), &root));
         assert_eq!(reports.history[0].run.updated, 4);
         for _ in 0..15 {
+            let check = reports.begin_check()?;
             reports.record(
                 &path,
                 Client::Retail,
                 report(root.clone(), Ok(batch::DailyCheck::default())),
+                check,
             )?;
         }
         let saved = read_reports(&path, &[None, None])?;
