@@ -3235,6 +3235,7 @@ impl Render for Astral {
             .flex_col()
             .bg(rgb(palette.background))
             .text_color(rgb(palette.text))
+            .text_size(px(14.))
             .child(top)
             .child(
                 content
