@@ -874,7 +874,7 @@ function App() {
                       <details key={r.id + '-' + i}>
                         <summary>
                           {r.name} · {r.client === 'forever' ? 'Forever' : 'Retail'} ·{' '}
-                          {r.status === 'updated' ? `${r.from} → ${r.to}` : r.message || r.status}
+                          {r.message || (r.status === 'updated' ? `${r.from} → ${r.to}` : r.status)}
                         </summary>
                         {r.notes && <pre className="release-notes">{r.notes}</pre>}
                       </details>

@@ -35,6 +35,17 @@ module.exports = [
     color: 'slate',
   },
   {
+    id: 'talents',
+    name: 'Astral Talents',
+    folder: 'AstralTalents',
+    bundled: true,
+    flavors: ['retail'],
+    category: 'Interface',
+    description: 'Druid builds for Mythic+, raids, and Delves. Open with /astraltalents.',
+    mark: 'A',
+    color: 'slate',
+  },
+  {
     id: 'questie',
     name: 'Questie',
     folder: 'Questie',
