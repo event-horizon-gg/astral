@@ -107,6 +107,10 @@ fn generate(
 }
 
 pub fn refresh(root: &Path) -> Result<(), String> {
+    refresh_changed(root).map(|_| ())
+}
+
+pub fn refresh_changed(root: &Path) -> Result<bool, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .https_only(true)
         .max_redirects(0)

@@ -314,3 +314,17 @@ pub use windows::configure;
 pub fn configure(_: bool) -> std::io::Result<()> {
     Err(std::io::ErrorKind::Unsupported.into())
 }
+pub fn legacy_raider_io() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").is_some_and(|home| {
+            std::path::Path::new(&home)
+                .join("Library/LaunchAgents/com.joaoseixas.astral-raiderio.plist")
+                .exists()
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}

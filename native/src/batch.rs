@@ -181,6 +181,7 @@ pub enum DailyStatus {
     Current,
     Review,
     Error,
+    External,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -200,7 +201,9 @@ pub struct DailyResult {
 
 impl DailyResult {
     pub fn summary(&self, client: Client) -> String {
-        let detail = if self.status == DailyStatus::Updated {
+        let detail = if self.status == DailyStatus::Updated
+            && (!self.from.is_empty() || !self.to.is_empty())
+        {
             format!("{} → {}", self.from, self.to)
         } else {
             self.message.clone()
@@ -246,11 +249,21 @@ pub fn daily_updates(
         crate::library::scan(root, client, catalog).map_err(|error| error.to_string())?;
     let agent = releases::client();
     let mut report = DailyCheck::default();
+    let legacy_rio = crate::schedule::legacy_raider_io();
     for (index, source) in catalog.iter().enumerate() {
         let Some(addon) = installed.iter().find(|addon| addon.folder == source.folder) else {
             continue;
         };
         if !source.supports(client) || excluded.contains(&source.folder) {
+            continue;
+        }
+        if source.id == "rio" && legacy_rio {
+            report.results.push(DailyResult::issue(
+                &source.id,
+                &source.name,
+                DailyStatus::External,
+                "Handled by the existing daily Raider.IO updater on this Mac.",
+            ));
             continue;
         }
         if installer::game_closed().is_err() {
@@ -279,6 +292,8 @@ pub fn daily_updates(
                 ));
                 return Ok(());
             };
+            let mut outcome =
+                DailyResult::issue(&source.id, &source.name, DailyStatus::Current, "");
             if comparison == Ordering::Greater {
                 let notes = release
                     .as_ref()
@@ -298,40 +313,40 @@ pub fn daily_updates(
                 if install_package(bytes, (&tag, &notes), &update, root, client, catalog)?
                     == "Updated"
                 {
-                    report.results.push(DailyResult {
-                        id: source.id.clone(),
-                        name: source.name.clone(),
-                        status: DailyStatus::Updated,
-                        from: addon.version.clone(),
-                        to: tag.clone(),
-                        message: String::new(),
-                        notes: notes.clone(),
-                    });
-                    report.updates.push(DailyUpdate {
-                        name: source.name.clone(),
-                        from: addon.version.clone(),
-                        to: tag,
-                        notes,
-                    });
-                } else {
-                    report.results.push(DailyResult::issue(
-                        &source.id,
-                        &source.name,
-                        DailyStatus::Current,
-                        "",
-                    ));
+                    outcome.status = DailyStatus::Updated;
+                    outcome.from = addon.version.clone();
+                    outcome.to = tag;
+                    outcome.notes = notes;
                 }
-            } else {
-                report.results.push(DailyResult::issue(
-                    &source.id,
-                    &source.name,
-                    DailyStatus::Current,
-                    "",
-                ));
             }
-            if source.id == "talents" {
-                crate::talents::refresh(root)?;
+            if source.id == "talents"
+                && crate::talents::refresh_changed(root)?
+                && outcome.status == DailyStatus::Current
+            {
+                outcome.status = DailyStatus::Updated;
+                outcome.message = "Druid talent builds refreshed.".into();
             }
+            if outcome.status == DailyStatus::Updated {
+                report.updates.push(DailyUpdate {
+                    name: outcome.name.clone(),
+                    from: if outcome.from.is_empty() {
+                        addon.version.clone()
+                    } else {
+                        outcome.from.clone()
+                    },
+                    to: if outcome.to.is_empty() {
+                        addon.version.clone()
+                    } else {
+                        outcome.to.clone()
+                    },
+                    notes: if outcome.notes.is_empty() {
+                        outcome.message.clone()
+                    } else {
+                        outcome.notes.clone()
+                    },
+                });
+            }
+            report.results.push(outcome);
             Ok(())
         })();
         if let Err(error) = result {
@@ -344,7 +359,7 @@ pub fn daily_updates(
                 &error,
             ));
             report.errors.push(format!("{}: {error}", source.name));
-            if rate_limited || report.deferred {
+            if report.deferred || (rate_limited && source.id != "talents") {
                 break;
             }
         }

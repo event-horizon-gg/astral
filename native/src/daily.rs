@@ -63,6 +63,20 @@ impl Run {
             })
             .count()
     }
+
+    fn stops_clients(&self) -> bool {
+        if self.errors.is_empty() {
+            return false;
+        }
+        let Some(results) = &self.results else {
+            return true;
+        };
+        let failures: Vec<_> = results
+            .iter()
+            .filter(|result| result.status == batch::DailyStatus::Error)
+            .collect();
+        failures.len() != self.errors.len() || failures.iter().any(|result| result.id != "talents")
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -206,7 +220,15 @@ impl Reports {
         run.started_at = Some(check.started_at);
         let interval = run.next_at.saturating_sub(run.checked_at / 1000);
         run.next_at = check.started_at / 1000 + interval;
-        self.next_at = Some(run.next_at);
+        let continuing = self
+            .history
+            .first()
+            .is_some_and(|entry| entry.run.check_id == Some(check.id));
+        self.next_at = Some(if continuing {
+            self.next_at().min(run.next_at)
+        } else {
+            run.next_at
+        });
         self.latest[client.index()] = Some(run.clone());
         self.history.insert(0, HistoryEntry { client, run });
         let mut seen = std::collections::HashSet::new();
@@ -326,7 +348,7 @@ pub fn run_background(path: &Path, roots: [Option<PathBuf>; 2]) -> io::Result<()
         }
         let run = report(root.clone(), result);
         let interrupted = run.deferred;
-        let failed = !run.errors.is_empty();
+        let failed = run.stops_clients();
         reports.record(path, client, run, check)?;
         if interrupted {
             reports.defer_check(path, check)?;
@@ -406,7 +428,7 @@ fn run_checks(
         }
         let run = report(root, result);
         let interrupted = run.deferred;
-        let failed = !run.errors.is_empty();
+        let failed = run.stops_clients();
         reports
             .record(path, client, run, check_id)
             .map_err(|error| error.to_string())?;
@@ -847,6 +869,50 @@ mod tests {
                 .iter()
                 .flatten()
                 .all(|run| run.errors.is_empty())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unavailable_talent_guide_does_not_skip_the_other_client_or_lose_the_hourly_retry()
+    -> io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("preferences.json");
+        let mut reports = Reports::from_latest([None, None]);
+        let mut visited = Vec::new();
+        run_checks(
+            &path,
+            &mut reports,
+            targets(temp.path()),
+            true,
+            |_, client, _| {
+                visited.push(client.index());
+                if client == Client::Retail {
+                    Ok(batch::DailyCheck {
+                        errors: vec!["Astral Talents: Guide unavailable".into()],
+                        results: vec![batch::DailyResult::issue(
+                            "talents",
+                            "Astral Talents",
+                            batch::DailyStatus::Error,
+                            "Guide unavailable",
+                        )],
+                        ..Default::default()
+                    })
+                } else {
+                    Ok(batch::DailyCheck::default())
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(visited, [0, 1]);
+        let saved = read_reports(&path, &[None, None])?;
+        let group = &grouped_history(&saved.history)[0];
+        assert_eq!(group.attention(), 1);
+        assert!(!group.deferred());
+        assert_eq!(saved.next_at(), group.checked_at() / 1000 + 3600);
+        assert_eq!(
+            saved.latest[1].as_ref().unwrap().next_at,
+            group.checked_at() / 1000 + 86400
         );
         Ok(())
     }

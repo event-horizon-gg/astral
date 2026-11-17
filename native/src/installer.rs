@@ -404,7 +404,7 @@ pub fn install(
 pub fn refresh_talents(
     root: &Path,
     fetch: impl FnOnce(u32) -> Result<String, String>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     refresh_talents_with(root, fetch, game_closed)
 }
 
@@ -412,7 +412,7 @@ fn refresh_talents_with(
     root: &Path,
     fetch: impl FnOnce(u32) -> Result<String, String>,
     ensure_game_closed: impl Fn() -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     ensure_game_closed()?;
     let paths = Paths::open(root, Client::Retail)?;
     let folder = paths.addons.join("AstralTalents");
@@ -436,6 +436,12 @@ fn refresh_talents_with(
     if packages::active_interface(root, Client::Retail)? != interface {
         return Err("WoW updated during the talent refresh. Try again.".into());
     }
+    let previous = fs::read_to_string(&file).map_err(|error| error.to_string())?;
+    if data == previous {
+        return Ok(false);
+    }
+    let checked = regex::Regex::new(r"(?m)^ns\.checked = .*$").expect("valid checked-date pattern");
+    let changed = checked.replace(&data, "") != checked.replace(&previous, "");
     let mut staged =
         tempfile::NamedTempFile::new_in(&paths.interface).map_err(|e| e.to_string())?;
     use std::io::Write;
@@ -445,7 +451,7 @@ fn refresh_talents_with(
     staged.as_file().sync_all().map_err(|e| e.to_string())?;
     ensure_game_closed()?;
     staged.persist(file).map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(changed)
 }
 
 fn install_with(
@@ -1424,8 +1430,25 @@ mod tests {
         );
         assert_eq!(result, Err("WoW is open".into()));
         assert_eq!(fs::read_to_string(&file).unwrap(), "previous data");
-        refresh_talents_with(&root, |_| Ok("new data".into()), || Ok(())).unwrap();
+        assert!(refresh_talents_with(&root, |_| Ok("new data".into()), || Ok(())).unwrap());
         assert_eq!(fs::read_to_string(file).unwrap(), "new data");
+    }
+
+    #[test]
+    fn talent_refresh_counts_build_changes_but_still_saves_the_checked_date() {
+        let (_temp, root, _) = game();
+        let folder = root.join("Interface/AddOns/AstralTalents");
+        fs::create_dir(&folder).unwrap();
+        let file = folder.join("Builds.lua");
+        let original = "local _, ns = ...\nns.checked = \"2026-11-16\"\nns.builds = { 1 }\n";
+        fs::write(&file, original).unwrap();
+        assert!(!refresh_talents_with(&root, |_| Ok(original.into()), || Ok(())).unwrap());
+        let date_only = original.replace("2026-11-16", "2026-11-17");
+        assert!(!refresh_talents_with(&root, |_| Ok(date_only.clone()), || Ok(())).unwrap());
+        assert_eq!(fs::read_to_string(&file).unwrap(), date_only);
+        let changed = date_only.replace("{ 1 }", "{ 2 }");
+        assert!(refresh_talents_with(&root, |_| Ok(changed.clone()), || Ok(())).unwrap());
+        assert_eq!(fs::read_to_string(file).unwrap(), changed);
     }
 
     #[test]
