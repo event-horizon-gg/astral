@@ -295,6 +295,19 @@ fn edit_action(key: &gpui::Keystroke, mac: bool) -> Option<EditAction> {
     use EditAction::*;
     use Motion::*;
     let m = key.modifiers;
+    // AppKit's StandardKeyBinding.dict supplies these editing commands in
+    // Electron. GPUI redispatches the keystroke instead of the Cocoa selector.
+    if mac && m.control && !m.platform && !m.alt && !m.function {
+        return match key.key.to_ascii_lowercase().as_str() {
+            "a" => Some(Move(Start)),
+            "e" => Some(Move(End)),
+            "b" => Some(Move(Previous)),
+            "f" => Some(Move(Next)),
+            "h" if !m.shift => Some(Delete(Previous)),
+            "d" if !m.shift => Some(Delete(Next)),
+            _ => None,
+        };
+    }
     if m.function {
         // Fn is reported for actual function keys on some keyboards; arrows,
         // Home/End and Delete remain valid editing keys with that flag.
@@ -385,6 +398,19 @@ fn replacement(
 
 fn history_action(key: &gpui::Keystroke, mac: bool) -> Option<HistoryAction> {
     let modifiers = key.modifiers;
+    if !mac
+        && key.key == "backspace"
+        && modifiers.alt
+        && !modifiers.control
+        && !modifiers.platform
+        && !modifiers.function
+    {
+        return Some(if modifiers.shift {
+            HistoryAction::Redo
+        } else {
+            HistoryAction::Undo
+        });
+    }
     let primary = if mac {
         modifiers.platform && !modifiers.control
     } else {
@@ -864,6 +890,67 @@ mod tests {
     }
 
     #[test]
+    fn mac_control_letter_commands_do_not_replace_windows_select_all_or_plain_typing() {
+        use EditAction::*;
+        use Motion::*;
+        let control = gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        for (name, action) in [
+            ("a", Move(Start)),
+            ("e", Move(End)),
+            ("b", Move(Previous)),
+            ("f", Move(Next)),
+            ("h", Delete(Previous)),
+            ("d", Delete(Next)),
+        ] {
+            assert_eq!(edit_action(&key(name, control), true), Some(action));
+            assert_eq!(edit_action(&key(name, Default::default()), true), None);
+        }
+        assert_eq!(
+            edit_action(
+                &key(
+                    "A",
+                    gpui::Modifiers {
+                        shift: true,
+                        ..control
+                    }
+                ),
+                true
+            ),
+            Some(Move(Start))
+        );
+        assert_eq!(edit_action(&key("a", control), false), Some(SelectAll));
+        assert_eq!(
+            edit_action(
+                &key(
+                    "d",
+                    gpui::Modifiers {
+                        alt: true,
+                        ..control
+                    }
+                ),
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            edit_action(
+                &key(
+                    "h",
+                    gpui::Modifiers {
+                        shift: true,
+                        ..control
+                    }
+                ),
+                true
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn undo_and_redo_shortcuts_do_not_consume_altgr_or_the_other_platform_modifier() {
         let key = |key: &str, modifiers| gpui::Keystroke {
             key: key.into(),
@@ -932,6 +1019,35 @@ mod tests {
         assert_eq!(history_action(&key("z", control), true), None);
         assert_eq!(history_action(&key("z", command), false), None);
         assert_eq!(history_action(&key("y", command), true), None);
+        let alt = gpui::Modifiers {
+            alt: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            history_action(&key("backspace", alt), false),
+            Some(HistoryAction::Undo)
+        );
+        assert_eq!(
+            history_action(
+                &key("backspace", gpui::Modifiers { shift: true, ..alt }),
+                false
+            ),
+            Some(HistoryAction::Redo)
+        );
+        assert_eq!(history_action(&key("backspace", alt), true), None);
+        assert_eq!(
+            history_action(
+                &key(
+                    "backspace",
+                    gpui::Modifiers {
+                        control: true,
+                        ..alt
+                    }
+                ),
+                false
+            ),
+            None
+        );
     }
 
     #[test]
