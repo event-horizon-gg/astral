@@ -8,6 +8,65 @@ use gpui::{
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
+gpui::actions!(astral_text, [Undo, Redo, Cut, Copy, Paste, SelectAll]);
+
+pub fn edit_menu() -> gpui::Menu {
+    use gpui::{Menu, MenuItem, OsAction};
+    Menu {
+        name: "Edit".into(),
+        items: vec![
+            MenuItem::os_action("Undo", Undo, OsAction::Undo),
+            MenuItem::os_action("Redo", Redo, OsAction::Redo),
+            MenuItem::separator(),
+            MenuItem::os_action("Cut", Cut, OsAction::Cut),
+            MenuItem::os_action("Copy", Copy, OsAction::Copy),
+            MenuItem::os_action("Paste", Paste, OsAction::Paste),
+            MenuItem::separator(),
+            MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+        ],
+    }
+}
+
+pub fn bind_menu_keys(cx: &mut App) {
+    cx.bind_keys(menu_keys(cfg!(target_os = "macos")));
+}
+
+fn menu_keys(mac: bool) -> Vec<gpui::KeyBinding> {
+    use gpui::KeyBinding;
+    vec![
+        KeyBinding::new(
+            if mac { "cmd-z" } else { "ctrl-z" },
+            Undo,
+            Some("AstralText"),
+        ),
+        KeyBinding::new(
+            if mac { "cmd-shift-z" } else { "ctrl-y" },
+            Redo,
+            Some("AstralText"),
+        ),
+        KeyBinding::new(
+            if mac { "cmd-x" } else { "ctrl-x" },
+            Cut,
+            Some("AstralText"),
+        ),
+        KeyBinding::new(
+            if mac { "cmd-c" } else { "ctrl-c" },
+            Copy,
+            Some("AstralText"),
+        ),
+        KeyBinding::new(
+            if mac { "cmd-v" } else { "ctrl-v" },
+            Paste,
+            Some("AstralText"),
+        ),
+        KeyBinding::new(
+            if mac { "cmd-a" } else { "ctrl-a" },
+            SelectAll,
+            Some("AstralText"),
+        ),
+    ]
+}
+
 pub struct SearchInput {
     pub focus: FocusHandle,
     text: SharedString,
@@ -155,13 +214,7 @@ impl SearchInput {
         let modifiers = key.modifiers;
         if let Some(action) = history_action(key, cfg!(target_os = "macos")) {
             if !self.history.composing() {
-                let snapshot = match action {
-                    HistoryAction::Undo => self.history.undo(),
-                    HistoryAction::Redo => self.history.redo(),
-                };
-                if let Some(snapshot) = snapshot {
-                    self.restore(snapshot, cx);
-                }
+                self.history_command(action, cx);
                 cx.stop_propagation();
             }
             return;
@@ -174,6 +227,24 @@ impl SearchInput {
         let Some(action) = edit_action(key, mac) else {
             return;
         };
+        self.edit(action, modifiers.shift, cx);
+        cx.stop_propagation();
+    }
+
+    fn history_command(&mut self, action: HistoryAction, cx: &mut Context<Self>) {
+        let snapshot = match action {
+            HistoryAction::Undo => self.history.undo(),
+            HistoryAction::Redo => self.history.redo(),
+        };
+        if let Some(snapshot) = snapshot {
+            self.restore(snapshot, cx);
+        }
+    }
+
+    fn edit(&mut self, action: EditAction, extend: bool, cx: &mut Context<Self>) {
+        if self.history.composing() {
+            return;
+        }
         let selection = self.selected();
         match action {
             EditAction::SelectAll => {
@@ -197,19 +268,17 @@ impl SearchInput {
             }
             EditAction::Move(motion) => {
                 let offset = match motion {
-                    Motion::Previous if !modifiers.shift && !selection.is_empty() => {
-                        selection.start
-                    }
-                    Motion::Next if !modifiers.shift && !selection.is_empty() => selection.end,
-                    _ => motion.offset(&self.text, self.caret, mac),
+                    Motion::Previous if !extend && !selection.is_empty() => selection.start,
+                    Motion::Next if !extend && !selection.is_empty() => selection.end,
+                    _ => motion.offset(&self.text, self.caret, cfg!(target_os = "macos")),
                 };
-                self.select(offset, modifiers.shift, cx);
+                self.select(offset, extend, cx);
             }
             EditAction::Delete(motion) => {
                 let range = if !selection.is_empty() {
                     selection
                 } else {
-                    let other = motion.offset(&self.text, self.caret, mac);
+                    let other = motion.offset(&self.text, self.caret, cfg!(target_os = "macos"));
                     self.caret.min(other)..self.caret.max(other)
                 };
                 self.replace(
@@ -227,7 +296,6 @@ impl SearchInput {
                 );
             }
         }
-        cx.stop_propagation();
     }
 }
 
@@ -571,10 +639,39 @@ pub fn field(
     input.update(cx, |input, cx| {
         div()
             .track_focus(&input.focus)
+            .key_context("AstralText")
             .flex_1()
             .min_w_0()
             .cursor(CursorStyle::IBeam)
             .on_key_down(cx.listener(SearchInput::edit_key))
+            .when(input.history.can_undo(), |field| {
+                field.on_action(cx.listener(|input, _: &Undo, _, cx| {
+                    input.history_command(HistoryAction::Undo, cx)
+                }))
+            })
+            .when(input.history.can_redo(), |field| {
+                field.on_action(cx.listener(|input, _: &Redo, _, cx| {
+                    input.history_command(HistoryAction::Redo, cx)
+                }))
+            })
+            .when(!input.history.composing(), |field| {
+                field
+                    .on_action(cx.listener(|input, _: &Paste, _, cx| {
+                        input.edit(EditAction::Paste, false, cx)
+                    }))
+                    .on_action(cx.listener(|input, _: &SelectAll, _, cx| {
+                        input.edit(EditAction::SelectAll, false, cx)
+                    }))
+                    .when(!input.selected().is_empty(), |field| {
+                        field
+                            .on_action(cx.listener(|input, _: &Copy, _, cx| {
+                                input.edit(EditAction::Copy, false, cx)
+                            }))
+                            .on_action(cx.listener(|input, _: &Cut, _, cx| {
+                                input.edit(EditAction::Cut, false, cx)
+                            }))
+                    })
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|input, event: &gpui::MouseDownEvent, window, cx| {
@@ -755,6 +852,39 @@ impl Element for Line {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edit_menu_bindings_are_confined_to_text_focus_and_use_platform_accelerators() {
+        for mac in [true, false] {
+            let keymap = gpui::Keymap::new(menu_keys(mac));
+            let text = gpui::KeyContext::parse("AstralText").unwrap();
+            let workspace = gpui::KeyContext::parse("Workspace").unwrap();
+            let undo = gpui::Keystroke::parse(if mac { "cmd-z" } else { "ctrl-z" }).unwrap();
+            let (matches, pending) = keymap.bindings_for_input(&[undo.clone()], &[text.clone()]);
+            assert!(!pending);
+            assert_eq!(matches.len(), 1);
+            assert!(matches[0].action().as_any().is::<Undo>());
+            assert!(
+                keymap
+                    .bindings_for_input(&[undo], &[workspace])
+                    .0
+                    .is_empty()
+            );
+            let redo = gpui::Keystroke::parse(if mac { "cmd-shift-z" } else { "ctrl-y" }).unwrap();
+            let (matches, _) = keymap.bindings_for_input(&[redo], &[text.clone()]);
+            assert_eq!(matches.len(), 1);
+            assert!(matches[0].action().as_any().is::<Redo>());
+            let select = gpui::Keystroke::parse(if mac { "cmd-a" } else { "ctrl-a" }).unwrap();
+            let (matches, _) = keymap.bindings_for_input(&[select], &[text.clone()]);
+            assert!(matches[0].action().as_any().is::<SelectAll>());
+            assert!(
+                keymap
+                    .bindings_for_input(&[gpui::Keystroke::parse("ctrl-alt-a").unwrap()], &[text])
+                    .0
+                    .is_empty()
+            );
+        }
+    }
 
     fn key(name: &str, modifiers: gpui::Modifiers) -> gpui::Keystroke {
         gpui::Keystroke {

@@ -3707,10 +3707,14 @@ fn main() {
             ),
             KeyBinding::new("escape", DismissOverlay, None),
         ]);
-        cx.set_menus(vec![Menu {
-            name: "Astral".into(),
-            items: vec![MenuItem::action("Quit Astral", Quit)],
-        }]);
+        search_input::bind_menu_keys(cx);
+        cx.set_menus(vec![
+            Menu {
+                name: "Astral".into(),
+                items: vec![MenuItem::action("Quit Astral", Quit)],
+            },
+            search_input::edit_menu(),
+        ]);
         let viewport = if fixture_compact {
             size(px(1000.), px(720.))
         } else if fixture_wide {

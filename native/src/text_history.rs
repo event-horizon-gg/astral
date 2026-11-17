@@ -42,6 +42,14 @@ impl History {
         self.composition.is_some()
     }
 
+    pub fn can_undo(&self) -> bool {
+        !self.composing() && !self.undo.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.composing() && !self.redo.is_empty()
+    }
+
     pub fn begin_composition(&mut self, before: Snapshot) {
         if self.composition.is_none() {
             self.close_group();
@@ -167,13 +175,20 @@ mod tests {
     #[test]
     fn ime_candidates_do_not_become_individual_undo_steps() {
         let mut history = History::default();
+        assert!(!history.can_undo());
+        assert!(!history.can_redo());
         history.record(at(""), at("g"), Kind::Typing);
+        assert!(history.can_undo());
         history.begin_composition(at("g"));
+        assert!(!history.can_undo());
+        assert!(!history.can_redo());
         history.begin_composition(at("gに"));
         assert_eq!(history.undo(), None);
         history.record(at("gに"), at("g日本"), Kind::Typing);
         assert_eq!(history.undo(), Some(at("g")));
+        assert!(history.can_redo());
         assert_eq!(history.redo(), Some(at("g日本")));
+        assert!(!history.can_redo());
         history.begin_composition(at("g日本"));
         history.commit_composition(at("g日本語"));
         history.commit_composition(at("g日本語"));
