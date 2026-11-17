@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")"
+case "$#:${1:-}" in
+  0:|1:--persistent) ;;
+  *) echo 'Usage: sh native/package-mac.sh [--persistent]' >&2; exit 1 ;;
+esac
+identity=$(sh ../scripts/mac-signing-identity.sh "$@")
 version=$(awk '
   /^\[package\]$/ { in_package = 1; next }
   /^\[/ { in_package = 0 }
@@ -35,7 +40,6 @@ cat >"$app/Contents/Info.plist" <<PLIST
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-identity="${ASTRAL_MAC_SIGN_IDENTITY:--}"
 /usr/bin/codesign --force --sign "$identity" "$app"
 /usr/bin/codesign --verify --deep --strict "$app"
 archive="Astral-Native-$version-mac-$arch.zip"

@@ -1,21 +1,58 @@
 import fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 const execute = promisify(execFile);
+export const macSigningConfig = fileURLToPath(
+  new URL('../.astral-mac-certificate', import.meta.url),
+);
 
-export function macSigningIdentity(env = process.env, { release = false } = {}) {
-  const identity = env.ASTRAL_MAC_SIGN_IDENTITY?.trim() || '-';
+export function macSigningIdentity(
+  env = process.env,
+  { release = false, configPath = macSigningConfig } = {},
+) {
+  const configured = env.ASTRAL_MAC_SIGN_IDENTITY || '';
+  if (/[\x00-\x1f\x7f]/.test(configured)) throw Error('Invalid macOS signing identity.');
+  let identity = configured.trim();
+  if (!identity && configPath) {
+    let pin;
+    try {
+      pin = readFileSync(configPath, 'utf8').replace(/\n+$/, '');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    if (pin !== undefined) {
+      if (!/^[a-f0-9]{40}$/i.test(pin))
+        throw Error('Invalid .astral-mac-certificate: expected a certificate fingerprint.');
+      identity = pin;
+    }
+  }
+  identity ||= '-';
   if (/[\x00-\x1f\x7f]/.test(identity) || (identity.startsWith('-') && identity !== '-'))
     throw Error('Invalid macOS signing identity.');
   if (release && !/^[a-f0-9]{40}$/i.test(identity))
     throw Error(
-      'Set ASTRAL_MAC_SIGN_IDENTITY to the persistent signing certificate’s SHA-1 fingerprint before publishing.',
+      'Configure a persistent macOS signing certificate before publishing or installing.',
     );
   return identity;
+}
+
+export async function saveMacSigningIdentity(identity, { configPath = macSigningConfig } = {}) {
+  const pin = identity.trim();
+  if (!/^[a-f0-9]{40}$/i.test(pin))
+    throw Error('Expected the certificate’s 40-character SHA-1 fingerprint.');
+  const staged = `${configPath}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+  try {
+    await fs.writeFile(staged, pin.toLowerCase() + '\n', { flag: 'wx', mode: 0o600 });
+    await fs.rename(staged, configPath);
+  } finally {
+    await fs.rm(staged, { force: true });
+  }
 }
 
 export async function verifyStableMacApp(app, identity, { identifier, version, run = execute }) {

@@ -16,3 +16,5 @@ docs/*installation.json
 prototypes/
 
 /native/target/
+/.astral-mac-certificate
+/.astral-mac-certificate.*.tmp

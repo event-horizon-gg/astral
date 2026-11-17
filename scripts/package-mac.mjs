@@ -9,6 +9,11 @@ import { macSigningIdentity } from './mac-signing.mjs';
 const run = promisify(execFile);
 if (process.platform !== 'darwin') throw Error('Build macOS packages on macOS.');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+if (process.argv.slice(2).some((arg) => arg !== '--persistent'))
+  throw Error('Unexpected packaging argument.');
+const identity = macSigningIdentity(process.env, {
+  release: process.argv.includes('--persistent'),
+});
 const output = await fs.mkdtemp(path.join(os.tmpdir(), 'astral-mac-build-'));
 try {
   const result = await run(
@@ -21,7 +26,7 @@ try {
       '--arm64',
       '--publish',
       'never',
-      `--config.mac.identity=${macSigningIdentity()}`,
+      `--config.mac.identity=${identity}`,
       `--config.directories.output=${output}`,
     ],
     { cwd: root, maxBuffer: 10 * 1024 * 1024 },
