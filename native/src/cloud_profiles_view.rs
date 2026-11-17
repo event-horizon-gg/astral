@@ -775,7 +775,7 @@ impl Astral {
                             .gap(px(13.))
                             .py(px(16.))
                             .border_b_1()
-                            .border_color(rgb(palette.line))
+                            .border_color(palette.line)
                             .child(
                                 div()
                                     .flex()
@@ -794,7 +794,7 @@ impl Astral {
                                                 .px(px(5.))
                                                 .py(px(2.))
                                                 .border_1()
-                                                .border_color(rgb(palette.line))
+                                                .border_color(palette.line)
                                                 .rounded(px(4.))
                                                 .bg(rgb(palette.surface))
                                                 .text_size(px(9.))

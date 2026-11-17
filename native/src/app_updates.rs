@@ -706,7 +706,7 @@ impl Astral {
                         .left_0()
                         .w_full()
                         .h(px(1.))
-                        .bg(rgb(palette.line)),
+                        .bg(palette.line),
                 )
                 .child(
                     div()
@@ -1071,7 +1071,7 @@ impl Astral {
                                 .p(px(12.))
                                 .rounded(px(5.))
                                 .border_1()
-                                .border_color(rgb(palette.line))
+                                .border_color(palette.line)
                                 .bg(rgb(palette.surface)),
                         )
                     })

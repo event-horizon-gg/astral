@@ -165,7 +165,7 @@ pub(crate) fn dialog_panel(id: &'static str, palette: Palette) -> gpui::Stateful
         .rounded(px(14.))
         .bg(rgb(palette.panel))
         .border_1()
-        .border_color(rgb(palette.line))
+        .border_color(palette.line)
         .shadow(vec![gpui::BoxShadow {
             color: gpui::rgba(0x00000044).into(),
             offset: gpui::point(px(0.), px(20.)),
@@ -702,7 +702,7 @@ impl Astral {
                     .child(div().id("sync-missing-list").mt(px(25.)).max_h(px(250.)).overflow_y_scroll()
                         .children(self.account.sync_missing.iter().map(|addon| {
                             div().flex().items_center().justify_between().gap(px(13.)).py(px(16.))
-                                .border_b_1().border_color(rgb(palette.line))
+                                .border_b_1().border_color(palette.line)
                                 .child(div().min_w_0().text_size(px(13.)).font_weight(gpui::FontWeight::SEMIBOLD)
                                     .child(addon.name.clone()))
                                 .child(div().text_size(px(14.)).child(addon.reason))
@@ -1864,7 +1864,7 @@ impl Astral {
                     .gap(px(13.))
                     .py(px(18.))
                     .border_b_1()
-                    .border_color(rgb(palette.line))
+                    .border_color(palette.line)
                     .child(
                         div()
                             .min_w_0()
@@ -1942,7 +1942,7 @@ impl Astral {
                         .gap(px(13.))
                         .py(px(18.))
                         .border_b_1()
-                        .border_color(rgb(palette.line))
+                        .border_color(palette.line)
                         .child(
                             div()
                                 .min_w_0()
@@ -2213,7 +2213,7 @@ impl Astral {
         } else {
             "▸ Manage cloud data"
         };
-        div().mt(px(35.)).pt(px(20.)).border_t_1().border_color(rgb(palette.line))
+        div().mt(px(35.)).pt(px(20.)).border_t_1().border_color(palette.line)
             .child(crate::keyboard_button(
                 palette.text_button("manage-cloud-data", label).line_height(px(13.2)).border_0(), palette,
                 cx.listener(|app, _: &(), _, cx| { app.account.manage_data = !app.account.manage_data; cx.notify(); }),
@@ -2255,8 +2255,9 @@ impl Astral {
                 .child(sync_dialog_title("Delete your cloud data?"))
                 .child(palette.label("This permanently removes all Retail and Forever backups and signs out every computer. Your local files remain. Type DELETE to confirm.")
                     .mt(px(13.)).mb(px(25.)).text_size(px(12.)).line_height(px(22.8)).text_color(rgb(0x8da898)))
-                .child(div().mt(px(10.)).p(px(12.)).border_1().border_color(rgb(palette.line)).rounded(px(5.))
-                    .bg(rgb(palette.background)).child(crate::search_input::field(input, "", palette.muted, cx)))
+                .child(div().mt(px(10.)).p(px(12.)).border_1().border_color(palette.line).rounded(px(5.))
+                    .bg(rgb(palette.background)).text_size(px(14.))
+                    .child(crate::search_input::field(input, "", palette.muted, cx)))
                 .child(div().flex().justify_end().gap(px(9.))
                     .child(palette.button("cancel-cloud-deletion", "Cancel")
                         .when(busy, |button| button.opacity(0.45).cursor_default())
@@ -2264,6 +2265,7 @@ impl Astral {
                             cx.listener(|app, _: &(), _, cx| { app.dismiss_sync_dialog(cx); }))))
                     .child(palette.primary_button("confirm-cloud-deletion", "Delete cloud data")
                         .bg(rgb(0x692e40)).border_color(rgb(0xa96072))
+                        .hover(|style| style.bg(rgb(0x692e40)).border_color(rgb(0xa96072)))
                         .when(!enabled, |button| button.opacity(0.45).cursor_default())
                         .when(enabled, |button| crate::keyboard_button(button.track_focus(&focus.local), palette,
                             cx.listener(|app, _: &(), _, cx| app.delete_cloud_data(cx))))))))
@@ -2390,7 +2392,7 @@ impl Astral {
                 .gap(px(13.))
                 .py(px(18.))
                 .border_b_1()
-                .border_color(rgb(palette.line))
+                .border_color(palette.line)
                 .child(
                     div()
                         .text_size(px(13.))
@@ -2508,7 +2510,7 @@ impl Astral {
                                 .justify_center()
                                 .rounded_full()
                                 .border_1()
-                                .border_color(rgb(palette.line))
+                                .border_color(palette.line)
                                 .bg(rgb(palette.surface))
                                 .text_size(px(33.))
                                 .font_weight(gpui::FontWeight(650.))
@@ -2619,7 +2621,7 @@ impl Astral {
             .flex()
             .flex_col()
             .child(identity)
-            .child(div().h(px(1.)).flex_shrink_0().bg(rgb(palette.line)));
+            .child(div().h(px(1.)).flex_shrink_0().bg(palette.line));
         if let Some(error) = &account.error
             && !self.cloud_profile_manager_open()
         {
@@ -2678,7 +2680,7 @@ impl Astral {
                         .gap(px(14.))
                         .py(px(17.))
                         .border_b_1()
-                        .border_color(rgb(palette.line))
+                        .border_color(palette.line)
                         .text_size(px(13.))
                         .line_height(px(15.6))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -2717,7 +2719,7 @@ impl Astral {
                     .flex_col()
                     .gap_3()
                     .border_t_1()
-                    .border_color(rgb(palette.line))
+                    .border_color(palette.line)
                     .pt_4()
                     .child(
                         div()
@@ -2772,7 +2774,7 @@ impl Astral {
                 )
                 .when_some(account.metadata_error.as_ref(), |panel, error| {
                     panel.child(div().p(px(14.)).mb(px(20.)).rounded(px(8.)).border_1()
-                        .border_color(rgb(palette.line)).bg(rgb(palette.surface))
+                        .border_color(palette.line).bg(rgb(palette.surface))
                         .text_color(rgb(0xd18b35)).text_size(px(11.)).line_height(px(18.7))
                         .child(error.clone()))
                 })
@@ -2818,7 +2820,7 @@ fn cloud_tag(title: &'static str, palette: Palette) -> gpui::Div {
         .px(px(5.))
         .py(px(2.))
         .border_1()
-        .border_color(rgb(palette.line))
+        .border_color(palette.line)
         .bg(rgb(palette.surface))
         .rounded(px(4.))
         .text_size(px(9.))

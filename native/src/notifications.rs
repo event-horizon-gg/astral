@@ -112,7 +112,7 @@ impl Astral {
                         .px(px(16.))
                         .rounded(px(6.))
                         .border_1()
-                        .border_color(rgb(palette.line))
+                        .border_color(palette.line)
                         .when(error, |toast| toast.border_l(px(3.)))
                         .bg(rgb(palette.panel))
                         .text_color(rgb(palette.text))
@@ -159,7 +159,7 @@ impl Astral {
                                 .border_1()
                                 .border_color(gpui::transparent_black())
                                 .cursor_pointer()
-                                .hover(move |style| style.bg(rgb(palette.hover)))
+                                .hover(move |style| style.bg(palette.hover))
                                 .child(crate::icon("close", 14., palette.muted)),
                             palette,
                             cx.listener(|app, _: &(), _, cx| {

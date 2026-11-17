@@ -628,7 +628,7 @@ impl Astral {
                         .py(px(70.))
                         .px(px(20.))
                         .border_t_1()
-                        .border_color(rgb(palette.line))
+                        .border_color(palette.line)
                         .child(icon("history", 30., palette.muted))
                         .child(
                             div()
@@ -714,7 +714,7 @@ impl Astral {
                         .gap(px(20.))
                         .py(px(25.))
                         .border_b_1()
-                        .border_color(rgb(palette.line))
+                        .border_color(palette.line)
                         .child(
                             div()
                                 .flex()
@@ -731,7 +731,7 @@ impl Astral {
                                         .flex_shrink_0()
                                         .rounded_full()
                                         .border_1()
-                                        .border_color(rgb(palette.line))
+                                        .border_color(palette.line)
                                         .child(icon(
                                             "history",
                                             18.,
@@ -784,7 +784,7 @@ impl Astral {
                                                             .p_3()
                                                             .bg(rgb(palette.surface))
                                                             .border_1()
-                                                            .border_color(rgb(palette.line))
+                                                            .border_color(palette.line)
                                                             .text_size(px(11.))
                                                             .line_height(px(20.)),
                                                     )
@@ -889,7 +889,7 @@ impl Astral {
                     .gap(px(20.))
                     .py(px(25.))
                     .border_b_1()
-                    .border_color(rgb(palette.line))
+                    .border_color(palette.line)
                     .child(
                         div()
                             .flex()
@@ -899,7 +899,7 @@ impl Astral {
                             .flex_shrink_0()
                             .rounded_full()
                             .border_1()
-                            .border_color(rgb(palette.line))
+                            .border_color(palette.line)
                             .child(icon(
                                 if failed { "alert" } else { "check" },
                                 18.,
@@ -973,7 +973,7 @@ impl Astral {
                 .child(
                     div()
                         .border_b_1()
-                        .border_color(rgb(palette.line))
+                        .border_color(palette.line)
                         .absolute()
                         .bottom_0()
                         .left_0()

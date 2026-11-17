@@ -659,7 +659,10 @@ impl Element for Line {
             underline: None,
             strikethrough: None,
         };
-        let line = window.text_system().shape_line(text, px(12.), &[run], None);
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        let line = window
+            .text_system()
+            .shape_line(text, font_size, &[run], None);
         let caret = line.x_for_index(input.caret);
         let selected = input.selected();
         let marked = input.marked.clone();

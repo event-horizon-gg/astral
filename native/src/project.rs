@@ -267,7 +267,7 @@ impl Astral {
                             review.client.label(), selected.map(|asset| asset.name.as_str()).unwrap_or("ZIP")))))
                         .child(div().id("project-package-folders").max_h(px(230.)).overflow_y_scroll()
                             .children(package.modules.iter().map(|module| {
-                                div().flex().flex_col().gap_1().py(px(11.)).border_b_1().border_color(rgb(palette.line))
+                                div().flex().flex_col().gap_1().py(px(11.)).border_b_1().border_color(palette.line)
                                     .child(div().font_weight(gpui::FontWeight::SEMIBOLD).text_size(px(12.)).child(module.folder.clone()))
                                     .child(palette.label(format!("{} · {}", module.version.as_deref().unwrap_or("Unknown"),
                                         if module.replaces { "Replaces installed files" } else { "New addon folder" })).text_size(px(11.)))
@@ -511,7 +511,7 @@ impl Astral {
                     .rounded(px(14.))
                     .shadow_lg()
                     .border_1()
-                    .border_color(rgb(palette.line))
+                    .border_color(palette.line)
                     .track_focus(&review.dialog_focus)
                     .on_key_down(move |event, window, cx| {
                         if event.keystroke.key != "tab" {

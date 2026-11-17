@@ -135,7 +135,7 @@ impl Astral {
             .child(div().absolute().top_0().left_0().size_full().bg(gpui::rgba(0x00000088)).occlude())
             .child(div().w(px(480.)).max_w(gpui::relative(0.92)).max_h(gpui::relative(0.92))
                 .p_6().flex().flex_col().gap_4().occlude().bg(rgb(palette.panel)).rounded(px(10.))
-                .border_1().border_color(rgb(palette.line))
+                .border_1().border_color(palette.line)
                 .child(div().text_size(px(25.)).font_weight(gpui::FontWeight::BOLD)
                     .child(format!("Uninstall {}?", removal.addon.name)))
                 .child(palette.label("Close WoW to continue. Your settings stay in WoW, and you can restore the addon from Backups."))

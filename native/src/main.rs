@@ -596,8 +596,8 @@ struct Palette {
     text: u32,
     muted: u32,
     accent: u32,
-    line: u32,
-    hover: u32,
+    line: gpui::Rgba,
+    hover: gpui::Rgba,
     surface: u32,
     panel: u32,
     error: u32,
@@ -631,7 +631,7 @@ impl Palette {
             .justify_center()
             .rounded_full()
             .border_1()
-            .border_color(rgb(self.line))
+            .border_color(self.line)
             .bg(rgb(self.surface))
             .text_size(px(if large { 20. } else { 15. }))
             .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -650,8 +650,8 @@ impl Palette {
                 text: 0x101114,
                 muted: 0x666970,
                 accent: 0x0057ff,
-                line: 0xd8d7d5,
-                hover: 0xf7f6f4,
+                line: gpui::rgba(0x10111428),
+                hover: gpui::rgba(0x10111406),
                 surface: 0xf3f2ef,
                 panel: 0xffffff,
                 error: 0xa92920,
@@ -663,8 +663,8 @@ impl Palette {
                 text: 0xf2f1ed,
                 muted: 0xa0a3ac,
                 accent: 0x527dff,
-                line: 0x2e2f31,
-                hover: 0x17181b,
+                line: gpui::rgba(0xffffff20),
+                hover: gpui::rgba(0xffffff08),
                 surface: 0x191b20,
                 panel: 0x191b20,
                 error: 0xffad9e,
@@ -725,17 +725,23 @@ impl Palette {
             .px(px(15.))
             .rounded(px(5.))
             .border_1()
-            .border_color(rgb(if primary { self.accent } else { self.line }))
+            .border_color(if primary { rgb(self.accent) } else { self.line })
             .text_size(px(12.))
-            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .font_weight(gpui::FontWeight(550.))
             .when(primary, |button| {
                 button
                     .bg(rgb(self.accent))
                     .text_color(rgb(0xffffff))
-                    .hover(move |style| style.opacity(0.9))
+                    .hover(move |style| {
+                        let mut color = rgb(self.accent);
+                        color.r = (color.r * 1.1).min(1.);
+                        color.g = (color.g * 1.1).min(1.);
+                        color.b = (color.b * 1.1).min(1.);
+                        style.bg(color).border_color(color)
+                    })
             })
             .when(!primary, |button| {
-                button.hover(move |style| style.bg(rgb(self.hover)))
+                button.hover(move |style| style.bg(self.hover))
             })
             .child(name.into())
     }
@@ -749,7 +755,7 @@ impl Palette {
             .justify_center()
             .rounded_md()
             .cursor_pointer()
-            .hover(move |style| style.bg(rgb(self.hover)))
+            .hover(move |style| style.bg(self.hover))
             .child(icon(glyph, 18., self.muted))
     }
 
@@ -814,7 +820,7 @@ impl Palette {
             .rounded_md()
             .cursor_pointer()
             .text_size(px(12.))
-            .hover(move |style| style.bg(rgb(self.hover)))
+            .hover(move |style| style.bg(self.hover))
             .child(icon(glyph, if glyph == "cloud" { 17. } else { 16. }, self.text).mr(px(12.)))
             .child(div().flex_1().child(name))
     }
@@ -831,7 +837,7 @@ impl Palette {
             .gap_0()
             .py(px(18.))
             .border_b_1()
-            .border_color(rgb(self.line))
+            .border_color(self.line)
             .child(
                 div()
                     .w(gpui::relative(if compact { 0.32 } else { 0.34 }))
@@ -867,7 +873,7 @@ impl Palette {
             .pt(px(9.))
             .pb(px(12.))
             .border_b_1()
-            .border_color(rgb(self.line))
+            .border_color(self.line)
             .text_size(px(12.))
             .child(label)
             .child(self.checkbox_mark(Some(checked), 13.))
@@ -898,7 +904,7 @@ impl Astral {
                     .px_3()
                     .rounded(px(5.))
                     .border_1()
-                    .border_color(rgb(palette.line))
+                    .border_color(palette.line)
                     .bg(rgb(palette.surface))
                     .child(icon("folder", 17., palette.text))
                     .child(
@@ -1044,7 +1050,7 @@ impl Astral {
                     .gap(px(if compact { 22. } else { 30. }))
                     .py(px(32.))
                     .border_b_1()
-                    .border_color(rgb(palette.line))
+                    .border_color(palette.line)
                     .child(
                         div()
                             .size(px(75.))
@@ -1055,7 +1061,7 @@ impl Astral {
                             .bg(rgb(palette.surface))
                             .rounded(px(9.))
                             .border_1()
-                            .border_color(rgb(palette.line))
+                            .border_color(palette.line)
                             .when(glyph == "wago", |mark| {
                                 mark.child(gpui::img(self.wago_icon.clone()).size(px(32.)))
                             })
@@ -1096,7 +1102,7 @@ impl Astral {
                         div()
                             .flex_shrink_0()
                             .flex().items_center().gap(px(7.)).px(px(10.)).py(px(7.))
-                            .border_1().border_color(rgb(palette.line)).rounded_full()
+                            .border_1().border_color(palette.line).rounded_full()
                             .text_size(px(11.))
                             .line_height(px(13.2))
                             .when(available, |badge| badge.child(icon("check", 13., palette.text)).child("Available"))
@@ -1271,7 +1277,7 @@ impl Astral {
                     .rounded(px(14.))
                     .bg(rgb(palette.panel))
                     .border_1()
-                    .border_color(rgb(palette.line))
+                    .border_color(palette.line)
                     .shadow(vec![gpui::BoxShadow {
                         color: gpui::rgba(0x00000044).into(),
                         offset: gpui::point(px(0.), px(20.)),
@@ -1327,12 +1333,12 @@ impl Astral {
                                         .h(px(44.))
                                         .px(px(14.))
                                         .gap(px(13.))
-                                        .hover(move |style| style.bg(rgb(palette.hover)))
+                                        .hover(move |style| style.bg(palette.hover))
                                         .track_focus(&self.quick_find_rows[index])
                                         .when(
                                             selected == index
                                                 && self.quick_find_rows[index].is_focused(window),
-                                            |row| row.bg(rgb(palette.hover)),
+                                            |row| row.bg(palette.hover),
                                         )
                                         .child(icon(glyph, 18., palette.text))
                                         .child(page.title())
@@ -1421,11 +1427,11 @@ impl Astral {
             .px_3()
             .rounded_md()
             .border_1()
-            .border_color(rgb(if focused {
-                palette.accent
+            .border_color(if focused {
+                rgb(palette.accent)
             } else {
                 palette.line
-            }))
+            })
             .text_size(px(12.))
             .child(icon("search", 15., palette.muted))
             .child(input)
@@ -1594,9 +1600,9 @@ impl Astral {
             .gap(px(8.))
             .border_t_1()
             .border_color(rgb(palette.text))
-            .hover(move |style| style.bg(rgb(palette.hover)))
+            .hover(move |style| style.bg(palette.hover))
             .when(self.selected.as_deref() == Some(&folder), |row| {
-                row.bg(rgb(palette.hover))
+                row.bg(palette.hover)
             })
             .child(keyboard_button(
                 div()
@@ -1916,7 +1922,7 @@ impl Astral {
             .p(px(35.))
             .bg(rgb(palette.panel))
             .border_l_1()
-            .border_color(rgb(palette.line))
+            .border_color(palette.line)
             .shadow_lg()
             .overflow_y_scroll()
             .occlude()
@@ -1957,7 +1963,7 @@ impl Astral {
                 div()
                     .mb(px(24.))
                     .border_y_1()
-                    .border_color(rgb(palette.line))
+                    .border_color(palette.line)
                     .py(px(21.))
                     .flex()
                     .flex_col()
@@ -2150,7 +2156,7 @@ impl Astral {
                                 .p_3()
                                 .bg(rgb(palette.surface))
                                 .border_1()
-                                .border_color(rgb(palette.line))
+                                .border_color(palette.line)
                                 .text_size(px(11.))
                                 .line_height(px(20.)),
                         )
@@ -2187,7 +2193,7 @@ impl Astral {
             .child(
                 div()
                     .border_t_1()
-                    .border_color(rgb(palette.line))
+                    .border_color(palette.line)
                     .pt_4()
                     .flex()
                     .flex_col()
@@ -2285,7 +2291,7 @@ impl Render for Astral {
             .pl(px(inset + if cfg!(target_os = "macos") { 65. } else { 0. }))
             .pr(px(inset))
             .border_b_1()
-            .border_color(rgb(palette.line))
+            .border_color(palette.line)
             .child(
                 div()
                     .flex()
@@ -2514,7 +2520,7 @@ impl Render for Astral {
                 .rounded(px(8.))
                 .bg(rgb(palette.panel))
                 .border_1()
-                .border_color(rgb(palette.line))
+                .border_color(palette.line)
                 .shadow_lg()
                 .occlude();
             match kind {
@@ -2561,7 +2567,7 @@ impl Render for Astral {
                                 .rounded_md()
                                 .cursor_pointer()
                                 .text_size(px(13.))
-                                .hover(move |style| style.bg(rgb(palette.hover)))
+                                .hover(move |style| style.bg(palette.hover))
                                 .child(gpui::img(self.client_icons[index].clone()).size(px(22.)))
                                 .child(div().flex_1().child(target.label()))
                                 .when(target == client, |row| {
@@ -2647,7 +2653,7 @@ impl Render for Astral {
                                 .pb(px(19.))
                                 .mb(px(5.))
                                 .border_b_1()
-                                .border_color(rgb(palette.line))
+                                .border_color(palette.line)
                                 .child(palette.profile_avatar(account_name, true))
                                 .child(
                                     div()
@@ -2760,7 +2766,7 @@ impl Render for Astral {
                                 .mt(px(5.))
                                 .rounded_none()
                                 .border_t_1()
-                                .border_color(rgb(palette.line));
+                                .border_color(palette.line);
                             panel.child(if self.account_work_in_progress() {
                                 signout.opacity(0.55).cursor_default()
                             } else {
@@ -3125,7 +3131,7 @@ impl Render for Astral {
                             .pt_1()
                             .pb(px(25.))
                             .border_b_1()
-                            .border_color(rgb(palette.line))
+                            .border_color(palette.line)
                             .child(self.search_box(window, cx))
                             .child(if searching || self.addon_batch_running() {
                                 palette

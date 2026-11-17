@@ -619,7 +619,7 @@ impl Astral {
             .gap_2()
             .p(px(20.))
             .border_1()
-            .border_color(rgb(palette.line))
+            .border_color(palette.line)
             .bg(rgb(palette.surface));
         if !missing.is_empty() {
             let button = palette.button(
@@ -837,7 +837,7 @@ impl Astral {
         let mut panel = div()
             .p(px(20.))
             .border_1()
-            .border_color(rgb(palette.line))
+            .border_color(palette.line)
             .bg(rgb(palette.surface))
             .flex()
             .flex_col()

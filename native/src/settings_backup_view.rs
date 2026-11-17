@@ -212,7 +212,7 @@ impl Astral {
             .flex_col()
             .gap_2()
             .border_b_1()
-            .border_color(rgb(palette.line))
+            .border_color(palette.line)
             .mt(px(18.))
             .pt(px(9.))
             .pb(px(12.))
@@ -426,7 +426,7 @@ impl Astral {
                     .id("profile-addon-list")
                     .max_h(px(360.))
                     .border_t_1()
-                    .border_color(rgb(palette.line))
+                    .border_color(palette.line)
                     .overflow_y_scroll()
                     .children(ordered_rows.into_iter().enumerate().map(|(index, addon)| {
                         let value = state
@@ -458,7 +458,7 @@ impl Astral {
                             .text_size(px(13.))
                             .line_height(px(15.))
                             .border_b_1()
-                            .border_color(rgb(palette.line))
+                            .border_color(palette.line)
                             .child(div().child(addon.name.clone()).when(
                                 addon.managed || value.is_none(),
                                 |label| {
@@ -744,7 +744,7 @@ impl Astral {
                 .when(!review.addon_changes.is_empty(), |dialog| dialog.child(
                     div().id("profile-review-addons").block().max_h(px(280.)).overflow_y_scroll()
                         .children(review.addon_changes.iter().map(|change| {
-                            div().flex().items_center().justify_between().gap(px(20.)).py(px(16.)).text_size(px(12.)).line_height(px(14.)).border_b_1().border_color(rgb(palette.line))
+                            div().flex().items_center().justify_between().gap(px(20.)).py(px(16.)).text_size(px(12.)).line_height(px(14.)).border_b_1().border_color(palette.line)
                                 .child(div().font_weight(gpui::FontWeight::BOLD).child(change.name.clone()))
                                 .child(palette.label(format!("{} → {}", choice_label(change.before), choice_label(change.after))).text_size(px(12.)))
                         }))
@@ -1301,7 +1301,7 @@ impl Astral {
                     .w(px(select_width + if mac_popup { 5. } else { 0. }))
                     .occlude().flex().flex_col().gap(px(if mac_popup { 0. } else { 4. })).p_1()
                     .bg(rgb(if mac_popup { menu_background } else { palette.panel }))
-                    .border_1().border_color(rgb(palette.line)).rounded(px(if mac_popup { 10. } else { 4. }))
+                    .border_1().border_color(palette.line).rounded(px(if mac_popup { 10. } else { 4. }))
                     .shadow(vec![gpui::BoxShadow { color: gpui::rgba(0x00000040).into(), offset: gpui::point(px(0.), px(6.)), blur_radius: px(16.), spread_radius: px(0.) }])
                     .children(options.into_iter().take(options_len).enumerate().map(|(index, (profile, name, cloud))| {
                         let focus = self.profile_review_focus.picker_options[index].clone();
