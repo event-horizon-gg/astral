@@ -16,6 +16,13 @@ pub fn show(window: &mut Window, cx: &mut App) {
     cx.activate(true);
 }
 
+pub fn reopen(app: &mut crate::Astral, window: &mut Window, cx: &mut App) {
+    show(window, cx);
+    if window.focused(cx).is_none() {
+        app.root_focus.focus(window);
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn native_handle(window: &Window) -> Option<windows_sys::Win32::Foundation::HWND> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -185,8 +192,7 @@ mod platform {
                     .update(|cx| match action {
                         Action::Open => {
                             let _ = window.update(cx, |app, window, cx| {
-                                show(window, cx);
-                                app.root_focus.focus(window);
+                                reopen(app, window, cx);
                             });
                         }
                         Action::Quit => cx.quit(),

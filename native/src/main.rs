@@ -3670,7 +3670,9 @@ fn main() {
     let application = Application::new().with_assets(icons::Icons);
     application.on_reopen(|cx| {
         for window in cx.windows() {
-            let _ = window.update(cx, |_, window, cx| tray::show(window, cx));
+            if let Some(window) = window.downcast::<Astral>() {
+                let _ = window.update(cx, |app, window, cx| tray::reopen(app, window, cx));
+            }
         }
     });
     application.run(move |cx: &mut App| {

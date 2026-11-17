@@ -275,8 +275,7 @@ impl Instance {
                 {
                     let result = cx.update(|cx| {
                         let result = window.update(cx, |app, window, cx| {
-                            crate::tray::show(window, cx);
-                            app.root_focus.focus(window);
+                            crate::tray::reopen(app, window, cx);
                         });
                         if result.is_ok() {
                             cx.activate(true);
