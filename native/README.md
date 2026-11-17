@@ -88,6 +88,8 @@ Native uses `native-vX.Y.Z` tags in the Astral repository. The public GitHub wor
 
 On Windows, run `cargo test --locked --manifest-path native/Cargo.toml signed_windows_update` with WoW closed. This checks a signed update against temporary executables, including ZIP tampering, successful acknowledgement, and rollback. The test uses Windows PowerShell and an ephemeral signing key.
 
+The ignored Windows scheduler integration check is restricted to GitHub Actions. It registers, queries and deletes a uniquely named verification task using the production XML generator, checking the 15-minute interval, least-privilege interactive principal, battery behavior and missed-start setting. It never replaces the installed updater task or starts an updater. Its trigger is set a day ahead and cleanup also runs after an assertion failure. Ordinary local `cargo test` skips this check; the Windows verification workflow includes it.
+
 To check the native HTTP client against the actual Worker handlers locally, use Node 24 or newer:
 
 ```sh

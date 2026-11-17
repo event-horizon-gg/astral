@@ -305,6 +305,124 @@ mod windows {
         assert!(xml.contains("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>"));
         Ok(())
     }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "registers a disposable task on an isolated GitHub Windows runner"]
+    fn windows_scheduler_accepts_the_real_task_definition_and_battery_settings() -> io::Result<()> {
+        use std::{
+            env, fs,
+            os::windows::process::CommandExt,
+            path::PathBuf,
+            process::Command,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+        if env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+            return Err(io::Error::other(
+                "Run this registration check on the isolated GitHub Windows runner.",
+            ));
+        }
+        let system = PathBuf::from(
+            env::var_os("SystemRoot")
+                .ok_or_else(|| io::Error::other("Windows system folder unavailable."))?,
+        )
+        .join("System32");
+        let command = |name: &str| {
+            let mut command = Command::new(system.join(name));
+            command.creation_flags(0x0800_0000);
+            command
+        };
+        let user = command("whoami.exe")
+            .args(["/user", "/fo", "csv", "/nh"])
+            .output()?;
+        assert!(user.status.success());
+        let sid = user_sid(&user.stdout)?;
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos();
+        let task_name = format!("AstralNativeVerification-{}-{stamp:x}", std::process::id());
+        let scheduler = system.join("schtasks.exe");
+        struct Cleanup {
+            scheduler: PathBuf,
+            name: String,
+        }
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = Command::new(&self.scheduler)
+                    .creation_flags(0x0800_0000)
+                    .args(["/Delete", "/TN", &self.name, "/F"])
+                    .output();
+            }
+        }
+        // Never use the real application's task name or run this task. Even if
+        // cleanup fails, its target is the test harness, not a WoW updater.
+        assert!(
+            !command("schtasks.exe")
+                .args(["/Query", "/TN", &task_name])
+                .output()?
+                .status
+                .success()
+        );
+        let executable = task_command(&env::current_exe()?)?;
+        let start = (time::OffsetDateTime::now_utc() + time::Duration::days(1))
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(io::Error::other)?;
+        let xml = task_xml(&executable, sid, &start);
+        let directory = tempfile::tempdir()?;
+        let definition = directory.path().join("daily.xml");
+        fs::write(&definition, utf16_xml(&xml))?;
+        let created = command("schtasks.exe")
+            .args(["/Create", "/TN", &task_name, "/XML"])
+            .arg(&definition)
+            .output()?;
+        assert!(
+            created.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&created.stdout),
+            String::from_utf8_lossy(&created.stderr)
+        );
+        let _cleanup = Cleanup {
+            scheduler,
+            name: task_name.clone(),
+        };
+        let queried = command("schtasks.exe")
+            .args(["/Query", "/TN", &task_name, "/XML"])
+            .output()?;
+        assert!(queried.status.success());
+        let registered = xml_output(&queried.stdout);
+        for expected in [
+            format!("<Command>{executable}</Command>"),
+            format!("<Arguments>{ARGUMENT}</Arguments>"),
+            "<Interval>PT15M</Interval>".into(),
+            "<RunLevel>LeastPrivilege</RunLevel>".into(),
+            "<LogonType>InteractiveToken</LogonType>".into(),
+            "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>".into(),
+            "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>".into(),
+            "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>".into(),
+            "<StartWhenAvailable>true</StartWhenAvailable>".into(),
+        ] {
+            assert!(
+                registered.contains(&expected),
+                "Registered task changed {expected}: {registered}"
+            );
+        }
+        assert!(
+            command("schtasks.exe")
+                .args(["/Delete", "/TN", &task_name, "/F"])
+                .output()?
+                .status
+                .success()
+        );
+        assert!(
+            !command("schtasks.exe")
+                .args(["/Query", "/TN", &task_name])
+                .output()?
+                .status
+                .success()
+        );
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "windows")]
