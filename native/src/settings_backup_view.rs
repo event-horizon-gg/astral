@@ -64,6 +64,7 @@ pub struct State {
     accounts: Vec<String>,
     choosing_account: bool,
     choosing_profile: bool,
+    profile_type_ahead: crate::type_ahead::TypeAhead,
     game_running: bool,
     checking_game: bool,
     account: Option<String>,
@@ -1073,6 +1074,7 @@ impl Astral {
     pub(crate) fn dismiss_account_profile_picker(&mut self, cx: &mut Context<Self>) -> bool {
         let was_open = std::mem::take(&mut self.settings_backups.choosing_profile);
         if was_open {
+            self.settings_backups.profile_type_ahead.reset();
             cx.notify();
         }
         was_open
@@ -1095,11 +1097,13 @@ impl Astral {
     pub(crate) fn validate_account_profile_picker(&mut self, window: &mut Window) {
         if self.settings_backups.choosing_profile && !self.account_profile_picker_available() {
             self.settings_backups.choosing_profile = false;
+            self.settings_backups.profile_type_ahead.reset();
             self.root_focus.focus(window);
         }
     }
 
     fn toggle_account_profile_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_backups.profile_type_ahead.reset();
         self.settings_backups.choosing_profile = !self.settings_backups.choosing_profile;
         if self.settings_backups.choosing_profile {
             let options = profile_picker_choices(
@@ -1117,6 +1121,64 @@ impl Astral {
             self.profile_review_focus.picker.focus(window);
         }
         cx.notify();
+    }
+
+    fn profile_picker_type_ahead(
+        &mut self,
+        key: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(text) = crate::type_ahead::printable(key) else {
+            return false;
+        };
+        if !self.account_profile_picker_available() {
+            return false;
+        }
+        let options =
+            profile_picker_choices(&self.settings_backups.profile, self.cloud_picker_profiles());
+        let active = self.settings_backups.profile.active;
+        let open = self.settings_backups.choosing_profile;
+        let selected = if open {
+            self.profile_review_focus
+                .picker_options
+                .iter()
+                .position(|handle| handle.is_focused(window))
+        } else {
+            options
+                .iter()
+                .position(|(profile, _, _)| *profile == active)
+        }
+        .unwrap_or(0);
+        let names = options
+            .iter()
+            .take(self.profile_review_focus.picker_options.len())
+            .map(|(_, name, _)| name.as_str())
+            .collect::<Vec<_>>();
+        if let Some(index) = self.settings_backups.profile_type_ahead.find(
+            text,
+            &names,
+            selected,
+            std::time::Instant::now(),
+        ) {
+            if open {
+                self.profile_review_focus.picker_options[index].focus(window);
+            } else if let Some((profile, _, cloud)) = options.get(index) {
+                if *profile != active {
+                    if let Some(cloud) = cloud.clone() {
+                        self.review_cloud_picker(cloud, window, cx);
+                    } else {
+                        self.review_local_profile(
+                            *profile,
+                            *profile == Profile::Handheld,
+                            window,
+                            cx,
+                        );
+                    }
+                }
+            }
+        }
+        true
     }
 
     pub(crate) fn account_profile_picker(
@@ -1216,8 +1278,14 @@ impl Astral {
                                     .profile_review_focus
                                     .picker_options[options_len.saturating_sub(1)]
                                 .focus(window),
-                                _ => return,
+                                _ => {
+                                    if app.profile_picker_type_ahead(&event.keystroke, window, cx) {
+                                        cx.stop_propagation();
+                                    }
+                                    return;
+                                }
                             }
+                            app.settings_backups.profile_type_ahead.reset();
                             cx.stop_propagation();
                         }),
                     )
@@ -1264,16 +1332,22 @@ impl Astral {
                             .when(mac_popup, |button| button.border_0()
                                 .focus(|style| style.border_0().bg(rgb(0x0a84ff)).text_color(rgb(0xffffff)))
                                 .on_hover(move |hovered, window, _| { if *hovered { hover_focus.focus(window); } }))
-                            .on_key_down(move |event, window, cx| {
+                            .on_key_down(cx.listener(move |app, event: &gpui::KeyDownEvent, window, cx| {
                                 match event.keystroke.key.as_str() {
                                     "down" => next.focus(window),
                                     "up" => previous.focus(window),
                                     "home" => first.focus(window),
                                     "end" => last.focus(window),
-                                    _ => return,
+                                    _ => {
+                                        if app.profile_picker_type_ahead(&event.keystroke, window, cx) {
+                                            cx.stop_propagation();
+                                        }
+                                        return;
+                                    }
                                 }
+                                app.settings_backups.profile_type_ahead.reset();
                                 cx.stop_propagation();
-                            })
+                            }))
                     }))).with_priority(1),
             ))
             .when(active == Profile::Handheld && available, |picker| {

@@ -39,6 +39,7 @@ mod sync_format;
 mod talents;
 mod text_history;
 mod tray;
+mod type_ahead;
 mod typography;
 mod ui_icons;
 
