@@ -914,6 +914,7 @@ impl Astral {
                     Err(error) => state.status = Some(Err(error.to_string())),
                 }
                 app.load_last_sync(cx);
+                app.refresh_cloud_context(cx);
                 cx.notify();
             });
         })
@@ -1061,6 +1062,7 @@ impl Astral {
                     app.show_notification(message, true, cx);
                 }
                 app.load_last_sync(cx);
+                app.refresh_cloud_context(cx);
                 cx.notify();
             });
         })

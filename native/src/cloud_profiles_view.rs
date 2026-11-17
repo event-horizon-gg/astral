@@ -177,7 +177,7 @@ impl Astral {
             .and_then(|root| self.selected_local_account(client, root));
         self.account.error = None;
         self.account.profiles.message = None;
-        self.account.busy = Some("Updating cloud profiles…");
+        self.begin_account_work("Updating cloud profiles…");
         let catalog = self.catalog.clone();
         let task = cx.background_executor().spawn(async move {
             let service = Service::new();
@@ -310,7 +310,7 @@ impl Astral {
                 .is_some_and(|error| unauthorized(error.as_ref()))
                 || matches!(&result, Ok((Err(error), _, _, _)) if error.status == Some(401));
             if expired {
-                let _ = credentials::remove();
+                let _ = credentials::remove_background();
             }
             (result, expired)
         });

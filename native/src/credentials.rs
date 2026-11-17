@@ -48,6 +48,14 @@ mod platform {
 
     pub fn remove() -> io::Result<()> {
         let _access = KEYCHAIN_ACCESS.lock().map_err(|_| unavailable())?;
+        delete()
+    }
+
+    pub fn remove_background() -> io::Result<()> {
+        background_read(delete)
+    }
+
+    fn delete() -> io::Result<()> {
         match delete_generic_password(SERVICE, ACCOUNT) {
             Ok(()) => Ok(()),
             Err(error) if error.code() == ITEM_NOT_FOUND => Ok(()),
@@ -207,3 +215,7 @@ pub fn save(session: &crate::cloud::Session) -> io::Result<()> {
 }
 
 pub use platform::remove;
+#[cfg(not(target_os = "macos"))]
+pub use platform::remove as remove_background;
+#[cfg(target_os = "macos")]
+pub use platform::remove_background;

@@ -68,6 +68,9 @@ pub struct State {
     machine: Option<String>,
     manage_data: bool,
     busy: Option<&'static str>,
+    metadata: Metadata,
+    metadata_context: Option<AccountContext>,
+    metadata_error: Option<String>,
     session: Option<Session>,
     overview: Option<Overview>,
     error: Option<String>,
@@ -94,6 +97,53 @@ pub struct State {
     delete_input: Option<Entity<crate::search_input::SearchInput>>,
     profiles: profiles::State,
     auto_sync: AutoSync,
+}
+
+#[derive(Clone, PartialEq)]
+struct AccountContext {
+    client: crate::Client,
+    root: Option<PathBuf>,
+    account: Option<String>,
+    profile: Option<crate::settings_backup::Profile>,
+    session: String,
+}
+
+#[derive(Default)]
+struct Metadata {
+    request: u64,
+    loading: bool,
+}
+
+impl State {
+    fn begin_work(&mut self, label: &'static str) {
+        self.metadata.invalidate();
+        self.busy = Some(label);
+    }
+}
+
+impl Metadata {
+    fn current(&self, request: u64) -> bool {
+        self.request == request
+    }
+
+    fn begin(&mut self) -> u64 {
+        self.request = self.request.wrapping_add(1);
+        self.loading = true;
+        self.request
+    }
+
+    fn invalidate(&mut self) {
+        self.request = self.request.wrapping_add(1);
+        self.loading = false;
+    }
+
+    fn finish(&mut self, request: u64) -> bool {
+        if !self.current(request) || !self.loading {
+            return false;
+        }
+        self.loading = false;
+        true
+    }
 }
 
 struct SyncDialogFocus {
@@ -175,6 +225,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn metadata_reads_do_not_block_controls_or_survive_a_mutation() {
+        let mut state = State::default();
+        let old_read = state.metadata.begin();
+        assert!(state.metadata.loading);
+        assert!(state.busy.is_none());
+        state.begin_work("Syncing settings…");
+        assert!(!state.metadata.finish(old_read));
+        assert_eq!(state.busy, Some("Syncing settings…"));
+        assert!(!state.metadata.loading);
+        state.busy = None;
+        let new_read = state.metadata.begin();
+        assert!(!state.metadata.finish(old_read));
+        assert!(state.metadata.loading);
+        assert!(state.metadata.finish(new_read));
+        assert!(
+            state.metadata.current(new_read),
+            "other sections may finish after the overview"
+        );
+        assert!(!state.metadata.loading);
+        assert!(!state.metadata.finish(new_read));
+    }
+
+    #[test]
+    fn replacing_a_metadata_read_ignores_the_older_response() {
+        let mut metadata = Metadata::default();
+        let retail = metadata.begin();
+        let forever = metadata.begin();
+        assert!(!metadata.finish(retail));
+        assert!(metadata.loading);
+        assert!(metadata.finish(forever));
+        assert!(!metadata.loading);
+    }
+
+    #[test]
     fn automatic_sync_reports_changed_issues_without_reopening_dismissed_ones() {
         let mut sync = AutoSync::default();
         assert!(sync.report_issue("manual".into(), false));
@@ -253,6 +337,132 @@ fn unauthorized(error: &(dyn Error + 'static)) -> bool {
 }
 
 impl Astral {
+    fn begin_account_work(&mut self, label: &'static str) {
+        self.account.begin_work(label);
+    }
+
+    fn account_context(&self) -> Option<AccountContext> {
+        let client = self.preferences.client;
+        let root = self.root(client).cloned();
+        Some(AccountContext {
+            client,
+            account: root
+                .as_deref()
+                .and_then(|root| self.selected_local_account(client, root)),
+            profile: root
+                .as_deref()
+                .and_then(|root| self.loaded_local_profile(client, root)),
+            root,
+            session: self.account.session.as_ref()?.fingerprint(),
+        })
+    }
+
+    pub(crate) fn refresh_cloud_context(&mut self, cx: &mut Context<Self>) {
+        if self.page == crate::Page::Account
+            && self.account.session.is_some()
+            && self.account.metadata_context != self.account_context()
+        {
+            self.refresh_account(None, cx);
+        }
+    }
+
+    fn account_reply_current(
+        &mut self,
+        request: u64,
+        context: &Option<AccountContext>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.account.metadata.current(request) {
+            return false;
+        }
+        if &self.account_context() != context {
+            self.refresh_account(None, cx);
+            return false;
+        }
+        true
+    }
+
+    fn refresh_secondary_account_data(
+        &mut self,
+        request: u64,
+        context: Option<AccountContext>,
+        session: Session,
+        client: crate::Client,
+        cx: &mut Context<Self>,
+    ) {
+        let shared_session = session.clone();
+        let shared_context = context.clone();
+        let shared = cx
+            .background_executor()
+            .spawn(async move { Service::new().shared_library(&shared_session, client) });
+        cx.spawn(async move |this, cx| {
+            let result = shared.await;
+            let _ = this.update(cx, |app, cx| {
+                if !app.account_reply_current(request, &shared_context, cx) {
+                    return;
+                }
+                match result {
+                    Ok(library) => {
+                        app.account.shared[client.index()] = Some(library);
+                        app.account.shared_error = None;
+                    }
+                    Err(error) if error.status == Some(401) => {
+                        app.expire_account_read(error.to_string(), cx)
+                    }
+                    Err(error) => app.account.shared_error = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        let profiles = cx
+            .background_executor()
+            .spawn(async move { Service::new().profiles(&session, client) });
+        cx.spawn(async move |this, cx| {
+            let result = profiles.await;
+            let _ = this.update(cx, |app, cx| {
+                if !app.account_reply_current(request, &context, cx) {
+                    return;
+                }
+                match result {
+                    Ok(rows) => app.remember_cloud_profiles(client, rows),
+                    Err(error) if error.status == Some(401) => {
+                        app.expire_account_read(error.to_string(), cx)
+                    }
+                    Err(_) => {}
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn expire_account_read(&mut self, message: String, cx: &mut Context<Self>) {
+        self.begin_account_work("Signing out…");
+        self.account.session = None;
+        self.account.overview = None;
+        self.account.revoke = None;
+        self.account.shared = [None, None];
+        self.account.history_scope = None;
+        self.account.metadata_context = None;
+        self.account.metadata_error = None;
+        self.account.error = Some(message);
+        let cleanup = cx
+            .background_executor()
+            .spawn(async { credentials::remove_background() });
+        cx.spawn(async move |this, cx| {
+            let result = cleanup.await;
+            let _ = this.update(cx, |app, cx| {
+                app.account.busy = None;
+                if let Err(error) = result {
+                    app.account.error = Some(error.to_string());
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub(crate) fn open_signed_account_fixture(&mut self) {
         if !self.fixture {
             return;
@@ -690,7 +900,7 @@ impl Astral {
                 return;
             }
         }
-        self.account.busy = Some("Opening account…");
+        self.begin_account_work("Opening account…");
         self.account.error = None;
         let task = cx
             .background_executor()
@@ -728,7 +938,7 @@ impl Astral {
             return;
         }
         self.account.error = None;
-        self.account.busy = Some("Starting Battle.net sign-in…");
+        self.begin_account_work("Starting Battle.net sign-in…");
         let service = Service::new();
         let worker = service.clone();
         let task = cx.background_executor().spawn(async move {
@@ -742,7 +952,7 @@ impl Astral {
                 let mut pair = task.await?;
                 this.update(cx, |app, cx| {
                     cx.open_url(&pair.url);
-                    app.account.busy = Some("Finish signing in in your browser…");
+                    app.begin_account_work("Finish signing in in your browser…");
                     cx.notify();
                 })
                 .map_err(|_| "Astral was closed.".to_owned())?;
@@ -817,14 +1027,26 @@ impl Astral {
             return;
         };
         let removed_device = revoke.is_some();
-        self.account.busy = Some(if removed_device {
-            "Removing device…"
-        } else {
-            "Loading devices…"
-        });
+        let context = self.account_context();
+        if !removed_device
+            && self.account.metadata.loading
+            && self.account.metadata_context == context
+        {
+            return;
+        }
+        if removed_device {
+            self.begin_account_work("Removing device…");
+        }
+        let request = self.account.metadata.begin();
+        if self.account.metadata_context != context {
+            self.account.overview = None;
+            self.account.history_scope = None;
+            self.account.history_error = None;
+            self.account.metadata_context = context.clone();
+        }
         self.account.error = None;
+        self.account.metadata_error = None;
         let client = self.preferences.client;
-        self.account.history_restore = None;
         let root = self.root(client).cloned();
         let selected = root
             .as_deref()
@@ -834,6 +1056,7 @@ impl Astral {
             .as_deref()
             .and_then(Path::parent)
             .map(Path::to_path_buf);
+        self.refresh_secondary_account_data(request, context.clone(), session.clone(), client, cx);
         let task = cx.background_executor().spawn(async move {
             let service = Service::new();
             let (scope, mut history_error) = match load_history_scope(client, root, data, selected)
@@ -870,32 +1093,20 @@ impl Astral {
                         result => result,
                     }
                 });
-            let local_error = if result
-                .as_ref()
-                .is_err_and(|error| error.status == Some(401))
-            {
-                credentials::remove().err()
-            } else {
-                None
-            };
-            let shared = if result.is_ok() {
-                Some(service.shared_library(&session, client))
-            } else {
-                None
-            };
-            let profiles = if result.is_ok() {
-                Some(service.profiles(&session, client))
-            } else {
-                None
-            };
-            (result, local_error, shared, scope, history_error, profiles)
+            (result, scope, history_error)
         });
         cx.spawn(async move |this, cx| {
-            let (result, local_error, shared, scope, history_error, profiles) = task.await;
+            let (result, scope, history_error) = task.await;
             let _ = this.update(cx, |app, cx| {
-                app.account.busy = None;
-                if app.preferences.client != client {
+                if !app.account.metadata.finish(request) {
+                    return;
+                }
+                if removed_device {
+                    app.account.busy = None;
+                }
+                if app.account_context() != context {
                     app.refresh_account(None, cx);
+                    cx.notify();
                     return;
                 }
                 match result {
@@ -907,34 +1118,18 @@ impl Astral {
                         app.account.history_scope = scope;
                         app.account.history_error = history_error;
                         app.account.revoke = None;
-                        if let Some(Ok(rows)) = profiles {
-                            app.remember_cloud_profiles(client, rows);
-                        }
-                        if let Some(shared) = shared {
-                            match shared {
-                                Ok(shared) => {
-                                    app.account.shared[client.index()] = Some(shared);
-                                    app.account.shared_error = None;
-                                }
-                                Err(error) => app.account.shared_error = Some(error.to_string()),
-                            }
-                        }
                     }
                     Err(error) => {
                         if removed_device {
                             app.show_notification(error.to_string(), true, cx);
                         }
                         if error.status == Some(401) {
-                            app.account.session = None;
-                            app.account.overview = None;
-                            app.account.revoke = None;
-                            app.account.shared = [None, None];
-                            app.account.history_scope = None;
+                            app.expire_account_read(error.to_string(), cx);
+                        } else if !removed_device {
+                            app.account.metadata_error = Some(error.to_string());
+                        } else {
+                            app.account.error = Some(error.to_string());
                         }
-                        app.account.error = Some(
-                            local_error
-                                .map_or_else(|| error.to_string(), |error| error.to_string()),
-                        );
                     }
                 }
                 cx.notify();
@@ -955,7 +1150,7 @@ impl Astral {
             return;
         };
         let removed_device = self.account.revoke.is_some();
-        self.account.busy = Some("Signing out…");
+        self.begin_account_work("Signing out…");
         self.account.error = None;
         let task = cx.background_executor().spawn(async move {
             let revoked = Service::new().logout(&session);
@@ -1055,7 +1250,7 @@ impl Astral {
         });
         let catalog = self.catalog.clone();
         self.account.auto_sync.last_attempt = Some(Instant::now());
-        self.account.busy = Some(if automatic {
+        self.begin_account_work(if automatic {
             "Checking connected WoW settings…"
         } else {
             "Syncing WoW settings…"
@@ -1104,7 +1299,7 @@ impl Astral {
                 || other_result.as_ref().and_then(|result| result.as_ref().err())
                     .and_then(|error| error.downcast_ref::<cloud::Error>())
                     .is_some_and(|error| error.status == Some(401));
-            if expired { let _ = credentials::remove(); }
+            if expired { let _ = credentials::remove_background(); }
             (result, other_result, expired)
         });
         cx.spawn(async move |this, cx| {
@@ -1208,7 +1403,7 @@ impl Astral {
         };
         let catalog = self.catalog.clone();
         let preferences = self.preferences_path.clone();
-        self.account.busy = Some("Installing addon…");
+        self.begin_account_work("Installing addon…");
         self.account.shared_error = None;
         self.account.shared_message = None;
         let task = cx.background_executor().spawn(async move {
@@ -1300,7 +1495,7 @@ impl Astral {
             return;
         }
         let catalog = self.catalog.clone();
-        self.account.busy = Some("Syncing shared addons…");
+        self.begin_account_work("Syncing shared addons…");
         self.account.shared_error = None;
         self.account.shared_message = None;
         let task = cx.background_executor().spawn(async move {
@@ -1317,7 +1512,7 @@ impl Astral {
                     .is_some_and(|error| error.status == Some(401));
                 results.push((client, result));
                 if expired {
-                    let _ = credentials::remove();
+                    let _ = credentials::remove_background();
                     return (results, true);
                 }
             }
@@ -1396,7 +1591,7 @@ impl Astral {
         }
         let selected = self.selected_local_account(scope.client, &scope.root);
         let catalog = self.catalog.clone();
-        self.account.busy = Some("Restoring cloud backup…");
+        self.begin_account_work("Restoring cloud backup…");
         self.account.error = None;
         self.account.history_error = None;
         self.account.history_restore = None;
@@ -1430,7 +1625,7 @@ impl Astral {
                 .err()
                 .is_some_and(|error| unauthorized(error.as_ref()));
             if expired {
-                let _ = credentials::remove();
+                let _ = credentials::remove_background();
             }
             (result, expired)
         });
@@ -1483,7 +1678,7 @@ impl Astral {
         let Some(session) = self.account.session.clone() else {
             return;
         };
-        self.account.busy = Some("Deleting cloud data…");
+        self.begin_account_work("Deleting cloud data…");
         self.account.error = None;
         let task = cx.background_executor().spawn(async move {
             let result = Service::new().delete_account_data(&session);
@@ -2575,14 +2770,22 @@ impl Astral {
                             }),
                     ),
                 )
-                .when(paused, |panel| panel.child(palette.label("Cloud sync is temporarily paused. Your saved backups are still available.").text_size(px(14.))))
-                .child(self.cloud_devices_panel(palette, cx))
-                .child(
-                    div()
-                        .mt(px(34.))
-                        .child(self.cloud_history_panel(palette, cx)),
-                )
-                .child(self.cloud_data_controls(palette, window.viewport_size().width <= px(1000.), cx)),
+                .when_some(account.metadata_error.as_ref(), |panel, error| {
+                    panel.child(div().p(px(14.)).mb(px(20.)).rounded(px(8.)).border_1()
+                        .border_color(rgb(palette.line)).bg(rgb(palette.surface))
+                        .text_color(rgb(0xd18b35)).text_size(px(11.)).line_height(px(18.7))
+                        .child(error.clone()))
+                })
+                .when(account.overview.is_none() && account.error.is_none() && account.metadata_error.is_none(), |panel| {
+                    panel.child(palette.label("Loading your cloud setup…").text_size(px(10.)).line_height(px(12.)))
+                })
+                .when(account.overview.is_some() && account.metadata_error.is_none(), |panel| {
+                    panel
+                        .when(paused, |panel| panel.child(palette.label("Cloud sync is temporarily paused. Your saved backups are still available.").text_size(px(14.))))
+                        .child(self.cloud_devices_panel(palette, cx))
+                        .child(div().mt(px(34.)).child(self.cloud_history_panel(palette, cx)))
+                        .child(self.cloud_data_controls(palette, window.viewport_size().width <= px(1000.), cx))
+                }),
         );
         view.child(
             div()
