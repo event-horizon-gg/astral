@@ -1005,16 +1005,12 @@ impl Astral {
             for entry in group.entries {
                 let run = &entry.run;
                 let key_time = run.check_id.filter(|id| *id > 0).unwrap_or(run.checked_at);
-                for (index, update) in run.updates.iter().enumerate() {
+                for (index, result) in run.results().iter().enumerate() {
+                    if result.status == crate::batch::DailyStatus::Current {
+                        continue;
+                    }
                     let key = (key_time, entry.client.index(), index);
                     let expanded = self.activity.release_notes.contains(&key);
-                    let summary = format!(
-                        "{} · {} · {} → {}",
-                        update.name,
-                        entry.client.label(),
-                        update.from,
-                        update.to
-                    );
                     row = row.child(
                         activity_text_button(
                             palette,
@@ -1032,9 +1028,9 @@ impl Astral {
                         .text_size(px(12.))
                         .line_height(px(21.6))
                         .child(if expanded { "▾" } else { "▸" })
-                        .child(summary),
+                        .child(result.summary(entry.client)),
                     );
-                    if expanded && !update.notes.is_empty() {
+                    if expanded && !result.notes.is_empty() {
                         row = row.child(
                             div()
                                 .id(SharedString::from(format!("daily-notes-scroll-{key:?}")))
@@ -1042,7 +1038,7 @@ impl Astral {
                                 .overflow_y_scroll()
                                 .child(
                                     palette
-                                        .label(update.notes.clone())
+                                        .label(result.notes.clone())
                                         .font_family("monospace")
                                         .text_size(px(11.))
                                         .line_height(px(19.8))
@@ -1051,29 +1047,6 @@ impl Astral {
                                 ),
                         );
                     }
-                }
-                for (index, error) in run.errors.iter().enumerate() {
-                    let key = (key_time, entry.client.index(), run.updates.len() + index);
-                    let expanded = self.activity.release_notes.contains(&key);
-                    row = row.child(
-                        activity_text_button(
-                            palette,
-                            SharedString::from(format!("daily-error-{key:?}")),
-                            "",
-                            cx.listener(move |app, _: &(), _, cx| {
-                                if !app.activity.release_notes.remove(&key) {
-                                    app.activity.release_notes.insert(key);
-                                }
-                                cx.notify();
-                            }),
-                        )
-                        .py(px(13.))
-                        .my(px(10.))
-                        .text_size(px(12.))
-                        .line_height(px(21.6))
-                        .child(if expanded { "▾" } else { "▸" })
-                        .child(format!("{} · {error}", entry.client.label())),
-                    );
                 }
             }
             panel = panel.child(row);

@@ -170,6 +170,69 @@ pub struct DailyUpdate {
 pub struct DailyCheck {
     pub updates: Vec<DailyUpdate>,
     pub errors: Vec<String>,
+    pub results: Vec<DailyResult>,
+    pub deferred: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum DailyStatus {
+    Updated,
+    Current,
+    Review,
+    Error,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct DailyResult {
+    pub id: String,
+    pub name: String,
+    pub status: DailyStatus,
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub to: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub notes: String,
+}
+
+impl DailyResult {
+    pub fn summary(&self, client: Client) -> String {
+        let detail = if self.status == DailyStatus::Updated {
+            format!("{} → {}", self.from, self.to)
+        } else {
+            self.message.clone()
+        };
+        if self.name.is_empty() {
+            format!("{} · {detail}", client.label())
+        } else {
+            format!("{} · {} · {detail}", self.name, client.label())
+        }
+    }
+
+    pub fn issue(id: &str, name: &str, status: DailyStatus, message: &str) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            status,
+            from: String::new(),
+            to: String::new(),
+            message: message.into(),
+            notes: String::new(),
+        }
+    }
+}
+
+pub fn game_open(error: &str) -> bool {
+    error.contains("Close World of Warcraft") || error.contains("WoW started")
+}
+
+impl DailyCheck {
+    pub fn interrupted(&self) -> bool {
+        self.deferred || self.errors.iter().any(|error| game_open(error))
+    }
 }
 
 pub fn daily_updates(
@@ -190,8 +253,8 @@ pub fn daily_updates(
         if !source.supports(client) || excluded.contains(&source.folder) {
             continue;
         }
-        if let Err(error) = installer::game_closed() {
-            report.errors.push(error);
+        if installer::game_closed().is_err() {
+            report.deferred = true;
             break;
         }
         let result = (|| -> Result<(), String> {
@@ -207,8 +270,15 @@ pub fn daily_updates(
                 Some(release) => release.tag.clone(),
                 None => bundled::version(&source.folder).ok_or("Bundled addon unavailable.")?,
             };
-            let comparison = releases::compare(source, &addon.version, &tag)
-                .ok_or("Version format needs a manual review.")?;
+            let Some(comparison) = releases::compare(source, &addon.version, &tag) else {
+                report.results.push(DailyResult::issue(
+                    &source.id,
+                    &source.name,
+                    DailyStatus::Review,
+                    "Version format needs a manual review.",
+                ));
+                return Ok(());
+            };
             if comparison == Ordering::Greater {
                 let notes = release
                     .as_ref()
@@ -228,13 +298,36 @@ pub fn daily_updates(
                 if install_package(bytes, (&tag, &notes), &update, root, client, catalog)?
                     == "Updated"
                 {
+                    report.results.push(DailyResult {
+                        id: source.id.clone(),
+                        name: source.name.clone(),
+                        status: DailyStatus::Updated,
+                        from: addon.version.clone(),
+                        to: tag.clone(),
+                        message: String::new(),
+                        notes: notes.clone(),
+                    });
                     report.updates.push(DailyUpdate {
                         name: source.name.clone(),
                         from: addon.version.clone(),
                         to: tag,
                         notes,
                     });
+                } else {
+                    report.results.push(DailyResult::issue(
+                        &source.id,
+                        &source.name,
+                        DailyStatus::Current,
+                        "",
+                    ));
                 }
+            } else {
+                report.results.push(DailyResult::issue(
+                    &source.id,
+                    &source.name,
+                    DailyStatus::Current,
+                    "",
+                ));
             }
             if source.id == "talents" {
                 crate::talents::refresh(root)?;
@@ -242,9 +335,16 @@ pub fn daily_updates(
             Ok(())
         })();
         if let Err(error) = result {
-            let rate_limited = error.contains("rate limit");
+            let rate_limited = error.to_ascii_lowercase().contains("rate limit");
+            report.deferred |= game_open(&error);
+            report.results.push(DailyResult::issue(
+                &source.id,
+                &source.name,
+                DailyStatus::Error,
+                &error,
+            ));
             report.errors.push(format!("{}: {error}", source.name));
-            if rate_limited {
+            if rate_limited || report.deferred {
                 break;
             }
         }

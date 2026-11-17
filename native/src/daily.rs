@@ -23,6 +23,46 @@ pub struct Run {
     pub started_at: Option<u64>,
     #[serde(default)]
     pub deferred: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub results: Option<Vec<batch::DailyResult>>,
+}
+
+impl Run {
+    pub fn results(&self) -> std::borrow::Cow<'_, [batch::DailyResult]> {
+        if let Some(results) = &self.results {
+            return std::borrow::Cow::Borrowed(results);
+        }
+        let mut results: Vec<_> = self
+            .updates
+            .iter()
+            .map(|update| batch::DailyResult {
+                id: String::new(),
+                name: update.name.clone(),
+                status: batch::DailyStatus::Updated,
+                from: update.from.clone(),
+                to: update.to.clone(),
+                message: String::new(),
+                notes: update.notes.clone(),
+            })
+            .collect();
+        results.extend(self.errors.iter().map(|error| {
+            let (name, message) = error.split_once(": ").unwrap_or(("", error));
+            batch::DailyResult::issue("", name, batch::DailyStatus::Error, message)
+        }));
+        std::borrow::Cow::Owned(results)
+    }
+
+    fn attention(&self) -> usize {
+        self.results()
+            .iter()
+            .filter(|result| {
+                matches!(
+                    result.status,
+                    batch::DailyStatus::Review | batch::DailyStatus::Error
+                )
+            })
+            .count()
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -37,6 +77,8 @@ struct Reports {
     history: Vec<HistoryEntry>,
     #[serde(default)]
     next_check: u64,
+    #[serde(default)]
+    next_at: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -64,10 +106,7 @@ impl HistoryGroup<'_> {
     }
 
     pub fn attention(&self) -> usize {
-        self.entries
-            .iter()
-            .map(|entry| entry.run.errors.len())
-            .sum()
+        self.entries.iter().map(|entry| entry.run.attention()).sum()
     }
 
     pub fn deferred(&self) -> bool {
@@ -122,7 +161,19 @@ impl Reports {
             latest,
             history,
             next_check: 0,
+            next_at: None,
         }
+    }
+
+    fn next_at(&self) -> u64 {
+        self.next_at.unwrap_or_else(|| {
+            self.latest
+                .iter()
+                .flatten()
+                .map(|run| run.next_at)
+                .min()
+                .unwrap_or(0)
+        })
     }
 
     fn begin_check(&mut self) -> io::Result<Check> {
@@ -153,6 +204,9 @@ impl Reports {
     ) -> io::Result<()> {
         run.check_id = Some(check.id);
         run.started_at = Some(check.started_at);
+        let interval = run.next_at.saturating_sub(run.checked_at / 1000);
+        run.next_at = check.started_at / 1000 + interval;
+        self.next_at = Some(run.next_at);
         self.latest[client.index()] = Some(run.clone());
         self.history.insert(0, HistoryEntry { client, run });
         let mut seen = std::collections::HashSet::new();
@@ -189,14 +243,11 @@ impl Reports {
             }
         }
         if changed {
+            self.next_at = Some(check.started_at / 1000 + 60);
             preferences::save_json(&reports_path(path), self)?;
         }
         Ok(())
     }
-}
-
-fn is_due(run: Option<&Run>, root: &Path) -> bool {
-    run.is_none_or(|run| run.root != root || now() >= run.next_at)
 }
 
 pub fn lock(path: &Path) -> io::Result<fs::File> {
@@ -240,6 +291,9 @@ pub fn run_background(path: &Path, roots: [Option<PathBuf>; 2]) -> io::Result<()
         Err(error) => return Err(error),
     };
     let mut reports = read_reports(path, &prefs.daily_runs)?;
+    if now() < reports.next_at() {
+        return Ok(());
+    }
     let mut catalog = library::catalog();
     catalog.extend(prefs.projects.iter().cloned());
     let detected = prefs.detected_folders(&roots);
@@ -249,9 +303,6 @@ pub fn run_background(path: &Path, roots: [Option<PathBuf>; 2]) -> io::Result<()
         let Some(root) = prefs.folders[index].as_ref().or(detected[index].as_ref()) else {
             continue;
         };
-        if !is_due(reports.latest[index].as_ref(), root) {
-            continue;
-        }
         let current = preferences::Preferences::load(path)?;
         if !current.daily_updates
             || !current.background_updates
@@ -274,10 +325,14 @@ pub fn run_background(path: &Path, roots: [Option<PathBuf>; 2]) -> io::Result<()
             break;
         }
         let run = report(root.clone(), result);
-        let interrupted = run.errors.iter().any(|error| game_open(error));
+        let interrupted = run.deferred;
+        let failed = !run.errors.is_empty();
         reports.record(path, client, run, check)?;
         if interrupted {
             reports.defer_check(path, check)?;
+            break;
+        }
+        if failed {
             break;
         }
     }
@@ -285,18 +340,27 @@ pub fn run_background(path: &Path, roots: [Option<PathBuf>; 2]) -> io::Result<()
 }
 
 fn report(root: PathBuf, result: Result<batch::DailyCheck, String>) -> Run {
-    let batch::DailyCheck { updates, errors } = result.unwrap_or_else(|error| batch::DailyCheck {
+    let result = result.unwrap_or_else(|error| batch::DailyCheck {
         errors: vec![error],
         ..Default::default()
     });
-    let interval = if errors.is_empty() {
-        86_400
-    } else if errors.iter().any(|error| game_open(error)) {
+    let deferred = result.interrupted();
+    let batch::DailyCheck {
+        updates,
+        errors,
+        results,
+        ..
+    } = result;
+    let interval = if deferred {
         60
+    } else if errors.is_empty() {
+        86_400
     } else {
         3_600
     };
     let checked_at = now_millis();
+    let results =
+        (!results.is_empty() || (updates.is_empty() && errors.is_empty())).then_some(results);
     Run {
         root,
         next_at: checked_at / 1000 + interval,
@@ -306,12 +370,13 @@ fn report(root: PathBuf, result: Result<batch::DailyCheck, String>) -> Run {
         updates,
         check_id: None,
         started_at: None,
-        deferred: false,
+        deferred,
+        results,
     }
 }
 
 fn game_open(error: &str) -> bool {
-    error.contains("Close World of Warcraft") || error.contains("WoW started")
+    batch::game_open(error)
 }
 
 fn run_checks(
@@ -321,12 +386,11 @@ fn run_checks(
     force: bool,
     mut check: impl FnMut(&Path, Client, &[String]) -> Result<batch::DailyCheck, String>,
 ) -> Result<(), String> {
+    if !force && now() < reports.next_at() {
+        return Ok(());
+    }
     let mut check_id = None;
     for (client, root, excluded) in targets {
-        let index = client.index();
-        if !force && !is_due(reports.latest[index].as_ref(), &root) {
-            continue;
-        }
         if check_id.is_none() {
             check_id = Some(reports.begin_check().map_err(|error| error.to_string())?);
         }
@@ -341,7 +405,8 @@ fn run_checks(
             return Err(error.clone());
         }
         let run = report(root, result);
-        let interrupted = run.errors.iter().any(|error| game_open(error));
+        let interrupted = run.deferred;
+        let failed = !run.errors.is_empty();
         reports
             .record(path, client, run, check_id)
             .map_err(|error| error.to_string())?;
@@ -350,6 +415,9 @@ fn run_checks(
                 .defer_check(path, check_id)
                 .map_err(|error| error.to_string())?;
             return Err("Close World of Warcraft to finish checking addons.".into());
+        }
+        if failed {
+            break;
         }
     }
     Ok(())
@@ -436,6 +504,8 @@ impl Astral {
         if let Some(path) = &self.preferences_path {
             match read_reports(path, &self.preferences.daily_runs) {
                 Ok(reports) => {
+                    self.daily_next_at = reports.next_at();
+                    self.preferences.daily_runs = reports.latest;
                     self.daily_history = reports.history;
                     self.daily_history_error = None;
                 }
@@ -447,6 +517,7 @@ impl Astral {
     fn receive_daily_reports(&mut self, reports: io::Result<Reports>, cx: &mut Context<Self>) {
         match reports {
             Ok(reports) => {
+                self.daily_next_at = reports.next_at();
                 let client = self.preferences.client;
                 let old = self.preferences.daily_runs[client.index()].as_ref();
                 let changed = reports.latest[client.index()].as_ref().is_some_and(|run| {
@@ -487,7 +558,7 @@ impl Astral {
     }
 
     fn run_daily_checks(&mut self, force: bool, cx: &mut Context<Self>) {
-        if !self.can_run_daily_checks() {
+        if !self.can_run_daily_checks() || (!force && now() < self.daily_next_at) {
             return;
         }
         let targets: Vec<_> = Client::ALL
@@ -495,13 +566,11 @@ impl Astral {
             .filter_map(|client| {
                 let index = client.index();
                 let root = self.root(client)?;
-                (force || is_due(self.preferences.daily_runs[index].as_ref(), root)).then(|| {
-                    (
-                        client,
-                        root.clone(),
-                        self.preferences.batch_exclusions[index].clone(),
-                    )
-                })
+                Some((
+                    client,
+                    root.clone(),
+                    self.preferences.batch_exclusions[index].clone(),
+                ))
             })
             .collect();
         if targets.is_empty() {
@@ -585,7 +654,7 @@ impl Astral {
                 self.preferences.daily_runs[client.index()]
                     .as_ref()
                     .filter(|run| self.root(client) == Some(&run.root) && run.checked_at > 0)
-                    .map(|run| run.checked_at)
+                    .map(|run| run.started_at.unwrap_or(run.checked_at))
             })
             .max();
         let status = if self.daily_running {
@@ -671,6 +740,203 @@ mod tests {
         }
     }
 
+    fn targets(temp: &Path) -> Vec<(Client, PathBuf, Vec<String>)> {
+        vec![
+            (Client::Retail, temp.join("_retail_"), Vec::new()),
+            (Client::Forever, temp.join("_forever_"), Vec::new()),
+        ]
+    }
+
+    #[test]
+    fn failed_first_client_schedules_one_retry_for_both_clients() -> io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("preferences.json");
+        let mut reports = Reports::from_latest([None, None]);
+        run_checks(
+            &path,
+            &mut reports,
+            targets(temp.path()),
+            true,
+            |_, client, _| {
+                assert!(
+                    client == Client::Retail,
+                    "a failed client stops the cross-client run"
+                );
+                Ok(batch::DailyCheck {
+                    errors: vec!["Example: Invalid package".into()],
+                    results: vec![batch::DailyResult::issue(
+                        "example",
+                        "Example",
+                        batch::DailyStatus::Error,
+                        "Invalid package",
+                    )],
+                    ..Default::default()
+                })
+            },
+        )
+        .unwrap();
+        let mut saved = read_reports(&path, &[None, None])?;
+        assert!(saved.latest[1].is_none());
+        let first = &saved.history[0].run;
+        assert_eq!(saved.next_at(), first.started_at.unwrap() / 1000 + 3600);
+        let groups = grouped_history(&saved.history);
+        assert_eq!(groups[0].attention(), 1);
+        assert_eq!(
+            groups[0].entries[0].run.results()[0].summary(Client::Retail),
+            "Example · Retail · Invalid package"
+        );
+        run_checks(&path, &mut saved, targets(temp.path()), false, |_, _, _| {
+            panic!("both clients wait for the same retry")
+        })
+        .unwrap();
+        assert_eq!(saved.history.len(), 1);
+
+        saved.next_at = Some(0);
+        let mut visited = Vec::new();
+        run_checks(
+            &path,
+            &mut saved,
+            targets(temp.path()),
+            false,
+            |_, client, _| {
+                visited.push(client.index());
+                Ok(batch::DailyCheck::default())
+            },
+        )
+        .unwrap();
+        assert_eq!(visited, vec![0, 1]);
+        let group = &grouped_history(&saved.history)[0];
+        assert_eq!(saved.next_at(), group.checked_at() / 1000 + 86400);
+        Ok(())
+    }
+
+    #[test]
+    fn version_review_is_visible_without_shortening_the_daily_schedule() -> io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("preferences.json");
+        let mut reports = Reports::from_latest([None, None]);
+        let mut visited = Vec::new();
+        run_checks(
+            &path,
+            &mut reports,
+            targets(temp.path()),
+            true,
+            |_, client, _| {
+                visited.push(client.index());
+                Ok(batch::DailyCheck {
+                    results: vec![batch::DailyResult::issue(
+                        "example",
+                        "Example",
+                        batch::DailyStatus::Review,
+                        "Version format needs a manual review.",
+                    )],
+                    ..Default::default()
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(visited, vec![0, 1]);
+        let saved = read_reports(&path, &[None, None])?;
+        let group = &grouped_history(&saved.history)[0];
+        assert_eq!(group.attention(), 2);
+        assert_eq!(group.updated(), 0);
+        assert_eq!(saved.next_at(), group.checked_at() / 1000 + 86400);
+        assert!(
+            saved
+                .latest
+                .iter()
+                .flatten()
+                .all(|run| run.errors.is_empty())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn game_open_between_addons_defers_without_inventing_an_addon_failure() -> io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("preferences.json");
+        let mut reports = Reports::from_latest([None, None]);
+        let result = run_checks(
+            &path,
+            &mut reports,
+            targets(temp.path()),
+            true,
+            |_, client, _| {
+                assert!(client == Client::Retail);
+                Ok(batch::DailyCheck {
+                    deferred: true,
+                    ..Default::default()
+                })
+            },
+        );
+        assert!(result.as_ref().is_err_and(|error| game_open(error)));
+        let saved = read_reports(&path, &[None, None])?;
+        let group = &grouped_history(&saved.history)[0];
+        assert!(group.deferred());
+        assert_eq!(group.attention(), 0);
+        assert_eq!(saved.next_at(), group.checked_at() / 1000 + 60);
+        assert!(saved.latest[1].is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn detailed_results_keep_execution_order_and_legacy_history_remains_readable() {
+        let mut run = report(
+            PathBuf::from("example"),
+            Ok(batch::DailyCheck {
+                updates: vec![updated_addon()],
+                errors: vec!["Failed: Invalid package".into()],
+                results: vec![
+                    batch::DailyResult::issue(
+                        "failed",
+                        "Failed",
+                        batch::DailyStatus::Error,
+                        "Invalid package",
+                    ),
+                    batch::DailyResult::issue(
+                        "current",
+                        "Current",
+                        batch::DailyStatus::Current,
+                        "",
+                    ),
+                    batch::DailyResult {
+                        id: "example".into(),
+                        name: "Example".into(),
+                        status: batch::DailyStatus::Updated,
+                        from: "1.0".into(),
+                        to: "1.1".into(),
+                        notes: "Example release notes".into(),
+                        message: String::new(),
+                    },
+                ],
+                ..Default::default()
+            }),
+        );
+        let results = run.results();
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Failed", "Current", "Example"]
+        );
+        assert_eq!(results[2].notes, "Example release notes");
+        assert_eq!(run.attention(), 1);
+        drop(results);
+        run.results = None;
+        let legacy = run.results();
+        assert_eq!(legacy.len(), 2);
+        assert_eq!(
+            legacy[0].summary(Client::Forever),
+            "Example · Forever · 1.0 → 1.1"
+        );
+        assert_eq!(
+            legacy[1].summary(Client::Forever),
+            "Failed · Forever · Invalid package"
+        );
+        assert_eq!(run.attention(), 1);
+    }
+
     #[test]
     fn background_run_skips_a_busy_worker_and_a_client_checked_today() -> io::Result<()> {
         let temp = tempfile::tempdir()?;
@@ -731,6 +997,7 @@ mod tests {
                 Ok(batch::DailyCheck {
                     updates: vec![updated_addon()],
                     errors: Vec::new(),
+                    ..Default::default()
                 })
             },
         )
@@ -773,6 +1040,7 @@ mod tests {
             Ok(batch::DailyCheck {
                 updates: vec![updated_addon()],
                 errors: vec!["Close World of Warcraft before changing addon files.".into()],
+                ..Default::default()
             })
         });
         assert!(result.as_ref().is_err_and(|error| game_open(error)));
@@ -803,6 +1071,7 @@ mod tests {
             Ok(batch::DailyCheck {
                 updates: vec![updated_addon()],
                 errors: Vec::new(),
+                ..Default::default()
             })
         });
         assert!(result.as_ref().is_err_and(|error| game_open(error)));
@@ -832,9 +1101,11 @@ mod tests {
                     Ok(batch::DailyCheck {
                         updates: vec![updated_addon()],
                         errors: Vec::new(),
+                        ..Default::default()
                     }),
                 );
                 run.checked_at = 1234;
+                run.next_at = 1234 / 1000 + 86_400;
                 reports.record(&path, client, run, check)?;
             }
         }
@@ -891,7 +1162,7 @@ mod tests {
             ]),
         )?;
         let mut reports = read_reports(&path, &[None, None])?;
-        assert!(!is_due(reports.latest[1].as_ref(), &root));
+        assert!(reports.next_at() > now());
         assert_eq!(reports.history[0].run.updated, 4);
         for _ in 0..15 {
             let check = reports.begin_check()?;

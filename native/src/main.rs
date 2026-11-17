@@ -155,6 +155,7 @@ struct Astral {
     talent_refreshing: bool,
     daily_running: bool,
     daily_waiting: bool,
+    daily_next_at: u64,
     daily_run_error: Option<String>,
     daily_history: Vec<daily::HistoryEntry>,
     daily_history_error: Option<String>,
@@ -286,6 +287,7 @@ impl Astral {
             talent_refreshing: false,
             daily_running: false,
             daily_waiting: false,
+            daily_next_at: 0,
             daily_run_error: None,
             daily_history: Vec::new(),
             daily_history_error: None,
@@ -295,6 +297,7 @@ impl Astral {
         };
         app.refresh(cx);
         if !app.fixture {
+            app.load_daily_history();
             app.start_daily_timer(cx);
             app.start_auto_sync_timer(cx);
             app.start_app_update_timer(cx);
