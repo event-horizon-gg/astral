@@ -738,7 +738,7 @@ impl Astral {
                 .font_weight(gpui::FontWeight(550.))
                 .track_focus(handle);
             if blocked {
-                button.opacity(0.55).cursor_default()
+                button.opacity(0.45).cursor_default()
             } else {
                 crate::keyboard_button(
                     button,

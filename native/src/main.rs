@@ -900,8 +900,7 @@ impl Astral {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .min_h(px(50.))
-                    .px_3()
+                    .p(px(13.))
                     .rounded(px(5.))
                     .border_1()
                     .border_color(palette.line)
@@ -920,15 +919,16 @@ impl Astral {
                             } else {
                                 "Consolas"
                             })
-                            .text_size(px(11.)),
+                            .text_size(px(11.))
+                            .line_height(px(13.2)),
                     )
                     .child({
                         let change = div()
                             .id("change-wow-folder")
                             .cursor_pointer()
-                            .px_1()
-                            .py_2()
+                            .flex_shrink_0()
                             .text_size(px(11.))
+                            .line_height(px(13.2))
                             .text_color(rgb(palette.muted))
                             .hover(move |style| style.text_color(rgb(palette.text)))
                             .child("Change");
@@ -1770,7 +1770,7 @@ impl Astral {
                     .child(icon("arrow-right", 13., palette.muted))
             };
             actions = actions.child(if busy || self.root(self.preferences.client).is_none() {
-                button.opacity(0.55).cursor_default()
+                button.opacity(0.45).cursor_default()
             } else {
                 keyboard_button(
                     button,
@@ -1796,7 +1796,7 @@ impl Astral {
                         || self.profile_game_running()
                         || self.root(self.preferences.client).is_none()
                     {
-                        button.opacity(0.55).cursor_default()
+                        button.opacity(0.45).cursor_default()
                     } else {
                         keyboard_button(
                             button,
@@ -1818,7 +1818,7 @@ impl Astral {
                     .gap_2()
                     .child(icon("external", 13., palette.muted));
                 actions = actions.child(if busy {
-                    button.opacity(0.55).cursor_default()
+                    button.opacity(0.45).cursor_default()
                 } else {
                     keyboard_button(button, palette, move |_, _, cx| cx.open_url(&url))
                 });
@@ -2040,7 +2040,7 @@ impl Astral {
                 let id = definition.map(|source| source.id.clone());
                 let folder = folder.clone();
                 drawer.child(if busy || (running && update) {
-                    action.opacity(0.55).cursor_default()
+                    action.opacity(0.45).cursor_default()
                 } else {
                     keyboard_button(
                         action,
@@ -2063,7 +2063,7 @@ impl Astral {
                     .mb(px(10.))
                     .child(icon("folder", 15., palette.muted));
                 drawer.child(if busy || running {
-                    action.opacity(0.55).cursor_default()
+                    action.opacity(0.45).cursor_default()
                 } else {
                     keyboard_button(
                         action,
@@ -2090,7 +2090,7 @@ impl Astral {
                     .mb(px(10.))
                     .child(icon("history", 15., palette.muted));
                 drawer.child(if busy || running {
-                    action.opacity(0.55).cursor_default()
+                    action.opacity(0.45).cursor_default()
                 } else {
                     keyboard_button(
                         action,
@@ -2768,7 +2768,7 @@ impl Render for Astral {
                                 .border_t_1()
                                 .border_color(palette.line);
                             panel.child(if self.account_work_in_progress() {
-                                signout.opacity(0.55).cursor_default()
+                                signout.opacity(0.45).cursor_default()
                             } else {
                                 keyboard_button(
                                     signout,
@@ -2844,7 +2844,7 @@ impl Render for Astral {
                                     .flex_row_reverse()
                                     .child(icon("refresh", 15., palette.muted))
                                     .when(!can_check, |button| {
-                                        button.opacity(0.55).cursor_default()
+                                        button.opacity(0.45).cursor_default()
                                     })
                                     .when(can_check, |button| {
                                         button.on_click(
@@ -2865,7 +2865,7 @@ impl Render for Astral {
                                     .flex_row_reverse()
                                     .child(icon("download", 15., 0xffffff));
                                 actions.child(if blocked {
-                                    button.opacity(0.55).cursor_default()
+                                    button.opacity(0.45).cursor_default()
                                 } else {
                                     keyboard_button(
                                         button,
@@ -3034,7 +3034,7 @@ impl Render for Astral {
                                 }),
                         )
                         .child(if !has_addons && !failed && self.fixture {
-                            action.opacity(0.55).cursor_default()
+                            action.opacity(0.45).cursor_default()
                         } else {
                             keyboard_button(
                                 action,

@@ -297,7 +297,7 @@ impl Astral {
                             .justify_end()
                             .gap_2()
                             .child(if review.busy {
-                                alternate.opacity(0.55).cursor_default()
+                                alternate.opacity(0.45).cursor_default()
                             } else {
                                 crate::keyboard_button(
                                     alternate,
@@ -313,7 +313,7 @@ impl Astral {
                                 )
                             })
                             .child(if blocked || !package.missing.is_empty() {
-                                install.opacity(0.55).cursor_default()
+                                install.opacity(0.45).cursor_default()
                             } else {
                                 crate::keyboard_button(
                                     install,
@@ -338,7 +338,7 @@ impl Astral {
                     body = body
                         .child(palette.label("Release package").text_size(px(12.)))
                         .child(if release.packages.is_empty() || review.busy {
-                            package.opacity(0.55).cursor_default()
+                            package.opacity(0.45).cursor_default()
                         } else {
                             crate::keyboard_button(
                                 package,
@@ -413,7 +413,7 @@ impl Astral {
                                 move |_, _, cx| cx.open_url(&url),
                             ))
                             .child(if review.busy || selected.is_none() {
-                                inspect.opacity(0.55).cursor_default()
+                                inspect.opacity(0.45).cursor_default()
                             } else {
                                 crate::keyboard_button(
                                     inspect,
@@ -460,7 +460,7 @@ impl Astral {
             .top(px(14.))
             .right(px(14.));
         let close = if review.busy {
-            close.opacity(0.55).cursor_default()
+            close.opacity(0.45).cursor_default()
         } else {
             crate::keyboard_button(
                 close,

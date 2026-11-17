@@ -633,7 +633,7 @@ impl Astral {
                     cx.listener(|app, _: &(), _, cx| app.install_suite(cx)),
                 )
             } else {
-                button.opacity(0.55).cursor_default()
+                button.opacity(0.45).cursor_default()
             };
             let names = missing
                 .iter()
@@ -922,7 +922,7 @@ impl Astral {
                 .text_button("retry-update-results", "Retry remaining updates")
                 .mt_2();
             panel = panel.child(div().child(if !self.can_start_update_batch() {
-                button.opacity(0.55).cursor_default()
+                button.opacity(0.45).cursor_default()
             } else {
                 crate::keyboard_button(
                     button,
