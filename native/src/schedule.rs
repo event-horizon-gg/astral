@@ -395,7 +395,6 @@ mod windows {
             format!("<Command>{executable}</Command>"),
             format!("<Arguments>{ARGUMENT}</Arguments>"),
             "<Interval>PT15M</Interval>".into(),
-            "<RunLevel>LeastPrivilege</RunLevel>".into(),
             "<LogonType>InteractiveToken</LogonType>".into(),
             "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>".into(),
             "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>".into(),
@@ -407,6 +406,32 @@ mod windows {
                 "Registered task changed {expected}: {registered}"
             );
         }
+        // The service omits this default from exported XML. Query the actual
+        // Principal.RunLevel property instead of accepting an absent string.
+        let query = directory.path().join("principal.ps1");
+        fs::write(
+            &query,
+            r#"param([Parameter(Mandatory=$true)][string]$TaskName)
+$ErrorActionPreference = 'Stop'
+$service = New-Object -ComObject 'Schedule.Service'
+$service.Connect()
+$task = $service.GetFolder('\').GetTask($TaskName)
+[Console]::Write([int]$task.Definition.Principal.RunLevel)
+"#,
+        )?;
+        let principal = command("WindowsPowerShell/v1.0/powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-File"])
+            .arg(&query)
+            .arg("-TaskName")
+            .arg(&task_name)
+            .output()?;
+        assert!(
+            principal.status.success(),
+            "{}",
+            String::from_utf8_lossy(&principal.stderr)
+        );
+        // TASK_RUNLEVEL_LUA (0): https://learn.microsoft.com/windows/win32/taskschd/principal-runlevel
+        assert_eq!(String::from_utf8_lossy(&principal.stdout).trim(), "0");
         assert!(
             command("schtasks.exe")
                 .args(["/Delete", "/TN", &task_name, "/F"])
