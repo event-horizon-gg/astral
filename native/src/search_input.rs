@@ -6,6 +6,7 @@ use gpui::{
     div, fill, point, prelude::*, px, relative, rgba, size,
 };
 use std::ops::Range;
+use unicode_segmentation::UnicodeSegmentation;
 
 pub struct SearchInput {
     pub focus: FocusHandle,
@@ -67,20 +68,6 @@ impl SearchInput {
             self.anchor = offset;
         }
         cx.notify();
-    }
-
-    fn previous(&self) -> usize {
-        self.text[..self.caret]
-            .char_indices()
-            .next_back()
-            .map_or(0, |(i, _)| i)
-    }
-
-    fn next(&self) -> usize {
-        self.text[self.caret..]
-            .chars()
-            .next()
-            .map_or(self.caret, |ch| self.caret + ch.len_utf8())
     }
 
     fn hit(&self, position: Point<Pixels>) -> usize {
@@ -179,64 +166,59 @@ impl SearchInput {
             }
             return;
         }
-        let shortcut = if cfg!(target_os = "macos") {
-            modifiers.platform
-        } else {
-            modifiers.control
+        // Native composition owns its candidate selection and deletion keys.
+        if self.history.composing() {
+            return;
+        }
+        let mac = cfg!(target_os = "macos");
+        let Some(action) = edit_action(key, mac) else {
+            return;
         };
         let selection = self.selected();
-        match (shortcut, key.key.as_str()) {
-            (true, "a") => {
+        match action {
+            EditAction::SelectAll => {
                 self.anchor = 0;
                 self.select(self.text.len(), true, cx);
             }
-            (true, "c" | "x") if !selection.is_empty() => {
-                cx.write_to_clipboard(ClipboardItem::new_string(
-                    self.text[selection.clone()].into(),
-                ));
-                if key.key == "x" {
+            EditAction::Copy | EditAction::Cut => {
+                if !selection.is_empty() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        self.text[selection.clone()].into(),
+                    ));
+                }
+                if action == EditAction::Cut && !selection.is_empty() {
                     self.replace(selection, "", Kind::Separate, cx);
                 }
             }
-            (true, "v") => {
+            EditAction::Paste => {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                     self.replace(selection, &single_line(&text), Kind::Separate, cx);
                 }
             }
-            (false, "left") => {
-                let offset = if !modifiers.shift && !selection.is_empty() {
-                    selection.start
-                } else {
-                    self.previous()
+            EditAction::Move(motion) => {
+                let offset = match motion {
+                    Motion::Previous if !modifiers.shift && !selection.is_empty() => {
+                        selection.start
+                    }
+                    Motion::Next if !modifiers.shift && !selection.is_empty() => selection.end,
+                    _ => motion.offset(&self.text, self.caret, mac),
                 };
                 self.select(offset, modifiers.shift, cx);
             }
-            (false, "right") => {
-                let offset = if !modifiers.shift && !selection.is_empty() {
-                    selection.end
-                } else {
-                    self.next()
-                };
-                self.select(offset, modifiers.shift, cx);
-            }
-            (false, "home") | (true, "left") if !modifiers.alt => {
-                self.select(0, modifiers.shift, cx)
-            }
-            (false, "end") | (true, "right") if !modifiers.alt => {
-                self.select(self.text.len(), modifiers.shift, cx)
-            }
-            (false, "backspace" | "delete") if self.marked.is_none() => {
+            EditAction::Delete(motion) => {
                 let range = if !selection.is_empty() {
                     selection
-                } else if key.key == "backspace" {
-                    self.previous()..self.caret
                 } else {
-                    self.caret..self.next()
+                    let other = motion.offset(&self.text, self.caret, mac);
+                    self.caret.min(other)..self.caret.max(other)
                 };
                 self.replace(
                     range,
                     "",
-                    if key.key == "backspace" {
+                    if matches!(
+                        motion,
+                        Motion::Previous | Motion::PreviousWord | Motion::Start
+                    ) {
                         Kind::Backspace
                     } else {
                         Kind::ForwardDelete
@@ -244,10 +226,137 @@ impl SearchInput {
                     cx,
                 );
             }
-            _ => return,
         }
         cx.stop_propagation();
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Motion {
+    Previous,
+    Next,
+    PreviousWord,
+    NextWord,
+    Start,
+    End,
+}
+
+impl Motion {
+    fn offset(self, text: &str, caret: usize, mac: bool) -> usize {
+        match self {
+            Self::Previous => previous_grapheme(text, caret),
+            Self::Next => next_grapheme(text, caret),
+            Self::Start => 0,
+            Self::End => text.len(),
+            Self::PreviousWord => text
+                .split_word_bound_indices()
+                .rev()
+                .find(|(index, part)| *index < caret && !part.chars().all(char::is_whitespace))
+                .map_or(0, |(index, _)| index),
+            Self::NextWord => {
+                let mut parts = text
+                    .split_word_bound_indices()
+                    .filter(|(index, part)| index + part.len() > caret)
+                    .peekable();
+                let mut end = caret;
+                // Mac stops at the next word end; Windows skips trailing spaces.
+                while let Some((index, part)) = parts.next() {
+                    end = index + part.len();
+                    if !mac || !part.chars().all(char::is_whitespace) {
+                        if !mac {
+                            while let Some((index, part)) = parts.peek() {
+                                if !part.chars().all(char::is_whitespace) {
+                                    break;
+                                }
+                                end = index + part.len();
+                                parts.next();
+                            }
+                        }
+                        break;
+                    }
+                }
+                end
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum EditAction {
+    SelectAll,
+    Copy,
+    Cut,
+    Paste,
+    Move(Motion),
+    Delete(Motion),
+}
+
+fn edit_action(key: &gpui::Keystroke, mac: bool) -> Option<EditAction> {
+    use EditAction::*;
+    use Motion::*;
+    let m = key.modifiers;
+    if m.function {
+        // Fn is reported for actual function keys on some keyboards; arrows,
+        // Home/End and Delete remain valid editing keys with that flag.
+        if !matches!(
+            key.key.as_str(),
+            "left" | "right" | "home" | "end" | "backspace" | "delete"
+        ) {
+            return None;
+        }
+    }
+    let primary = if mac {
+        m.platform && !m.control && !m.alt
+    } else {
+        m.control && !m.platform && !m.alt
+    };
+    let plain = !m.platform && !m.control && !m.alt;
+    let word = if mac {
+        m.alt && !m.platform && !m.control
+    } else {
+        m.control && !m.alt && !m.platform
+    };
+    let line = if mac { primary } else { plain || primary };
+    // Match browser shortcuts exactly enough to leave AltGr character input
+    // alone. Ctrl-Alt-A/C/V must never select, copy or paste on Windows.
+    match key.key.as_str() {
+        "a" if primary && !m.shift => Some(SelectAll),
+        "c" if primary && !m.shift => Some(Copy),
+        "x" if primary && !m.shift => Some(Cut),
+        "v" if primary => Some(Paste),
+        "insert" if !mac && primary && !m.shift => Some(Copy),
+        "insert" if !mac && plain && m.shift => Some(Paste),
+        "delete" if !mac && plain && m.shift => Some(Cut),
+        "left" if word => Some(Move(PreviousWord)),
+        "right" if word => Some(Move(NextWord)),
+        "left" if mac && primary => Some(Move(Start)),
+        "right" if mac && primary => Some(Move(End)),
+        "left" if plain => Some(Move(Previous)),
+        "right" if plain => Some(Move(Next)),
+        "home" if line || plain => Some(Move(Start)),
+        "end" if line || plain => Some(Move(End)),
+        "backspace" if word && !m.shift => Some(Delete(PreviousWord)),
+        "delete" if word && !m.shift => Some(Delete(NextWord)),
+        "backspace" if mac && primary && !m.shift => Some(Delete(Start)),
+        "backspace" if plain => Some(Delete(Previous)),
+        "delete" if plain && !m.shift => Some(Delete(Next)),
+        _ => None,
+    }
+}
+
+fn previous_grapheme(text: &str, caret: usize) -> usize {
+    text.grapheme_indices(true)
+        .map(|(index, _)| index)
+        .take_while(|index| *index < caret)
+        .last()
+        .unwrap_or(0)
+}
+
+fn next_grapheme(text: &str, caret: usize) -> usize {
+    text.grapheme_indices(true)
+        .map(|(index, _)| index)
+        .find(|index| *index > caret)
+        .unwrap_or(text.len())
 }
 
 #[derive(Debug, PartialEq)]
@@ -617,6 +726,139 @@ impl Element for Line {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(name: &str, modifiers: gpui::Modifiers) -> gpui::Keystroke {
+        gpui::Keystroke {
+            key: name.into(),
+            key_char: None,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn character_navigation_keeps_accents_flags_and_joined_emoji_together() {
+        let pieces = ["J", "o", "a\u{303}", "o", "🇵🇹", "👩🏽‍💻", "x"];
+        let text = pieces.concat();
+        let mut offset = 0;
+        for piece in pieces {
+            let next = next_grapheme(&text, offset);
+            assert_eq!(&text[offset..next], piece);
+            assert_eq!(previous_grapheme(&text, next), offset);
+            offset = next;
+        }
+        assert_eq!(previous_grapheme(&text, 0), 0);
+        assert_eq!(next_grapheme(&text, text.len()), text.len());
+        // Native selection offsets can land inside a multi-scalar cluster.
+        assert_eq!(previous_grapheme("👩🏽‍💻x", "👩".len()), 0);
+        assert_eq!(next_grapheme("👩🏽‍💻x", "👩".len()), "👩🏽‍💻".len());
+    }
+
+    #[test]
+    fn word_navigation_retains_full_word_context_and_platform_space_behavior() {
+        use Motion::*;
+        let text = "Raid  can't  João";
+        assert_eq!(NextWord.offset(text, 0, true), 4);
+        assert_eq!(NextWord.offset(text, 0, false), 6);
+        assert_eq!(NextWord.offset(text, 4, true), 11);
+        assert_eq!(NextWord.offset(text, 4, false), 6);
+        assert_eq!(NextWord.offset(text, 8, true), 11);
+        assert_eq!(PreviousWord.offset(text, 10, true), 6);
+        assert_eq!(PreviousWord.offset(text, 13, false), 6);
+        assert_eq!(PreviousWord.offset(text, text.len(), false), 13);
+        assert_eq!(NextWord.offset(text, text.len(), false), text.len());
+        assert_eq!(PreviousWord.offset(text, 0, true), 0);
+    }
+
+    #[test]
+    fn editing_shortcuts_use_platform_modifiers_and_leave_altgr_alone() {
+        use EditAction::*;
+        use Motion::*;
+        let plain = gpui::Modifiers::default();
+        let command = gpui::Modifiers {
+            platform: true,
+            ..plain
+        };
+        let control = gpui::Modifiers {
+            control: true,
+            ..plain
+        };
+        let option = gpui::Modifiers { alt: true, ..plain };
+        for name in ["a", "c", "x", "v", "left", "right", "backspace", "delete"] {
+            assert_eq!(
+                edit_action(
+                    &key(
+                        name,
+                        gpui::Modifiers {
+                            alt: true,
+                            ..control
+                        }
+                    ),
+                    false
+                ),
+                None
+            );
+        }
+        assert_eq!(
+            edit_action(&key("left", option), true),
+            Some(Move(PreviousWord))
+        );
+        assert_eq!(
+            edit_action(&key("left", control), false),
+            Some(Move(PreviousWord))
+        );
+        assert_eq!(edit_action(&key("left", command), true), Some(Move(Start)));
+        assert_eq!(edit_action(&key("left", command), false), None);
+        assert_eq!(
+            edit_action(&key("backspace", command), true),
+            Some(Delete(Start))
+        );
+        assert_eq!(
+            edit_action(&key("delete", control), false),
+            Some(Delete(NextWord))
+        );
+        assert_eq!(edit_action(&key("c", control), true), None);
+        assert_eq!(edit_action(&key("c", command), true), Some(Copy));
+        assert_eq!(
+            edit_action(
+                &key(
+                    "v",
+                    gpui::Modifiers {
+                        shift: true,
+                        ..control
+                    }
+                ),
+                false
+            ),
+            Some(Paste)
+        );
+        assert_eq!(
+            edit_action(
+                &key(
+                    "delete",
+                    gpui::Modifiers {
+                        shift: true,
+                        ..plain
+                    }
+                ),
+                false
+            ),
+            Some(Cut)
+        );
+        assert_eq!(
+            edit_action(
+                &key(
+                    "insert",
+                    gpui::Modifiers {
+                        shift: true,
+                        ..plain
+                    }
+                ),
+                false
+            ),
+            Some(Paste)
+        );
+        assert_eq!(edit_action(&key("insert", control), false), Some(Copy));
+    }
 
     #[test]
     fn undo_and_redo_shortcuts_do_not_consume_altgr_or_the_other_platform_modifier() {

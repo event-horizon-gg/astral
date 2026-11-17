@@ -25,6 +25,7 @@ ureq = { version = "3", features = ["json"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 icu_datetime = "=2.3.0"
 icu_locale_core = "2"
+unicode-segmentation = "=1.13.3"
 
 [profile.dev]
 debug = 0
