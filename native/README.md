@@ -6,6 +6,8 @@ SVGs from the installed Electron dependency with `node scripts/sync-native-icons
 
 Experimental GPUI desktop client on the `rust-gpui` branch. The Electron app remains the reference for behavior. The native client uses the existing WoW installation and public GitHub releases. Sign in separately in each app.
 
+On macOS and Windows, the tray menu provides **Open Astral** and **Quit Astral**. Closing the window hides it and leaves the existing timers running. Reopen it from the tray or the installed app. Windows also opens it on a left click of the tray icon. A login/background launch keeps the window hidden; on macOS it also hides the Dock icon. Read-only comparison fixtures do not create a tray icon.
+
 Run with Rust and Xcode on macOS:
 
 ```sh

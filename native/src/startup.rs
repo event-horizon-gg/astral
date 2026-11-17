@@ -274,8 +274,8 @@ impl Instance {
                     .is_some_and(|path| std::fs::remove_file(path).is_ok())
                 {
                     let result = cx.update(|cx| {
-                        let result = window.update(cx, |app, window, _| {
-                            window.activate_window();
+                        let result = window.update(cx, |app, window, cx| {
+                            crate::tray::show(window, cx);
                             app.root_focus.focus(window);
                         });
                         if result.is_ok() {

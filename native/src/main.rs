@@ -37,6 +37,7 @@ mod sync_addons;
 mod sync_engine;
 mod sync_format;
 mod talents;
+mod tray;
 mod typography;
 mod ui_icons;
 
@@ -3669,7 +3670,7 @@ fn main() {
     let application = Application::new().with_assets(icons::Icons);
     application.on_reopen(|cx| {
         for window in cx.windows() {
-            let _ = window.update(cx, |_, window, _| window.activate_window());
+            let _ = window.update(cx, |_, window, cx| tray::show(window, cx));
         }
     });
     application.run(move |cx: &mut App| {
@@ -3696,8 +3697,8 @@ fn main() {
             KeyBinding::new("escape", DismissOverlay, None),
         ]);
         cx.set_menus(vec![Menu {
-            name: "Astral Native".into(),
-            items: vec![MenuItem::action("Quit Astral Native", Quit)],
+            name: "Astral".into(),
+            items: vec![MenuItem::action("Quit Astral", Quit)],
         }]);
         let viewport = if fixture_compact {
             size(px(1000.), px(720.))
@@ -3713,7 +3714,7 @@ fn main() {
                     show: !background,
                     focus: !background,
                     titlebar: Some(TitlebarOptions {
-                        title: Some("Astral Native".into()),
+                        title: Some("Astral".into()),
                         appears_transparent: cfg!(target_os = "macos"),
                         traffic_light_position: Some(gpui::point(px(11.), px(11.))),
                     }),
@@ -3764,6 +3765,11 @@ fn main() {
                 },
             )
             .expect("open Astral window");
+        if fixture.is_none()
+            && let Err(error) = tray::install(handle, background, cx)
+        {
+            eprintln!("Couldn't create the Astral tray menu. {error}");
+        }
         instance.watch(handle, cx);
         if !background {
             cx.activate(true);
