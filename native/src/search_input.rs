@@ -1,3 +1,4 @@
+use crate::text_history::{History, Kind, Snapshot};
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, ElementId, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, GlobalElementId, InspectorElementId, LayoutId,
@@ -15,6 +16,8 @@ pub struct SearchInput {
     layout: Option<(ShapedLine, Bounds<Pixels>, Pixels)>,
     dragging: bool,
     limit: Option<usize>,
+    history: History,
+    blur: Option<gpui::Subscription>,
 }
 
 pub struct Changed(pub String);
@@ -31,6 +34,8 @@ impl SearchInput {
             layout: None,
             dragging: false,
             limit: None,
+            history: History::default(),
+            blur: None,
         }
     }
 
@@ -39,11 +44,15 @@ impl SearchInput {
     }
 
     pub fn set(&mut self, value: &str, cx: &mut Context<Self>) {
+        if self.text.as_ref() == value {
+            return;
+        }
         self.text = value.to_owned().into();
         self.anchor = value.len();
         self.caret = value.len();
         self.marked = None;
         self.layout = None;
+        self.history.clear();
         cx.notify();
     }
 
@@ -52,6 +61,7 @@ impl SearchInput {
     }
 
     fn select(&mut self, offset: usize, extend: bool, cx: &mut Context<Self>) {
+        self.history.close_group();
         self.caret = offset;
         if !extend {
             self.anchor = offset;
@@ -83,22 +93,58 @@ impl SearchInput {
             })
     }
 
-    fn replace(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
-        let mut value = self.text.to_string();
-        let available = self.limit.map(|limit| {
-            limit.saturating_sub(
-                self.text[..range.start].encode_utf16().count()
-                    + self.text[range.end..].encode_utf16().count(),
-            )
-        });
-        let text = available.map_or(text, |units| &text[..utf16_prefix(text, units)]);
-        value.replace_range(range.clone(), text);
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            text: self.text.clone(),
+            anchor: self.anchor,
+            caret: self.caret,
+        }
+    }
+
+    fn restore(&mut self, snapshot: Snapshot, cx: &mut Context<Self>) {
+        let changed = self.text != snapshot.text;
+        self.text = snapshot.text;
+        self.anchor = snapshot.anchor;
+        self.caret = snapshot.caret;
+        self.marked = None;
+        self.layout = None;
+        if changed {
+            cx.emit(Changed(self.text.to_string()));
+        }
+        cx.notify();
+    }
+
+    fn finish_composition(&mut self, cx: &mut Context<Self>) {
+        self.marked = None;
+        self.history.commit_composition(self.snapshot());
+        self.history.close_group();
+        cx.notify();
+    }
+
+    fn replace(&mut self, range: Range<usize>, text: &str, kind: Kind, cx: &mut Context<Self>) {
+        let before = self.snapshot();
+        self.replace_raw(range, text, cx);
+        self.history.record(before, self.snapshot(), kind);
+    }
+
+    fn replace_raw(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Range<usize> {
+        let (value, inserted) = replacement(&self.text, range, text, self.limit);
+        let changed = self.text.as_ref() != value;
         self.text = value.into();
-        self.anchor = range.start + text.len();
+        self.anchor = inserted.end;
         self.caret = self.anchor;
         self.marked = None;
-        cx.emit(Changed(self.text.to_string()));
+        self.layout = None;
+        if changed {
+            cx.emit(Changed(self.text.to_string()));
+        }
         cx.notify();
+        inserted
     }
 
     fn range_for_edit(&self, utf16: Option<Range<usize>>) -> Range<usize> {
@@ -120,6 +166,19 @@ impl SearchInput {
     fn edit_key(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let key = &event.keystroke;
         let modifiers = key.modifiers;
+        if let Some(action) = history_action(key, cfg!(target_os = "macos")) {
+            if !self.history.composing() {
+                let snapshot = match action {
+                    HistoryAction::Undo => self.history.undo(),
+                    HistoryAction::Redo => self.history.redo(),
+                };
+                if let Some(snapshot) = snapshot {
+                    self.restore(snapshot, cx);
+                }
+                cx.stop_propagation();
+            }
+            return;
+        }
         let shortcut = if cfg!(target_os = "macos") {
             modifiers.platform
         } else {
@@ -136,12 +195,12 @@ impl SearchInput {
                     self.text[selection.clone()].into(),
                 ));
                 if key.key == "x" {
-                    self.replace(selection, "", cx);
+                    self.replace(selection, "", Kind::Separate, cx);
                 }
             }
             (true, "v") => {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    self.replace(selection, &single_line(&text), cx);
+                    self.replace(selection, &single_line(&text), Kind::Separate, cx);
                 }
             }
             (false, "left") => {
@@ -174,11 +233,62 @@ impl SearchInput {
                 } else {
                     self.caret..self.next()
                 };
-                self.replace(range, "", cx);
+                self.replace(
+                    range,
+                    "",
+                    if key.key == "backspace" {
+                        Kind::Backspace
+                    } else {
+                        Kind::ForwardDelete
+                    },
+                    cx,
+                );
             }
             _ => return,
         }
         cx.stop_propagation();
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum HistoryAction {
+    Undo,
+    Redo,
+}
+
+fn replacement(
+    value: &str,
+    range: Range<usize>,
+    text: &str,
+    limit: Option<usize>,
+) -> (String, Range<usize>) {
+    let available = limit.map(|limit| {
+        limit.saturating_sub(
+            value[..range.start].encode_utf16().count() + value[range.end..].encode_utf16().count(),
+        )
+    });
+    let accepted = available.map_or(text, |units| &text[..utf16_prefix(text, units)]);
+    let inserted = range.start..range.start + accepted.len();
+    let mut result = value.to_owned();
+    result.replace_range(range, accepted);
+    (result, inserted)
+}
+
+fn history_action(key: &gpui::Keystroke, mac: bool) -> Option<HistoryAction> {
+    let modifiers = key.modifiers;
+    let primary = if mac {
+        modifiers.platform && !modifiers.control
+    } else {
+        modifiers.control && !modifiers.platform
+    };
+    if !primary || modifiers.alt || modifiers.function {
+        return None;
+    }
+    match key.key.as_str() {
+        "z" if modifiers.shift => Some(HistoryAction::Redo),
+        "z" => Some(HistoryAction::Undo),
+        "y" if !mac && !modifiers.shift => Some(HistoryAction::Redo),
+        _ => None,
     }
 }
 
@@ -249,8 +359,7 @@ impl EntityInputHandler for SearchInput {
     }
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.marked = None;
-        cx.notify();
+        self.finish_composition(cx);
     }
 
     fn replace_text_in_range(
@@ -260,7 +369,12 @@ impl EntityInputHandler for SearchInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.replace(self.range_for_edit(range), &single_line(text), cx);
+        self.replace(
+            self.range_for_edit(range),
+            &single_line(text),
+            Kind::Typing,
+            cx,
+        );
     }
 
     fn replace_and_mark_text_in_range(
@@ -272,13 +386,14 @@ impl EntityInputHandler for SearchInput {
         cx: &mut Context<Self>,
     ) {
         let range = self.range_for_edit(range);
-        let start = range.start;
         let text = single_line(text);
-        self.replace(range, &text, cx);
-        self.marked = (!text.is_empty()).then_some(start..start + text.len());
+        self.history.begin_composition(self.snapshot());
+        let inserted = self.replace_raw(range, &text, cx);
+        self.marked = (!inserted.is_empty()).then_some(inserted.clone());
         if let Some(selected) = selected {
-            self.anchor = start + byte_offset(&text, selected.start);
-            self.caret = start + byte_offset(&text, selected.end);
+            let accepted = &self.text[inserted.clone()];
+            self.anchor = inserted.start + byte_offset(accepted, selected.start);
+            self.caret = inserted.start + byte_offset(accepted, selected.end);
         }
     }
 
@@ -488,14 +603,103 @@ impl Element for Line {
                 ));
             }
         });
-        self.input
-            .update(cx, |input, _| input.layout = Some((line, bounds, scroll)));
+        self.input.update(cx, |input, cx| {
+            if input.blur.is_none() {
+                input.blur = Some(cx.on_blur(&input.focus.clone(), window, |input, _, cx| {
+                    input.finish_composition(cx)
+                }));
+            }
+            input.layout = Some((line, bounds, scroll));
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undo_and_redo_shortcuts_do_not_consume_altgr_or_the_other_platform_modifier() {
+        let key = |key: &str, modifiers| gpui::Keystroke {
+            key: key.into(),
+            key_char: None,
+            modifiers,
+        };
+        let command = gpui::Modifiers {
+            platform: true,
+            ..Default::default()
+        };
+        let control = gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            history_action(&key("z", command), true),
+            Some(HistoryAction::Undo)
+        );
+        assert_eq!(
+            history_action(
+                &key(
+                    "z",
+                    gpui::Modifiers {
+                        shift: true,
+                        ..command
+                    }
+                ),
+                true
+            ),
+            Some(HistoryAction::Redo)
+        );
+        assert_eq!(
+            history_action(&key("z", control), false),
+            Some(HistoryAction::Undo)
+        );
+        assert_eq!(
+            history_action(&key("y", control), false),
+            Some(HistoryAction::Redo)
+        );
+        assert_eq!(
+            history_action(
+                &key(
+                    "z",
+                    gpui::Modifiers {
+                        shift: true,
+                        ..control
+                    }
+                ),
+                false
+            ),
+            Some(HistoryAction::Redo)
+        );
+        assert_eq!(
+            history_action(
+                &key(
+                    "z",
+                    gpui::Modifiers {
+                        alt: true,
+                        ..control
+                    }
+                ),
+                false
+            ),
+            None
+        );
+        assert_eq!(history_action(&key("z", control), true), None);
+        assert_eq!(history_action(&key("z", command), false), None);
+        assert_eq!(history_action(&key("y", command), true), None);
+    }
+
+    #[test]
+    fn limited_composition_ranges_cover_only_the_accepted_unicode_text() {
+        let (value, inserted) = replacement("a🐻é", 1..7, "🐻éx", Some(3));
+        assert_eq!(value, "a🐻");
+        assert_eq!(inserted, 1..5);
+        let accepted = &value[inserted.clone()];
+        assert_eq!(inserted.start + byte_offset(accepted, 99), value.len());
+        let (full, inserted) = replacement("abc", 3..3, "日本", Some(3));
+        assert_eq!(full, "abc");
+        assert!(inserted.is_empty());
+    }
 
     #[test]
     fn input_limit_preserves_whole_unicode_characters() {

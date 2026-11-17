@@ -37,6 +37,7 @@ mod sync_addons;
 mod sync_engine;
 mod sync_format;
 mod talents;
+mod text_history;
 mod tray;
 mod typography;
 mod ui_icons;
