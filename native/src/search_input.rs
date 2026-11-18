@@ -86,7 +86,7 @@ pub struct SearchInput {
     caret: usize,
     marked: Option<Range<usize>>,
     layout: Option<(ShapedLine, Bounds<Pixels>, Pixels)>,
-    dragging: bool,
+    dragging: Option<SelectionGesture>,
     limit: Option<usize>,
     history: History,
     blur: Option<gpui::Subscription>,
@@ -104,7 +104,7 @@ impl SearchInput {
             caret: 0,
             marked: None,
             layout: None,
-            dragging: false,
+            dragging: None,
             limit: None,
             history: History::default(),
             blur: None,
@@ -120,6 +120,7 @@ impl SearchInput {
             return;
         }
         self.text = value.to_owned().into();
+        self.dragging = None;
         self.anchor = value.len();
         self.caret = value.len();
         self.marked = None;
@@ -162,6 +163,7 @@ impl SearchInput {
     fn restore(&mut self, snapshot: Snapshot, cx: &mut Context<Self>) {
         let changed = self.text != snapshot.text;
         self.text = snapshot.text;
+        self.dragging = None;
         self.anchor = snapshot.anchor;
         self.caret = snapshot.caret;
         self.marked = None;
@@ -173,6 +175,7 @@ impl SearchInput {
     }
 
     fn finish_composition(&mut self, cx: &mut Context<Self>) {
+        self.dragging = None;
         self.marked = None;
         self.history.commit_composition(self.snapshot());
         self.history.close_group();
@@ -194,6 +197,7 @@ impl SearchInput {
         let (value, inserted) = replacement(&self.text, range, text, self.limit);
         let changed = self.text.as_ref() != value;
         self.text = value.into();
+        self.dragging = None;
         self.anchor = inserted.end;
         self.caret = self.anchor;
         self.marked = None;
@@ -308,6 +312,45 @@ impl SearchInput {
                 );
             }
         }
+    }
+}
+
+#[derive(Clone)]
+struct SelectionGesture {
+    original: Range<usize>,
+    granularity: usize,
+}
+
+impl SelectionGesture {
+    fn drag(&self, text: &str, offset: usize) -> (usize, usize) {
+        let current = click_selection(text, offset, self.granularity);
+        if offset < self.original.start {
+            (self.original.end, current.start)
+        } else if offset >= self.original.end {
+            (self.original.start, current.end)
+        } else {
+            (self.original.start, self.original.end)
+        }
+    }
+}
+
+fn click_selection(text: &str, offset: usize, count: usize) -> Range<usize> {
+    let offset = offset.min(text.len());
+    match count {
+        0 | 1 => offset..offset,
+        2 => {
+            // At the trailing edge of a field, select its final word rather
+            // than leaving a double click with an empty caret selection.
+            let hit = if offset == text.len() {
+                previous_grapheme(text, offset)
+            } else {
+                offset
+            };
+            text.split_word_bound_indices()
+                .find(|(index, part)| *index <= hit && hit < index + part.len())
+                .map_or(offset..offset, |(index, part)| index..index + part.len())
+        }
+        _ => 0..text.len(),
     }
 }
 
@@ -691,22 +734,43 @@ pub fn field(
                 MouseButton::Left,
                 cx.listener(|input, event: &gpui::MouseDownEvent, window, cx| {
                     input.focus.focus(window);
-                    input.dragging = true;
-                    input.select(input.hit(event.position), event.modifiers.shift, cx);
+                    let offset = input.hit(event.position);
+                    let count = event.click_count;
+                    let original = click_selection(&input.text, offset, count);
+                    if count > 1 {
+                        input.anchor = original.start;
+                        input.select(original.end, true, cx);
+                    } else {
+                        input.select(offset, event.modifiers.shift, cx);
+                    }
+                    input.dragging = Some(SelectionGesture {
+                        original: if count > 1 {
+                            original
+                        } else {
+                            input.anchor..input.anchor
+                        },
+                        granularity: count,
+                    });
                 }),
             )
             .on_mouse_move(cx.listener(|input, event: &gpui::MouseMoveEvent, _, cx| {
-                if input.dragging {
-                    input.select(input.hit(event.position), true, cx);
+                if event.pressed_button != Some(MouseButton::Left) {
+                    input.dragging = None;
+                    return;
+                }
+                if let Some(gesture) = &input.dragging {
+                    let (anchor, caret) = gesture.drag(&input.text, input.hit(event.position));
+                    input.anchor = anchor;
+                    input.select(caret, true, cx);
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|input, _, _, _| input.dragging = false),
+                cx.listener(|input, _, _, _| input.dragging = None),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|input, _, _, _| input.dragging = false),
+                cx.listener(|input, _, _, _| input.dragging = None),
             )
             .child(Line {
                 input: cx.entity(),
@@ -867,6 +931,42 @@ impl Element for Line {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multiple_click_selection_preserves_words_combining_text_and_the_single_line() {
+        let text = "Raid  Joa\u{303}o 🐻";
+        assert_eq!(click_selection(text, 2, 1), 2..2);
+        assert_eq!(&text[click_selection(text, 2, 2)], "Raid");
+        assert_eq!(&text[click_selection(text, 4, 2)], "  ");
+        assert_eq!(&text[click_selection(text, 8, 2)], "Joa\u{303}o");
+        assert_eq!(&text[click_selection(text, text.len(), 2)], "🐻");
+        assert_eq!(click_selection(text, 7, 3), 0..text.len());
+        assert_eq!(click_selection("", 99, 2), 0..0);
+    }
+
+    #[test]
+    fn word_drag_extends_by_whole_words_and_retains_the_original_selection_when_reversing() {
+        let text = "Raid  healing setup";
+        let gesture = SelectionGesture {
+            original: 6..13,
+            granularity: 2,
+        };
+        assert_eq!(gesture.drag(text, 9), (6, 13));
+        assert_eq!(gesture.drag(text, 16), (6, text.len()));
+        assert_eq!(gesture.drag(text, 2), (13, 0));
+        assert_eq!(gesture.drag(text, 9), (6, 13));
+        let character = SelectionGesture {
+            original: 6..6,
+            granularity: 1,
+        };
+        assert_eq!(character.drag(text, 2), (6, 2));
+        assert_eq!(character.drag(text, 16), (6, 16));
+        let line = SelectionGesture {
+            original: 0..text.len(),
+            granularity: 3,
+        };
+        assert_eq!(line.drag(text, 2), (0, text.len()));
+    }
 
     #[test]
     fn edit_menu_bindings_are_confined_to_text_focus_and_use_platform_accelerators() {
