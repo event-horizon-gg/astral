@@ -15,6 +15,7 @@ struct GitHubRelease {
 
 #[derive(Deserialize)]
 struct Asset {
+    id: u64,
     name: String,
     state: String,
     size: u64,
@@ -24,6 +25,7 @@ struct Asset {
 
 #[derive(Clone)]
 pub struct Package {
+    pub id: u64,
     pub name: String,
     pub size: u64,
     pub digest: Option<String>,
@@ -86,8 +88,20 @@ pub struct ProjectRelease {
     pub packages: Vec<Package>,
 }
 
+impl ProjectRelease {
+    pub fn package_index(&self, id: u64) -> Result<usize, String> {
+        self.packages
+            .iter()
+            .position(|package| package.id == id)
+            .ok_or_else(|| "Choose a published addon ZIP.".into())
+    }
+}
+
 pub fn project_packages(repo: &str) -> Result<ProjectRelease, String> {
-    let release = fetch_release(&client(), repo)?;
+    Ok(project_release(repo, fetch_release(&client(), repo)?))
+}
+
+fn project_release(repo: &str, release: GitHubRelease) -> ProjectRelease {
     let prefix = format!("https://github.com/{repo}/releases/download/");
     let packages: Vec<_> = release
         .assets
@@ -99,13 +113,14 @@ pub fn project_packages(repo: &str) -> Result<ProjectRelease, String> {
                 && asset.browser_download_url.starts_with(&prefix)
         })
         .map(|asset| Package {
+            id: asset.id,
             name: asset.name,
             size: asset.size,
             digest: asset.digest,
             url: asset.browser_download_url,
         })
         .collect();
-    Ok(ProjectRelease {
+    ProjectRelease {
         tag: release.tag_name,
         notes: release
             .body
@@ -114,7 +129,7 @@ pub fn project_packages(repo: &str) -> Result<ProjectRelease, String> {
             .take(12_000)
             .collect(),
         packages,
-    })
+    }
 }
 
 fn select_release(
@@ -149,6 +164,7 @@ fn select_release(
             .take(12_000)
             .collect(),
         package: Package {
+            id: asset.id,
             name: asset.name,
             size: asset.size,
             digest: asset.digest,
@@ -277,6 +293,62 @@ pub fn compare(source: &Definition, installed: &str, tag: &str) -> Option<Orderi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_release_keeps_github_asset_identity_after_package_filtering() {
+        let release: GitHubRelease = serde_json::from_value(serde_json::json!({
+            "tag_name": "v2", "body": "Current notes", "published_at": null,
+            "draft": false, "prerelease": false,
+            "assets": [
+                {"id": 40, "name": "Addon.zip", "state": "uploaded", "size": 100,
+                 "browser_download_url": "https://github.com/owner/other/releases/download/v2/Addon.zip"},
+                {"id": 41, "name": "Addon.txt", "state": "uploaded", "size": 100,
+                 "browser_download_url": "https://github.com/owner/addon/releases/download/v2/Addon.txt"},
+                {"id": 42, "name": "Addon.zip", "state": "uploaded", "size": 100,
+                 "digest": "sha256:current", "browser_download_url": "https://github.com/owner/addon/releases/download/v2/Addon.zip"}
+            ]
+        })).unwrap();
+        let release = project_release("owner/addon", release);
+        assert_eq!(release.packages.len(), 1);
+        assert_eq!(release.packages[0].id, 42);
+        assert_eq!(
+            release.packages[0].digest.as_deref(),
+            Some("sha256:current")
+        );
+        assert_eq!(release.tag, "v2");
+        assert_eq!(release.notes, "Current notes");
+        assert!(release.package_index(40).is_err());
+        assert!(release.package_index(41).is_err());
+    }
+
+    #[test]
+    fn a_refreshed_release_must_still_contain_the_selected_asset_id() {
+        let package = |id, name: &str| Package {
+            id,
+            name: name.into(),
+            size: 100,
+            digest: None,
+            url: format!("https://github.com/owner/addon/releases/download/v2/{name}"),
+        };
+        let release = ProjectRelease {
+            tag: "v2".into(),
+            notes: "Updated notes".into(),
+            packages: vec![package(42, "Addon.zip"), package(43, "Addon-Forever.zip")],
+        };
+        // Identical filenames/download paths do not authorize a replacement asset.
+        assert!(release.package_index(41).is_err());
+        assert_eq!(release.package_index(42).unwrap(), 0);
+        assert_eq!(release.package_index(43).unwrap(), 1);
+        assert!(
+            ProjectRelease {
+                tag: "v3".into(),
+                notes: String::new(),
+                packages: vec![]
+            }
+            .package_index(42)
+            .is_err()
+        );
+    }
 
     #[test]
     fn compares_author_versions_and_refuses_unknown_formats() {

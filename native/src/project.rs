@@ -15,7 +15,6 @@ pub struct ProjectReview {
     abandoned: bool,
     inspected: Option<(Definition, Arc<packages::Inspection>)>,
     inspected_at: Option<Instant>,
-    error: Option<String>,
     busy: bool,
     selected: Option<usize>,
     choosing_package: bool,
@@ -230,7 +229,6 @@ impl Astral {
             abandoned: false,
             inspected: None,
             inspected_at: None,
-            error: None,
             busy: true,
             selected: None,
             choosing_package: false,
@@ -280,9 +278,11 @@ impl Astral {
             return;
         };
         let Some(root) = review.root.clone() else {
-            review.error =
-                Some("Choose your WoW folder in Settings before checking compatibility.".into());
-            cx.notify();
+            self.show_notification(
+                "Choose your WoW folder in Settings before checking compatibility.",
+                true,
+                cx,
+            );
             return;
         };
         let Some(Ok(release)) = &review.release else {
@@ -295,7 +295,6 @@ impl Astral {
         else {
             return;
         };
-        let pattern = asset_pattern(&asset.name, &release.tag);
         let (request, root, client, repo) =
             (review.request, root, review.client, review.repo.clone());
         review.busy = true;
@@ -303,11 +302,18 @@ impl Astral {
         review.dialog_focus.focus(window);
         review.inspected = None;
         review.inspected_at = None;
-        review.error = None;
         let catalog = self.catalog.clone();
         let task = cx.background_executor().spawn(async move {
-            let bytes = releases::download(&asset)?;
-            packages::inspect_project(bytes, &root, client, &repo, pattern, &catalog)
+            // Electron re-fetches latest before inspection, matching the selected
+            // GitHub asset ID rather than silently trusting an old download URL.
+            let fresh = releases::project_packages(&repo)?;
+            let selected = fresh.package_index(asset.id)?;
+            let asset = &fresh.packages[selected];
+            let pattern = asset_pattern(&asset.name, &fresh.tag);
+            let bytes = releases::download(asset)?;
+            let (source, package) =
+                packages::inspect_project(bytes, &root, client, &repo, pattern, &catalog)?;
+            Ok::<_, String>((fresh, selected, source, package))
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -319,11 +325,13 @@ impl Astral {
                 {
                     review.busy = false;
                     match result {
-                        Ok((source, package)) => {
+                        Ok((release, selected, source, package)) => {
+                            review.release = Some(Ok(release));
+                            review.selected = Some(selected);
                             review.inspected = Some((source, Arc::new(package)));
                             review.inspected_at = Some(Instant::now());
                         }
-                        Err(error) => review.error = Some(error),
+                        Err(error) => app.show_notification(error, true, cx),
                     }
                     cx.notify();
                 }
@@ -360,16 +368,15 @@ impl Astral {
             review.inspected_at,
             Instant::now(),
         ) {
-            review.error = Some(
-                "This package review expired or belongs to another game client. Review it again."
-                    .into(),
+            self.show_notification(
+                "This package review expired or belongs to another game client. Review it again.",
+                true,
+                cx,
             );
-            cx.notify();
             return;
         }
         review.busy = true;
         review.dialog_focus.focus(window);
-        review.error = None;
         let (request, client, tag) = (review.request, review.client, release.tag.clone());
         let notes = release.notes.clone();
         let (source, package) = (source.clone(), package.clone());
@@ -408,8 +415,7 @@ impl Astral {
                     }
                     Err(error) => {
                         review.busy = false;
-                        review.error = Some(error);
-                        cx.notify();
+                        app.show_notification(error, true, cx);
                     }
                 }
             });
@@ -523,7 +529,6 @@ impl Astral {
                                         if let Some(review) = &mut app.project_review {
                                             review.inspected = None;
                                             review.inspected_at = None;
-                                            review.error = None;
                                             review.dialog_focus.focus(window);
                                             cx.notify();
                                         }
@@ -617,7 +622,6 @@ impl Astral {
                                                 if let Some(review) = &mut app.project_review {
                                                     review.selected = Some(index);
                                                     review.choosing_package = false;
-                                                    review.error = None;
                                                     review.dialog_focus.focus(window);
                                                     cx.notify();
                                                 }
@@ -708,9 +712,6 @@ impl Astral {
                         });
                 }
             }
-        }
-        if let Some(error) = &review.error {
-            body = body.child(palette.label(error.clone()).text_color(rgb(palette.error)));
         }
         let close = palette
             .icon_button("close-community-review", "close")
