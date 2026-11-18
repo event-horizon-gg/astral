@@ -395,15 +395,22 @@ impl Astral {
         palette: Palette,
         cx: &Context<Self>,
     ) -> gpui::Div {
-        let mut body = div()
-            .id("project-release-content")
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap_3();
+        let mut body = div().flex().flex_col().flex_shrink_0();
         let url = format!("https://github.com/{}/releases", review.repo);
         let blocked = review.busy || self.profile_game_running();
+        let warning = |text: String| {
+            palette
+                .label(text)
+                .text_size(px(11.))
+                .line_height(px(18.7))
+                .p(px(14.))
+                .mb(px(20.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(palette.line)
+                .bg(rgb(palette.surface))
+                .text_color(rgb(0xd18b35))
+        };
         match &review.release {
             None => body = body.child(palette.label("Loading release…")),
             Some(Err(error)) => {
@@ -416,35 +423,35 @@ impl Astral {
                 body = body.child(
                     palette
                         .label(format!("{} · {}", review.repo, release.tag))
-                        .text_size(px(12.)),
+                        .text_size(px(12.))
+                        .text_color(rgb(0x8da898))
+                        .line_height(px(22.8))
+                        .mt(px(13.))
+                        .mb(px(25.)),
                 );
                 if let Some((_, package)) = &review.inspected {
-                    body = body.child(div().flex().items_center().gap_2()
-                        .child(crate::icon("check", 17., palette.accent))
+                    body = body.child(div().flex().items_center().gap(px(9.))
+                        .mt(px(16.)).p(px(14.)).rounded(px(8.))
+                        .border_1().border_color(palette.line).bg(rgb(palette.surface))
+                        .text_size(px(11.)).line_height(px(18.7))
+                        .child(crate::icon("shield-check", 17., palette.muted))
                         .child(palette.label(format!("Compatible with this {} build · {}",
-                            review.client.label(), selected.map(|asset| asset.name.as_str()).unwrap_or("ZIP")))))
-                        .child(div().id("project-package-folders").max_h(px(230.)).overflow_y_scroll()
+                            review.client.label(), selected.map(|asset| asset.name.as_str()).unwrap_or("ZIP"))).text_size(px(11.))))
+                        .child(div().id("project-package-folders").mt(px(20.)).max_h(px(230.)).overflow_y_scroll()
                             .children(package.modules.iter().map(|module| {
-                                div().flex().flex_col().gap_1().py(px(11.)).border_b_1().border_color(palette.line)
-                                    .child(div().font_weight(gpui::FontWeight::SEMIBOLD).text_size(px(12.)).child(module.name.clone()))
+                                div().flex().flex_col().gap(px(6.)).py(px(11.)).border_b_1().border_color(gpui::rgba(0xbac7ff15))
+                                    .child(div().font_weight(gpui::FontWeight::BOLD).text_size(px(12.)).child(module.name.clone()))
                                     .child(palette.label(format!("{} · {}", module.version.as_deref().unwrap_or("Unknown"),
-                                        if module.replaces { "Replaces installed files" } else { "New addon folder" })).text_size(px(11.)))
+                                        if module.replaces { "Replaces installed files" } else { "New addon folder" })).text_size(px(11.)).text_color(rgb(0x8d9ab7)))
                             })))
-                        .when(!package.missing.is_empty(), |body| body.child(palette.label(format!(
+                        .when(!package.missing.is_empty(), |body| body.child(warning(format!(
                             "Install required addons first: {}", package.missing.iter().cloned().collect::<Vec<_>>().join(", ")
-                        )).text_color(rgb(palette.error))))
-                        .when(self.profile_game_running(), |body| body.child(palette.label("Close World of Warcraft before installing.")
-                            .text_color(rgb(palette.error))))
-                        .child(palette.label("Existing addon files are backed up. Your saved settings stay in place.").text_size(px(11.)));
+                        ))))
+                        .when(self.profile_game_running(), |body| body.child(warning("Close World of Warcraft before installing.".into())))
+                        .child(palette.label("Existing addon files are backed up. Your saved settings stay in place.")
+                            .text_size(px(11.)).line_height(px(19.8)).mt(px(13.)).mb(px(25.)));
                     let install = palette
-                        .primary_button(
-                            "install-community-addon",
-                            if review.busy {
-                                "Installing…"
-                            } else {
-                                "Install release"
-                            },
-                        )
+                        .primary_button("install-community-addon", "Install release")
                         .flex_row_reverse()
                         .child(crate::icon("plus", 15., 0xffffff));
                     let alternate =
@@ -453,7 +460,7 @@ impl Astral {
                         div()
                             .flex()
                             .justify_end()
-                            .gap_2()
+                            .gap(px(9.))
                             .child(if review.busy {
                                 alternate.opacity(0.45).cursor_default()
                             } else {
@@ -492,10 +499,27 @@ impl Astral {
                                 .unwrap_or_else(|| "Choose an addon ZIP".into()),
                         )
                         .w_full()
+                        .h_auto()
+                        .p(px(9.))
+                        .font_weight(gpui::FontWeight::NORMAL)
+                        .bg(rgb(palette.surface))
+                        .text_color(rgb(palette.text))
                         .justify_between()
                         .child(crate::icon("chevron", 14., palette.muted));
-                    body = body
-                        .child(palette.label("Release package").text_size(px(12.)))
+                    let selector = div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.))
+                        .mt(px(18.))
+                        .py(px(17.))
+                        .border_b_1()
+                        .border_color(palette.line)
+                        .child(
+                            palette
+                                .label("Release package")
+                                .text_size(px(12.))
+                                .text_color(rgb(palette.text)),
+                        )
                         .child(if release.packages.is_empty() || review.busy {
                             package.opacity(0.45).cursor_default()
                         } else {
@@ -510,9 +534,9 @@ impl Astral {
                                 }),
                             )
                         });
+                    body = body.child(selector);
                     if release.packages.is_empty() {
-                        body = body.child(palette.label("The author has not published a packaged ZIP release. Source-code archives cannot be installed as addons.")
-                            .text_color(rgb(palette.error)));
+                        body = body.child(warning("The author has not published a packaged ZIP release. Source-code archives cannot be installed as addons.".into()));
                     } else if review.choosing_package {
                         body = body.child(
                             div()
@@ -563,14 +587,19 @@ impl Astral {
                         div()
                             .flex()
                             .justify_end()
-                            .gap_2()
-                            .child(crate::keyboard_button(
-                                palette
+                            .gap(px(9.))
+                            .child({
+                                let view = palette
                                     .button("community-github", "View project")
-                                    .child(crate::icon("external", 13., palette.muted)),
-                                palette,
-                                move |_, _, cx| cx.open_url(&url),
-                            ))
+                                    .child(crate::icon("external", 13., palette.muted));
+                                if review.busy {
+                                    view.opacity(0.45).cursor_default()
+                                } else {
+                                    crate::keyboard_button(view, palette, move |_, _, cx| {
+                                        cx.open_url(&url)
+                                    })
+                                }
+                            })
                             .child(if review.busy || selected.is_none() {
                                 inspect.opacity(0.45).cursor_default()
                             } else {
@@ -586,24 +615,43 @@ impl Astral {
                 }
                 if !release.notes.is_empty() {
                     body = body
-                        .child(div().mt(px(12.)).child(crate::keyboard_button(
-                            palette.text_button("community-release-notes", "Release notes"),
-                            palette,
-                            cx.listener(|app, _: &(), _, cx| {
-                                if let Some(review) = &mut app.project_review {
-                                    review.show_notes = !review.show_notes;
-                                    cx.notify();
-                                }
-                            }),
-                        )))
+                        .child(
+                            div().mt(px(23.)).child(crate::keyboard_button(
+                                palette
+                                    .text_button("community-release-notes", "Release notes")
+                                    .flex()
+                                    .flex_row_reverse()
+                                    .items_center()
+                                    .gap(px(3.))
+                                    .py(px(5.))
+                                    .text_size(px(12.))
+                                    .text_color(rgb(palette.accent))
+                                    .child(crate::icon(
+                                        if review.show_notes {
+                                            "chevron"
+                                        } else {
+                                            "chevron-right"
+                                        },
+                                        12.,
+                                        palette.accent,
+                                    )),
+                                palette,
+                                cx.listener(|app, _: &(), _, cx| {
+                                    if let Some(review) = &mut app.project_review {
+                                        review.show_notes = !review.show_notes;
+                                        cx.notify();
+                                    }
+                                }),
+                            )),
+                        )
                         .when(review.show_notes, |body| {
                             body.child(
                                 palette
                                     .label(release.notes.clone())
-                                    .p_3()
+                                    .my(px(11.))
                                     .bg(rgb(palette.surface))
                                     .text_size(px(11.))
-                                    .line_height(px(20.)),
+                                    .line_height(px(19.8)),
                             )
                         });
                 }
@@ -658,17 +706,23 @@ impl Astral {
             .child(
                 div()
                     .id("project-release-dialog")
+                    .relative()
+                    .overflow_y_scroll()
                     .w(px(460.))
                     .max_w(gpui::relative(0.90))
                     .max_h(gpui::relative(0.85))
                     .p(px(30.))
                     .flex()
                     .flex_col()
-                    .gap_4()
                     .occlude()
                     .bg(rgb(palette.panel))
                     .rounded(px(14.))
-                    .shadow_lg()
+                    .shadow(vec![gpui::BoxShadow {
+                        color: gpui::rgba(0x00000044).into(),
+                        offset: gpui::point(px(0.), px(20.)),
+                        blur_radius: px(35.),
+                        spread_radius: px(0.),
+                    }])
                     .border_1()
                     .border_color(palette.line)
                     .track_focus(&review.dialog_focus)
@@ -700,16 +754,20 @@ impl Astral {
                     .child(close)
                     .child(
                         div()
-                            .text_size(px(24.))
+                            .flex_shrink_0()
+                            .mt(px(20.))
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(
+                            .child(crate::typography::wrapped(
                                 review
                                     .repo
                                     .split('/')
                                     .next_back()
                                     .unwrap_or(&review.repo)
                                     .to_owned(),
-                            ),
+                                24.,
+                                1.2,
+                                -0.7,
+                            )),
                     )
                     .child(body),
             )

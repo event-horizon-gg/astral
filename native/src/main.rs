@@ -1314,7 +1314,7 @@ impl Astral {
                     .shadow(vec![gpui::BoxShadow {
                         color: gpui::rgba(0x00000044).into(),
                         offset: gpui::point(px(0.), px(20.)),
-                        blur_radius: px(70.),
+                        blur_radius: px(35.),
                         spread_radius: px(0.),
                     }])
                     .child(
@@ -1988,7 +1988,7 @@ impl Astral {
             .shadow(vec![gpui::BoxShadow {
                 color: gpui::rgba(0x00000044).into(),
                 offset: gpui::point(px(0.), px(20.)),
-                blur_radius: px(70.),
+                blur_radius: px(35.),
                 spread_radius: px(0.),
             }])
             .overflow_y_scroll()
@@ -2011,7 +2011,7 @@ impl Astral {
                     .mt(px(28.))
                     .text_size(px(34.))
                     .line_height(px(40.8))
-                    .font_weight(gpui::FontWeight::NORMAL)
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .child(typography::wrapped(addon.name.clone(), 34., 1.2, -1.5)),
             )
             .child(
@@ -2500,7 +2500,12 @@ impl Render for Astral {
                 .bg(rgb(palette.panel))
                 .border_1()
                 .border_color(palette.line)
-                .shadow_lg()
+                .shadow(vec![gpui::BoxShadow {
+                    color: gpui::rgba(0x00000033).into(),
+                    offset: gpui::point(px(0.), px(15.)),
+                    blur_radius: px(25.),
+                    spread_radius: px(0.),
+                }])
                 .occlude();
             match kind {
                 ToolbarMenu::Client => {

@@ -29,6 +29,7 @@ pub fn load(path: &str) -> Option<&'static [u8]> {
         "close" => include_bytes!("../assets/icons/close.svg"),
         "check-circle" => include_bytes!("../assets/icons/check-circle.svg"),
         "check" => include_bytes!("../assets/icons/check.svg"),
+        "shield-check" => include_bytes!("../assets/icons/shield-check.svg"),
         "sun" => include_bytes!("../assets/icons/sun.svg"),
         "moon" => include_bytes!("../assets/icons/moon.svg"),
         _ => return None,

@@ -13,7 +13,7 @@ const icons = {
   folder: 'FolderOpen', globe: 'Globe', drive: 'HardDrive', external: 'ExternalLink',
   'arrow-up-right': 'ArrowUpRight', 'arrow-right': 'ArrowRight', download: 'ArrowDownToLine',
   alert: 'AlertCircle', plus: 'Plus', package: 'Package', settings: 'SlidersHorizontal',
-  trash: 'Trash2', gear: 'Settings', close: 'X', 'check-circle': 'CheckCircle2', check: 'Check', sun: 'Sun', moon: 'Moon',
+  trash: 'Trash2', gear: 'Settings', close: 'X', 'check-circle': 'CheckCircle2', check: 'Check', 'shield-check': 'ShieldCheck', sun: 'Sun', moon: 'Moon',
 };
 const directory = path.join(root, 'native/assets/icons');
 fs.mkdirSync(directory, { recursive: true });

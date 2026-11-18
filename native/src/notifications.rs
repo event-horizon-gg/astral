@@ -120,7 +120,7 @@ impl Astral {
                         .shadow(vec![gpui::BoxShadow {
                             color: rgba(0x00000033).into(),
                             offset: gpui::point(px(0.), px(10.)),
-                            blur_radius: px(40.),
+                            blur_radius: px(20.),
                             spread_radius: px(0.),
                         }])
                         .when(error, |toast| {
