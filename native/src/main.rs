@@ -2848,8 +2848,10 @@ impl Render for Astral {
                                         button.opacity(0.45).cursor_default()
                                     })
                                     .when(can_check, |button| {
-                                        button.on_click(
-                                            cx.listener(|app, _, _, cx| {
+                                        keyboard_button(
+                                            button,
+                                            palette,
+                                            cx.listener(|app, _: &(), _, cx| {
                                                 app.check_updates(None, cx)
                                             }),
                                         )
@@ -3138,7 +3140,7 @@ impl Render for Astral {
                                 palette
                                     .primary_button("search-catalog", "Search")
                                     .h(px(41.))
-                                    .opacity(0.55)
+                                    .opacity(0.45)
                                     .cursor_default()
                             } else {
                                 keyboard_button(
