@@ -11,6 +11,9 @@ pub struct Removal {
 }
 
 impl Astral {
+    // Keep the backed-up removal implementation for a later feature pass.
+    // The strict-parity drawer has no uninstall entry in Electron.
+    #[allow(dead_code)]
     pub fn confirm_removal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.addon_batch_running() {
             return;

@@ -475,6 +475,8 @@ impl Astral {
         }
     }
 
+    // Retained for the post-port feature pass; absent from Electron's drawer.
+    #[allow(dead_code)]
     fn refresh_talents(&mut self, cx: &mut Context<Self>) {
         if self.talent_refreshing
             || self.addon_batch_running()
@@ -749,6 +751,15 @@ impl Palette {
     }
 
     fn icon_button(self, id: &'static str, glyph: &'static str) -> gpui::Stateful<gpui::Div> {
+        self.icon_button_sized(id, glyph, 18.)
+    }
+
+    fn icon_button_sized(
+        self,
+        id: &'static str,
+        glyph: &'static str,
+        size: f32,
+    ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
             .size(px(30.))
@@ -758,7 +769,7 @@ impl Palette {
             .rounded_md()
             .cursor_pointer()
             .hover(move |style| style.bg(self.hover))
-            .child(icon(glyph, 18., self.muted))
+            .child(icon(glyph, size, self.muted))
     }
 
     fn text_button(
@@ -1888,7 +1899,6 @@ impl Astral {
     fn details(&self, addon: &Addon, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
         let palette = Palette::new(self.preferences.light_theme);
         let definition = self.definition(addon);
-        let repo = definition.and_then(|source| source.repo.clone());
         let folder = addon.folder.clone();
         let managed =
             definition.is_some_and(|source| source.repo.is_some() || source.bundled == Some(true));
@@ -1906,10 +1916,37 @@ impl Astral {
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap_4()
+                .gap(px(8.))
                 .text_size(px(11.))
-                .child(div().text_color(rgb(palette.muted)).child(name))
-                .child(div().text_align(gpui::TextAlign::Right).child(value))
+                .line_height(px(13.2))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(rgb(palette.muted))
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .font_weight(gpui::FontWeight(450.))
+                        .text_align(gpui::TextAlign::Right)
+                        .child(value),
+                )
+        };
+        let warning = |message: String| {
+            palette
+                .label(message)
+                .text_size(px(11.))
+                .line_height(px(13.2))
+                .p(px(14.))
+                .mb(px(20.))
+                .rounded(px(8.))
+                .bg(rgb(palette.surface))
+                .border_1()
+                .border_color(palette.line)
+                .text_color(rgb(0xd18b35))
         };
         div()
             .id("details-drawer")
@@ -1925,12 +1962,17 @@ impl Astral {
             .bg(rgb(palette.panel))
             .border_l_1()
             .border_color(palette.line)
-            .shadow_lg()
+            .shadow(vec![gpui::BoxShadow {
+                color: gpui::rgba(0x00000044).into(),
+                offset: gpui::point(px(0.), px(20.)),
+                blur_radius: px(70.),
+                spread_radius: px(0.),
+            }])
             .overflow_y_scroll()
             .occlude()
             .child(keyboard_button(
                 palette
-                    .icon_button("close-details", "close")
+                    .icon_button_sized("close-details", "close", 20.)
                     .absolute()
                     .right(px(19.))
                     .top(px(19.)),
@@ -1945,9 +1987,9 @@ impl Astral {
                 div()
                     .mt(px(28.))
                     .text_size(px(34.))
-                    .line_height(px(38.))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(addon.name.clone()),
+                    .line_height(px(40.8))
+                    .font_weight(gpui::FontWeight::NORMAL)
+                    .child(typography::wrapped(addon.name.clone(), 34., 1.2, -1.5)),
             )
             .child(
                 palette
@@ -1959,7 +2001,7 @@ impl Astral {
                     .mt(px(14.))
                     .mb(px(25.))
                     .text_size(px(12.))
-                    .line_height(px(22.)),
+                    .line_height(px(22.2)),
             )
             .child(
                 div()
@@ -1981,26 +2023,12 @@ impl Astral {
             )
             .when_some(
                 check.and_then(|result| result.as_ref().err()),
-                |drawer, error| {
-                    drawer.child(
-                        palette
-                            .label(error.clone())
-                            .mb(px(10.))
-                            .text_color(rgb(palette.error)),
-                    )
-                },
+                |drawer, error| drawer.child(warning(error.clone())),
             )
             .when_some(
                 self.activity
                     .addon_error(addon, definition.map(|source| source.id.as_str())),
-                |drawer, error| {
-                    drawer.child(
-                        palette
-                            .label(format!("Last attempt failed: {error}"))
-                            .mb(px(10.))
-                            .text_color(rgb(palette.error)),
-                    )
-                },
+                |drawer, error| drawer.child(warning(format!("Last attempt failed: {error}"))),
             )
             .when(managed, |drawer| {
                 let included = !self.excluded_from_daily(&folder);
@@ -2030,8 +2058,6 @@ impl Astral {
                         "addon-release-action",
                         if update {
                             "Update addon"
-                        } else if self.checking {
-                            "Checking…"
                         } else {
                             "Check release"
                         },
@@ -2040,7 +2066,6 @@ impl Astral {
                     .mb(px(10.))
                     .child(icon("download", 15., 0xffffff));
                 let id = definition.map(|source| source.id.clone());
-                let folder = folder.clone();
                 drawer.child(if busy || (running && update) {
                     action.opacity(0.45).cursor_default()
                 } else {
@@ -2051,7 +2076,7 @@ impl Astral {
                             if update && let Some(id) = &id {
                                 app.open_release(id, window, cx);
                             } else {
-                                app.check_updates(Some(&folder), cx);
+                                app.check_updates(None, cx);
                             }
                         }),
                     )
@@ -2105,11 +2130,23 @@ impl Astral {
                 })
             })
             .when_some(
-                repo.map(|repo| (format!("https://github.com/{repo}"), "View on GitHub"))
-                    .or_else(|| {
-                        definition
-                            .and_then(|source| source.source_url.clone())
-                            .map(|url| (url, "Download page"))
+                definition
+                    .filter(|source| source.bundled != Some(true))
+                    .and_then(|source| {
+                        let url = source.source_url.clone().or_else(|| {
+                            source
+                                .repo
+                                .as_ref()
+                                .map(|repo| format!("https://github.com/{repo}"))
+                        })?;
+                        Some((
+                            url,
+                            if source.repo.is_some() {
+                                "View on GitHub"
+                            } else {
+                                "Download page"
+                            },
+                        ))
                     }),
                 |drawer, (url, label)| {
                     drawer.child(keyboard_button(
@@ -2131,12 +2168,7 @@ impl Astral {
                 }).mt(px(13.)).mb(px(28.)).text_size(px(10.)).line_height(px(18.)))
             })
             .when(running && (update || can_import), |drawer| {
-                drawer.child(
-                    palette
-                        .label("Close WoW before updating.")
-                        .mb(px(10.))
-                        .text_color(rgb(palette.error)),
-                )
+                drawer.child(warning("Close WoW before updating.".into()))
             })
             .when_some(
                 check
@@ -2153,92 +2185,13 @@ impl Astral {
                         .child(
                             palette
                                 .label(release.notes.clone())
-                                .mt_2()
-                                .mb_4()
-                                .p_3()
+                                .mt(px(11.))
+                                .mb(px(11.))
                                 .bg(rgb(palette.surface))
-                                .border_1()
-                                .border_color(palette.line)
                                 .text_size(px(11.))
-                                .line_height(px(20.)),
+                                .line_height(px(19.8)),
                         )
                 },
-            )
-            .when(addon.folder == "AstralTalents", |drawer| {
-                let button = palette
-                    .button(
-                        "refresh-talent-builds",
-                        if self.talent_refreshing {
-                            "Refreshing builds…"
-                        } else {
-                            "Refresh builds"
-                        },
-                    )
-                    .child(icon("refresh", 15., palette.muted));
-                drawer
-                    .child(if self.talent_refreshing {
-                        button.opacity(0.65).cursor_default()
-                    } else {
-                        button.on_click(cx.listener(|app, _, _, cx| app.refresh_talents(cx)))
-                    })
-                    .when_some(
-                        self.talent_refresh_result
-                            .as_ref()
-                            .filter(|(root, _)| self.root(Client::Retail) == Some(root)),
-                        |drawer, (_, result)| match result {
-                            Ok(()) => drawer.child(palette.label("Builds refreshed.")),
-                            Err(error) => drawer
-                                .child(palette.label(error.clone()).text_color(rgb(palette.error))),
-                        },
-                    )
-            })
-            .child(
-                div()
-                    .border_t_1()
-                    .border_color(palette.line)
-                    .pt_4()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("Installed modules"),
-                    )
-                    .children(
-                        addon
-                            .modules
-                            .iter()
-                            .cloned()
-                            .map(|module| palette.label(module).text_size(px(11.))),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .when_some(
-                        self.root(self.preferences.client)
-                            .filter(|_| packages::safe_folder(&addon.folder))
-                            .map(|root| root.join("Interface/AddOns").join(&addon.folder)),
-                        |actions, path| {
-                            actions.child(
-                                palette
-                                    .button("show-addon-files", "Show files")
-                                    .child(icon("folder", 14., palette.muted))
-                                    .on_click(move |_, _, cx| cx.reveal_path(&path)),
-                            )
-                        },
-                    )
-                    .child(
-                        palette
-                            .button("addon-uninstall", "Uninstall…")
-                            .text_color(rgb(palette.error))
-                            .on_click(
-                                cx.listener(|app, _, window, cx| app.confirm_removal(window, cx)),
-                            ),
-                    ),
             )
     }
 }
