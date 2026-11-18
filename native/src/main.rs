@@ -3352,10 +3352,6 @@ impl Render for Astral {
                 }
                 if app.release_review.take().is_some() || app.selected.take().is_some() {
                     cx.notify();
-                } else if app.search_focus.is_focused(window) {
-                    app.set_query("", cx);
-                    app.root_focus.focus(window);
-                    cx.notify();
                 }
             }))
             .when_some(self.main_scrollbar(window, cx), |app, scrollbar| {
