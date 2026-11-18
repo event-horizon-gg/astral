@@ -283,7 +283,7 @@ fn inventory_toc(
     candidate.as_deref().map(read_toc).transpose()
 }
 
-fn plain_title(text: &str) -> String {
+pub(crate) fn plain_title(text: &str) -> String {
     let mut result = String::new();
     let mut rest = text;
     while let Some(i) = rest.find('|') {

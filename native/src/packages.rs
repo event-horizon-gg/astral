@@ -39,6 +39,7 @@ pub fn read_zip(path: &Path) -> Result<Vec<u8>, String> {
 
 pub struct Module {
     pub folder: String,
+    pub name: String,
     pub version: Option<String>,
     pub replaces: bool,
     pub(crate) reviewed_version: Option<String>,
@@ -154,6 +155,37 @@ pub fn inspect_project(
     if folders.is_empty() || folders.len() > 64 {
         return Err("Choose a packaged addon ZIP with valid addon folders.".into());
     }
+    // A release review can also update a curated/registered addon. Preserve its
+    // catalog identity, module filters, dependencies and version scheme rather
+    // than trying to register its folders as a second, unrelated source.
+    if let Some(source) = catalog.iter().find(|source| {
+        source.supports(client)
+            && folders.contains(&source.folder)
+            && source
+                .repo
+                .as_ref()
+                .is_some_and(|known| known.eq_ignore_ascii_case(repo))
+    }) {
+        for folder in &folders {
+            if let Some(other) = catalog.iter().find(|other| {
+                other.supports(client)
+                    && other.includes(folder)
+                    && !other
+                        .repo
+                        .as_ref()
+                        .is_some_and(|known| known.eq_ignore_ascii_case(repo))
+            }) {
+                return Err(format!(
+                    "This package would replace {} from a different source.",
+                    other.name
+                ));
+            }
+        }
+        let package = block_on(inspect_archive(
+            archive, &root, client, interface, source, catalog,
+        ))?;
+        return Ok((source.clone(), package));
+    }
     let repo_name = repo.rsplit('/').next().unwrap_or_default();
     let primary = folders
         .iter()
@@ -179,14 +211,20 @@ pub fn inspect_project(
     }) {
         return Err(format!("{folder} already has a source in Astral."));
     }
-    let source =
+    let mut source =
         Definition::github_project(repo, client, folders.into_iter().collect(), primary, asset);
     let package = block_on(inspect_archive(
         archive, &root, client, interface, &source, catalog,
     ))?;
-    if package.modules.iter().any(|module| module.replaces) {
-        return Err("This ZIP would replace an installed addon. Remove the existing copy before installing from this source.".into());
-    }
+    source.name = package
+        .modules
+        .iter()
+        .find(|module| module.folder == source.folder)
+        .map(|module| module.name.clone())
+        .unwrap_or_else(|| source.folder.clone());
+    source.requires = package.dependencies.iter().cloned().collect();
+    source.description = Some(format!("Installed from {repo} on GitHub."));
+    source.color = Some("violet".into());
     Ok((source, package))
 }
 
@@ -319,6 +357,7 @@ async fn inspect_archive(
         };
         modules.push(Module {
             folder: folder.into(),
+            name: library::plain_title(metadata.get("Title").map(String::as_str).unwrap_or(folder)),
             version: metadata
                 .get("Version")
                 .filter(|version| !version.is_empty())

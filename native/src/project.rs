@@ -1,6 +1,10 @@
 use crate::{Astral, Client, Definition, Palette, installer, packages, releases, review::Receipt};
 use gpui::{Context, FocusHandle, Window, div, prelude::*, px, rgb};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 pub struct ProjectReview {
     request: u64,
@@ -9,6 +13,7 @@ pub struct ProjectReview {
     client: Client,
     release: Option<Result<releases::ProjectRelease, String>>,
     inspected: Option<(Definition, Arc<packages::Inspection>)>,
+    inspected_at: Option<Instant>,
     error: Option<String>,
     busy: bool,
     selected: Option<usize>,
@@ -33,6 +38,139 @@ fn asset_pattern(name: &str, tag: &str) -> String {
     format!("^{}$", regex::escape(name))
 }
 
+fn review_current(
+    root: &Path,
+    client: Client,
+    current_root: Option<&Path>,
+    current_client: Client,
+    inspected_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    client == current_client
+        && current_root == Some(root)
+        && inspected_at
+            .is_some_and(|at| now.saturating_duration_since(at) <= Duration::from_secs(600))
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+
+    #[test]
+    fn package_review_expiry_and_installation_scope_are_checked_before_installing() {
+        let root = Path::new("/fixture/_retail_");
+        let other = Path::new("/other/_retail_");
+        let at = Instant::now();
+        let valid = |root_now, client_now, inspected, now| {
+            review_current(root, Client::Retail, root_now, client_now, inspected, now)
+        };
+        assert!(valid(
+            Some(root),
+            Client::Retail,
+            Some(at),
+            at + Duration::from_secs(600)
+        ));
+        assert!(!valid(
+            Some(root),
+            Client::Retail,
+            Some(at),
+            at + Duration::from_millis(600001)
+        ));
+        assert!(!valid(Some(other), Client::Retail, Some(at), at));
+        assert!(!valid(Some(root), Client::Forever, Some(at), at));
+        assert!(!valid(None, Client::Retail, Some(at), at));
+        assert!(!valid(Some(root), Client::Retail, None, at));
+    }
+
+    #[test]
+    fn reviewing_a_catalog_release_does_not_register_a_duplicate_custom_source() {
+        let mut preferences = crate::preferences::Preferences::default();
+        let mut catalog = Arc::new(crate::library::catalog());
+        let count = catalog.len();
+        let source = catalog
+            .iter()
+            .find(|source| source.id == "keyui")
+            .unwrap()
+            .clone();
+        assert!(!remember_project(
+            &mut preferences,
+            &mut catalog,
+            source.clone()
+        ));
+        assert!(!remember_project(&mut preferences, &mut catalog, source));
+        assert_eq!(catalog.len(), count);
+        assert!(preferences.projects.is_empty());
+    }
+
+    #[test]
+    fn reviewing_a_registered_community_release_updates_one_source_in_place() {
+        let mut preferences = crate::preferences::Preferences::default();
+        let mut catalog = Arc::new(crate::library::catalog());
+        let count = catalog.len();
+        let mut source = Definition::github_project(
+            "owner/SampleAddon",
+            Client::Retail,
+            vec!["SampleAddon".into()],
+            "SampleAddon".into(),
+            "^first.zip$".into(),
+        );
+        assert!(remember_project(
+            &mut preferences,
+            &mut catalog,
+            source.clone()
+        ));
+        source.asset = Some("^second.zip$".into());
+        source.requires = vec!["ExternalDep".into()];
+        assert!(remember_project(
+            &mut preferences,
+            &mut catalog,
+            source.clone()
+        ));
+        assert_eq!(catalog.len(), count + 1);
+        assert_eq!(preferences.projects.len(), 1);
+        assert_eq!(preferences.projects[0].asset, source.asset);
+        assert_eq!(
+            catalog.iter().filter(|item| item.id == source.id).count(),
+            1
+        );
+        assert_eq!(
+            catalog
+                .iter()
+                .find(|item| item.id == source.id)
+                .unwrap()
+                .requires,
+            vec!["ExternalDep"]
+        );
+    }
+}
+
+fn remember_project(
+    preferences: &mut crate::preferences::Preferences,
+    catalog: &mut Arc<Vec<Definition>>,
+    source: Definition,
+) -> bool {
+    if let Some(saved) = preferences
+        .projects
+        .iter_mut()
+        .find(|item| item.id == source.id)
+    {
+        *saved = source.clone();
+        let catalog = Arc::make_mut(catalog);
+        if let Some(saved) = catalog.iter_mut().find(|item| item.id == source.id) {
+            *saved = source;
+        } else {
+            catalog.push(source);
+        }
+        true
+    } else if !catalog.iter().any(|item| item.id == source.id) {
+        preferences.projects.push(source.clone());
+        Arc::make_mut(catalog).push(source);
+        true
+    } else {
+        false
+    }
+}
+
 impl Astral {
     pub fn review_project(&mut self, repo: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.addon_batch_running() {
@@ -51,6 +189,7 @@ impl Astral {
             client,
             release: None,
             inspected: None,
+            inspected_at: None,
             error: None,
             busy: false,
             selected: None,
@@ -114,6 +253,7 @@ impl Astral {
         review.choosing_package = false;
         review.dialog_focus.focus(window);
         review.inspected = None;
+        review.inspected_at = None;
         review.error = None;
         let catalog = self.catalog.clone();
         let task = cx.background_executor().spawn(async move {
@@ -131,7 +271,8 @@ impl Astral {
                     review.busy = false;
                     match result {
                         Ok((source, package)) => {
-                            review.inspected = Some((source, Arc::new(package)))
+                            review.inspected = Some((source, Arc::new(package)));
+                            review.inspected_at = Some(Instant::now());
                         }
                         Err(error) => review.error = Some(error),
                     }
@@ -147,6 +288,8 @@ impl Astral {
         if self.profile_game_running() {
             return;
         }
+        let current_client = self.preferences.client;
+        let current_root = self.root(current_client).cloned();
         let Some(review) = self.project_review.as_mut().filter(|review| !review.busy) else {
             return;
         };
@@ -160,6 +303,21 @@ impl Astral {
         else {
             return;
         };
+        if !review_current(
+            &review.root,
+            review.client,
+            current_root.as_deref(),
+            current_client,
+            review.inspected_at,
+            Instant::now(),
+        ) {
+            review.error = Some(
+                "This package review expired or belongs to another game client. Review it again."
+                    .into(),
+            );
+            cx.notify();
+            return;
+        }
         review.busy = true;
         review.dialog_focus.focus(window);
         review.error = None;
@@ -191,9 +349,9 @@ impl Astral {
                 };
                 match result {
                     Ok((source, receipt)) => {
-                        app.preferences.projects.push(source.clone());
-                        Arc::make_mut(&mut app.catalog).push(source);
-                        app.save_preferences();
+                        if remember_project(&mut app.preferences, &mut app.catalog, source) {
+                            app.save_preferences();
+                        }
                         app.project_review = None;
                         app.github_search = None;
                         app.install_receipt = Some(receipt);
@@ -268,7 +426,7 @@ impl Astral {
                         .child(div().id("project-package-folders").max_h(px(230.)).overflow_y_scroll()
                             .children(package.modules.iter().map(|module| {
                                 div().flex().flex_col().gap_1().py(px(11.)).border_b_1().border_color(palette.line)
-                                    .child(div().font_weight(gpui::FontWeight::SEMIBOLD).text_size(px(12.)).child(module.folder.clone()))
+                                    .child(div().font_weight(gpui::FontWeight::SEMIBOLD).text_size(px(12.)).child(module.name.clone()))
                                     .child(palette.label(format!("{} · {}", module.version.as_deref().unwrap_or("Unknown"),
                                         if module.replaces { "Replaces installed files" } else { "New addon folder" })).text_size(px(11.)))
                             })))
@@ -305,6 +463,7 @@ impl Astral {
                                     cx.listener(|app, _: &(), window, cx| {
                                         if let Some(review) = &mut app.project_review {
                                             review.inspected = None;
+                                            review.inspected_at = None;
                                             review.error = None;
                                             review.dialog_focus.focus(window);
                                             cx.notify();

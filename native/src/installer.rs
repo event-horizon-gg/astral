@@ -1326,11 +1326,29 @@ mod tests {
             |a, b| fs::rename(a, b),
         )
         .unwrap();
-        assert!(
-            inspect(&catalog).is_err(),
-            "a new source must not take over installed files"
+        let (_, preview) = inspect(&catalog).unwrap();
+        assert!(preview.modules.iter().any(|module| module.replaces));
+        assert_eq!(
+            fs::read_to_string(root.join("Interface/AddOns/SampleAddon/Main.lua")).unwrap(),
+            "-- sample",
+            "reviewing a replacement does not install it"
         );
         catalog.push(serde_json::from_str(&serde_json::to_string(&source).unwrap()).unwrap());
+        let (registered, preview) = inspect(&catalog).unwrap();
+        assert_eq!(registered.id, source.id);
+        assert!(preview.modules.iter().any(|module| module.replaces));
+        assert!(
+            packages::inspect_project(
+                bytes(),
+                &root,
+                Client::Retail,
+                "someone-else/SampleAddon",
+                "^other.zip$".into(),
+                &catalog
+            )
+            .is_err(),
+            "an unrelated repository cannot replace a registered source"
+        );
         let installed = library::scan(&root, Client::Retail, &catalog).unwrap();
         let addon = installed
             .iter()
@@ -1339,6 +1357,121 @@ mod tests {
         assert_eq!(addon.source, "GitHub");
         assert_eq!(addon.version, "1.2.3");
         assert!(!source.supports(Client::Forever));
+    }
+
+    #[test]
+    fn project_review_updates_a_curated_addon_with_its_existing_identity_and_backup() {
+        let (_temp, root, catalog) = game();
+        let source = catalog.iter().find(|source| source.id == "keyui").unwrap();
+        fs::write(
+            root.join("Interface/AddOns/KeyUI/KeyUI.toc"),
+            "## Interface: 120105\n## Version: 1\nold.lua\n",
+        )
+        .unwrap();
+        let bytes = zip(&[
+            (
+                "KeyUI/KeyUI.toc",
+                "## Interface: 120105\n## Title: |cff00ff00Key UI|r\n## Version: 2\nnew.lua\n",
+            ),
+            ("KeyUI/new.lua", "-- reviewed update"),
+        ]);
+        let (reviewed, package) = packages::inspect_project(
+            bytes,
+            &root,
+            Client::Retail,
+            source.repo.as_ref().unwrap(),
+            "^different-selection.zip$".into(),
+            &catalog,
+        )
+        .unwrap();
+        assert_eq!(reviewed.id, source.id);
+        assert_eq!(
+            reviewed.asset, source.asset,
+            "curated release matching is retained"
+        );
+        assert_eq!(reviewed.requires, source.requires);
+        assert_eq!(package.modules[0].name, "Key UI");
+        assert!(package.modules[0].replaces);
+        let backup = install_with(
+            &package,
+            &reviewed.name,
+            ("2", "reviewed release"),
+            || Ok(()),
+            |from, to| fs::rename(from, to),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(backup.join("previous/KeyUI/old.lua")).unwrap(),
+            "-- original"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Interface/AddOns/KeyUI/new.lua")).unwrap(),
+            "-- reviewed update"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("WTF/config.wtf")).unwrap(),
+            "settings"
+        );
+    }
+
+    #[test]
+    fn curated_project_review_rejects_another_catalog_projects_folders() {
+        let (_temp, root, catalog) = game();
+        let source = catalog.iter().find(|source| source.id == "keyui").unwrap();
+        let bytes = zip(&[
+            ("KeyUI/KeyUI.toc", "## Interface: 120105\n"),
+            ("BigWigs/BigWigs.toc", "## Interface: 120105\n"),
+        ]);
+        let result = packages::inspect_project(
+            bytes,
+            &root,
+            Client::Retail,
+            source.repo.as_ref().unwrap(),
+            "^reviewed.zip$".into(),
+            &catalog,
+        );
+        assert!(result.err().unwrap().contains("different source"));
+        assert_eq!(
+            fs::read_to_string(root.join("Interface/AddOns/KeyUI/old.lua")).unwrap(),
+            "-- original"
+        );
+        assert!(!root.join("Interface/AddOns/BigWigs").exists());
+    }
+
+    #[test]
+    fn new_project_review_keeps_external_dependencies_and_clean_display_names() {
+        let (_temp, root, catalog) = game();
+        let bytes = zip(&[
+            (
+                "SampleAddon/SampleAddon.toc",
+                "## Interface: 120105\n## Title: |cff00ff00Sample Tools|r\n## Dependencies: ExternalDep, Helper\n## Version: 1\n",
+            ),
+            (
+                "Helper/Helper.toc",
+                "## Interface: 120105\n## Title: Internal helper\n",
+            ),
+        ]);
+        let (source, package) = packages::inspect_project(
+            bytes,
+            &root,
+            Client::Retail,
+            "owner/SampleAddon",
+            "^SampleAddon.zip$".into(),
+            &catalog,
+        )
+        .unwrap();
+        assert_eq!(source.name, "Sample Tools");
+        assert_eq!(source.requires, vec!["ExternalDep"]);
+        assert_eq!(
+            package
+                .missing
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["ExternalDep"]
+        );
+        assert!(!root.join("Interface/AddOns/SampleAddon").exists());
+        assert!(!root.join("Interface/AddOns/Helper").exists());
     }
 
     #[test]
