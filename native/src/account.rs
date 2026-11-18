@@ -1386,7 +1386,7 @@ impl Astral {
         cx.notify();
     }
 
-    fn install_shared_addon(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub(crate) fn install_missing_catalog_addon(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.fixture || !self.can_start_update_batch() {
             return;
         }
@@ -1427,25 +1427,14 @@ impl Astral {
                     time: 0,
                 },
             );
-            (catalog[source].name.clone(), result)
+            result
         });
         cx.spawn(async move |this, cx| {
-            let (name, result) = task.await;
+            let result = task.await;
             let _ = this.update(cx, |app, cx| {
                 app.account.busy = None;
-                match result {
-                    Ok(installed) => {
-                        let message = if installed {
-                            format!("Installed {name}.")
-                        } else {
-                            format!("{name} is already installed.")
-                        };
-                        app.show_notification(message, false, cx);
-                    }
-                    Err(error) => {
-                        app.account.shared_error = Some(error.clone());
-                        app.show_notification(error, true, cx);
-                    }
+                if let Err(error) = result {
+                    app.show_notification(error, true, cx);
                 }
                 app.refresh_after_change(cx);
                 cx.notify();
@@ -2414,7 +2403,7 @@ impl Astral {
                             button,
                             palette,
                             cx.listener(move |app, _: &(), _, cx| {
-                                app.install_shared_addon(&id, cx);
+                                app.install_missing_catalog_addon(&id, cx);
                             }),
                         )
                     } else {

@@ -121,6 +121,7 @@ struct Astral {
     quick_find_return: Option<gpui::FocusHandle>,
     quick_find_rows: [gpui::FocusHandle; QUICK_PAGES.len()],
     query: String,
+    library_query: String,
     search: gpui::Entity<search_input::SearchInput>,
     search_focus: gpui::FocusHandle,
     profile_name_focus: gpui::FocusHandle,
@@ -217,6 +218,9 @@ impl Astral {
             &search,
             |app: &mut Self, _, event: &search_input::Changed, cx| {
                 app.query.clone_from(&event.0);
+                if app.page == Page::Library {
+                    app.library_query.clone_from(&event.0);
+                }
                 if app.page == Page::Discover && app.query.is_empty() {
                     app.github_search = None;
                 }
@@ -241,6 +245,7 @@ impl Astral {
             quick_find_return: None,
             quick_find_rows: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             query: String::new(),
+            library_query: String::new(),
             search,
             search_focus,
             profile_name_focus: cx.focus_handle().tab_stop(true),
@@ -561,7 +566,10 @@ impl Astral {
             self.open_signed_account_fixture();
         }
         self.save_preferences();
-        self.set_query("", cx);
+        self.library_query.clear();
+        if self.page != Page::Discover {
+            self.set_query("", cx);
+        }
         self.refresh(cx);
         self.load_last_sync(cx);
         if matches!(self.page, Page::Settings | Page::Account) {
@@ -999,7 +1007,19 @@ impl Astral {
                 self.close_account_overlays();
             }
             self.close_cloud_profile_manager();
-            self.set_query("", cx);
+            let query = if page == Page::Library {
+                self.library_query.clone()
+            } else {
+                String::new()
+            };
+            // Discovery is a separately mounted component in Electron: its
+            // query/results/filter reset after leaving, unlike Library search.
+            if self.page == Page::Discover {
+                self.github_search = None;
+                self.discovery_source = None;
+            }
+            self.query = query.clone();
+            self.search.update(cx, |input, cx| input.set(&query, cx));
             self.dismiss_cloud_profile_review(cx);
             self.dismiss_local_profile_review(cx);
             self.dismiss_account_profile_picker(cx);
@@ -1411,6 +1431,9 @@ impl Astral {
 
     fn set_query(&mut self, value: &str, cx: &mut Context<Self>) {
         self.query = value.to_owned();
+        if self.page == Page::Library {
+            self.library_query = value.to_owned();
+        }
         self.search.update(cx, |input, cx| input.set(value, cx));
     }
 
@@ -1446,9 +1469,15 @@ impl Astral {
                 palette.line
             })
             .text_size(px(12.))
+            .when(discover, |field| {
+                field
+                    .text_size(px(14.))
+                    .px(px(14.))
+                    .bg(rgb(palette.surface))
+            })
             .child(icon("search", 15., palette.muted))
             .child(input)
-            .when(!self.query.is_empty(), |field| {
+            .when(!discover && !self.query.is_empty(), |field| {
                 field.child(keyboard_button(
                     div().id("clear-search").cursor_pointer().px_1().child(icon(
                         "close",
@@ -1742,8 +1771,8 @@ impl Astral {
             .pt(px(24.))
             .flex()
             .items_center()
-            .justify_between()
-            .gap_3();
+            .justify_end()
+            .gap(px(14.));
         if let Some(addon) = installed {
             let name = addon.name.clone();
             actions = actions.child(keyboard_button(
@@ -1766,9 +1795,6 @@ impl Astral {
         }
         if let Some(repo) = repo {
             let repo = repo.to_owned();
-            let managed_id = source
-                .filter(|source| source.asset.is_some())
-                .map(|source| source.id.clone());
             let button = if installed.is_some() {
                 palette.text_button(
                     SharedString::from(format!("discover-release:{key}")),
@@ -1789,11 +1815,7 @@ impl Astral {
                     button,
                     palette,
                     cx.listener(move |app, _: &(), window, cx| {
-                        if let Some(id) = &managed_id {
-                            app.open_release(id, window, cx);
-                        } else {
-                            app.review_project(repo.clone(), window, cx);
-                        }
+                        app.review_project(repo.clone(), window, cx);
                     }),
                 )
             });
@@ -1814,8 +1836,8 @@ impl Astral {
                         keyboard_button(
                             button,
                             palette,
-                            cx.listener(move |app, _: &(), window, cx| {
-                                app.open_release(&id, window, cx);
+                            cx.listener(move |app, _: &(), _, cx| {
+                                app.install_missing_catalog_addon(&id, cx);
                             }),
                         )
                     },
@@ -1864,21 +1886,22 @@ impl Astral {
                     .text_size(px(25.))
                     .line_height(px(30.))
                     .font_weight(gpui::FontWeight::BOLD)
-                    .child(name.to_owned()),
+                    .child(typography::wrapped(name.to_owned(), 25., 1.2, -1.)),
             )
             .when_some(description, |card, description| {
                 card.child(
                     palette
-                        .label(description.chars().take(240).collect::<String>())
+                        .label(description.to_owned())
                         .max_w(px(460.))
                         .text_size(px(12.))
-                        .line_height(px(22.)),
+                        .line_height(px(21.6)),
                 )
             })
             .when_some(repo, |card, repo| {
                 card.child(
                     div()
-                        .mt_2()
+                        .mt(px(12.))
+                        .mb(px(19.))
                         .flex()
                         .items_center()
                         .gap_1()
@@ -2550,11 +2573,12 @@ impl Render for Astral {
                         (Some("Astral"), "Astral", "drive"),
                         (Some("Manual"), "Manual sources", "globe"),
                     ] {
-                        panel = panel.child(palette.menu_row(label, glyph, label).on_click(
-                            cx.listener(move |app, _, _, cx| {
+                        panel = panel.child(keyboard_button(
+                            palette.menu_row(label, glyph, label),
+                            palette,
+                            cx.listener(move |app, _: &(), window, cx| {
                                 app.discovery_source = value;
-                                app.menu = None;
-                                app.menu_return_focus = None;
+                                app.close_toolbar_menu(window, cx);
                                 cx.notify();
                             }),
                         ));
@@ -3115,7 +3139,7 @@ impl Render for Astral {
                             .items_center()
                             .justify_between()
                             .pl(px(9.))
-                            .child(
+                            .child(keyboard_button(
                                 palette
                                     .button(
                                         "discover-source",
@@ -3129,11 +3153,12 @@ impl Render for Astral {
                                     .min_w(px(129.))
                                     .justify_between()
                                     .bg(rgb(palette.panel))
-                                    .child(icon("chevron", 14., palette.muted))
-                                    .on_click(cx.listener(|app, _, window, cx| {
-                                        app.toggle_menu(ToolbarMenu::Sources, window, cx);
-                                    })),
-                            )
+                                    .child(icon("chevron", 14., palette.muted)),
+                                palette,
+                                cx.listener(|app, _: &(), window, cx| {
+                                    app.toggle_menu(ToolbarMenu::Sources, window, cx);
+                                }),
+                            ))
                             .child(
                                 palette
                                     .label(if searching {
@@ -3149,8 +3174,15 @@ impl Render for Astral {
                 list = list.child(
                     palette
                         .label(error.to_owned())
-                        .text_color(rgb(palette.error))
-                        .mb(px(15.)),
+                        .text_size(px(11.))
+                        .line_height(px(13.2))
+                        .p(px(14.))
+                        .mb(px(20.))
+                        .rounded(px(8.))
+                        .bg(rgb(palette.surface))
+                        .border_1()
+                        .border_color(palette.line)
+                        .text_color(rgb(0xd18b35)),
                 );
             }
             if results.is_empty() && !searching {
