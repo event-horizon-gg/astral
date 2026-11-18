@@ -85,7 +85,7 @@ pub struct HistoryEntry {
     pub run: Run,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct Reports {
     latest: [Option<Run>; 2],
     history: Vec<HistoryEntry>,
@@ -209,13 +209,13 @@ impl Reports {
         })
     }
 
-    fn record(
-        &mut self,
-        path: &Path,
-        client: Client,
-        mut run: Run,
-        check: Check,
-    ) -> io::Result<()> {
+    #[cfg(test)]
+    fn record(&mut self, path: &Path, client: Client, run: Run, check: Check) -> io::Result<()> {
+        self.stage_record(client, run, check);
+        preferences::save_json(&reports_path(path), self)
+    }
+
+    fn stage_record(&mut self, client: Client, mut run: Run, check: Check) {
         run.check_id = Some(check.id);
         run.started_at = Some(check.started_at);
         let interval = run.next_at.saturating_sub(run.checked_at / 1000);
@@ -247,10 +247,9 @@ impl Reports {
             }
             true
         });
-        preferences::save_json(&reports_path(path), self)
     }
 
-    fn defer_check(&mut self, path: &Path, check: Check) -> io::Result<()> {
+    fn defer_check(&mut self, check: Check) {
         let mut changed = false;
         for run in self
             .history
@@ -266,7 +265,20 @@ impl Reports {
         }
         if changed {
             self.next_at = Some(check.started_at / 1000 + 60);
-            preferences::save_json(&reports_path(path), self)?;
+        }
+    }
+
+    fn commit(&mut self, path: &Path, staged: Self, check: Option<Check>) -> io::Result<()> {
+        // Inventory errors abort the whole report, as in Electron. Keep both
+        // memory and the previous disk report unchanged until one atomic save.
+        if check.is_some_and(|check| {
+            staged
+                .history
+                .iter()
+                .any(|entry| entry.run.check_id == Some(check.id))
+        }) {
+            preferences::save_json(&reports_path(path), &staged)?;
+            *self = staged;
         }
         Ok(())
     }
@@ -319,6 +331,7 @@ pub fn run_background(path: &Path, roots: [Option<PathBuf>; 2]) -> io::Result<()
     let mut catalog = library::catalog();
     catalog.extend(prefs.projects.iter().cloned());
     let detected = prefs.detected_folders(&roots);
+    let mut staged = reports.clone();
     let mut check = None;
     for client in Client::ALL {
         let index = client.index();
@@ -336,29 +349,31 @@ pub fn run_background(path: &Path, roots: [Option<PathBuf>; 2]) -> io::Result<()
             break;
         }
         if check.is_none() {
-            check = Some(reports.begin_check()?);
+            check = Some(staged.begin_check()?);
         }
         let check = check.unwrap();
-        let result = batch::daily_updates(root, client, &catalog, &current.batch_exclusions[index]);
-        if let Err(error) = &result
-            && game_open(error)
-        {
-            reports.defer_check(path, check)?;
-            break;
-        }
-        let run = report(root.clone(), result);
+        let result =
+            match batch::daily_updates(root, client, &catalog, &current.batch_exclusions[index]) {
+                Ok(result) => result,
+                Err(error) if game_open(&error) => {
+                    staged.defer_check(check);
+                    break;
+                }
+                Err(error) => return Err(io::Error::other(error)),
+            };
+        let run = report(root.clone(), Ok(result));
         let interrupted = run.deferred;
         let failed = run.stops_clients();
-        reports.record(path, client, run, check)?;
+        staged.stage_record(client, run, check);
         if interrupted {
-            reports.defer_check(path, check)?;
+            staged.defer_check(check);
             break;
         }
         if failed {
             break;
         }
     }
-    Ok(())
+    reports.commit(path, staged, check)
 }
 
 fn report(root: PathBuf, result: Result<batch::DailyCheck, String>) -> Run {
@@ -412,29 +427,31 @@ fn run_checks(
         return Ok(());
     }
     let mut check_id = None;
+    let mut staged = reports.clone();
     for (client, root, excluded) in targets {
         if check_id.is_none() {
-            check_id = Some(reports.begin_check().map_err(|error| error.to_string())?);
+            check_id = Some(staged.begin_check().map_err(|error| error.to_string())?);
         }
         let check_id = check_id.unwrap();
-        let result = check(&root, client, &excluded);
-        if let Err(error) = &result
-            && game_open(error)
-        {
-            reports
-                .defer_check(path, check_id)
-                .map_err(|error| error.to_string())?;
-            return Err(error.clone());
-        }
-        let run = report(root, result);
+        let result = match check(&root, client, &excluded) {
+            Ok(result) => result,
+            Err(error) if game_open(&error) => {
+                staged.defer_check(check_id);
+                reports
+                    .commit(path, staged, Some(check_id))
+                    .map_err(|error| error.to_string())?;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        let run = report(root, Ok(result));
         let interrupted = run.deferred;
         let failed = run.stops_clients();
-        reports
-            .record(path, client, run, check_id)
-            .map_err(|error| error.to_string())?;
+        staged.stage_record(client, run, check_id);
         if interrupted {
+            staged.defer_check(check_id);
             reports
-                .defer_check(path, check_id)
+                .commit(path, staged, Some(check_id))
                 .map_err(|error| error.to_string())?;
             return Err("Close World of Warcraft to finish checking addons.".into());
         }
@@ -442,7 +459,9 @@ fn run_checks(
             break;
         }
     }
-    Ok(())
+    reports
+        .commit(path, staged, check_id)
+        .map_err(|error| error.to_string())
 }
 
 impl Astral {
@@ -767,6 +786,103 @@ mod tests {
             (Client::Retail, temp.join("_retail_"), Vec::new()),
             (Client::Forever, temp.join("_forever_"), Vec::new()),
         ]
+    }
+
+    #[test]
+    fn inventory_failure_does_not_replace_the_previous_report_or_schedule_even_on_second_client()
+    -> io::Result<()> {
+        for fail_on in Client::ALL {
+            let temp = tempfile::tempdir()?;
+            let path = temp.path().join("preferences.json");
+            let mut reports = Reports::from_latest([None, None]);
+            run_checks(
+                &path,
+                &mut reports,
+                targets(temp.path()),
+                true,
+                |_, _, _| Ok(batch::DailyCheck::default()),
+            )
+            .unwrap();
+            let before = fs::read(reports_path(&path))?;
+            let memory = serde_json::to_value(&reports)?;
+            let mut visited = Vec::new();
+            let result = run_checks(
+                &path,
+                &mut reports,
+                targets(temp.path()),
+                true,
+                |_, client, _| {
+                    // A completed Retail scan must remain staged while Forever is
+                    // being checked, rather than becoming an observable partial run.
+                    assert_eq!(fs::read(reports_path(&path)).unwrap(), before);
+                    visited.push(client.index());
+                    if client == fail_on {
+                        return Err("Could not scan addon directory".into());
+                    }
+                    Ok(batch::DailyCheck {
+                        updates: vec![updated_addon()],
+                        ..Default::default()
+                    })
+                },
+            );
+            assert_eq!(result.unwrap_err(), "Could not scan addon directory");
+            assert_eq!(
+                visited,
+                if fail_on == Client::Retail {
+                    vec![0]
+                } else {
+                    vec![0, 1]
+                }
+            );
+            assert_eq!(fs::read(reports_path(&path))?, before);
+            assert_eq!(serde_json::to_value(&reports)?, memory);
+            assert_eq!(
+                serde_json::to_value(read_reports(&path, &[None, None])?)?,
+                memory
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failed_initial_scan_does_not_create_an_empty_or_error_report() -> io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("preferences.json");
+        let mut reports = Reports::from_latest([None, None]);
+        let before = serde_json::to_value(&reports)?;
+        let result = run_checks(
+            &path,
+            &mut reports,
+            targets(temp.path()),
+            true,
+            |_, _, _| Err("Scan failed".into()),
+        );
+        assert_eq!(result.unwrap_err(), "Scan failed");
+        assert!(!reports_path(&path).exists());
+        assert_eq!(serde_json::to_value(&reports)?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn unsuccessful_report_save_does_not_publish_the_new_run_in_memory() -> io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("preferences.json");
+        let mut reports = Reports::from_latest([None, None]);
+        let before = serde_json::to_value(&reports)?;
+        // A directory in place of the destination causes atomic rename to fail
+        // on both OSes, without relying on administrator/file-mode behavior.
+        fs::create_dir(reports_path(&path))?;
+        let result = run_checks(
+            &path,
+            &mut reports,
+            targets(temp.path()),
+            true,
+            |_, _, _| Ok(batch::DailyCheck::default()),
+        );
+        assert!(result.is_err());
+        assert_eq!(serde_json::to_value(&reports)?, before);
+        assert!(reports_path(&path).is_dir());
+        Ok(())
     }
 
     #[test]

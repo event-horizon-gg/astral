@@ -11,6 +11,35 @@ async function fixture(t) {
   t.after(() => fs.rm(data, { recursive: true, force: true }));
   return data;
 }
+
+test('inventory failures on either client preserve the last complete report and retry deadline', async (t) => {
+  for (const failOn of ['retail', 'forever']) {
+    const data = await fixture(t);
+    const file = path.join(data, 'daily-updates.json');
+    const previous = { nextAt: 1, runs: [{ time: new Date(1).toISOString(), results: [], status: 'complete' }] };
+    await engine.save(file, previous);
+    const before = await fs.readFile(file, 'utf8');
+    const visited = [];
+    let installed = 0;
+    const api = {
+      gameRunning: async () => false,
+      inventory: async (root) => {
+        assert.equal(await fs.readFile(file, 'utf8'), before);
+        const client = root.includes('_forever_') ? 'forever' : 'retail';
+        visited.push(client);
+        if (client === failOn) throw Error('Could not scan addon directory');
+        return { addons: [{ id: 'keyui', name: 'KeyUI', repo: 'fixture/KeyUI', version: '1' }] };
+      },
+      getRelease: async () => ({ version: '2', notes: '' }),
+      install: async () => { installed++; },
+    };
+    await assert.rejects(updater.run({ data, roots: ['/tmp/_retail_', '/tmp/_forever_'], api, now: 1000 }), /Could not scan addon directory/);
+    assert.deepEqual(visited, failOn === 'retail' ? ['retail'] : ['retail', 'forever']);
+    assert.equal(installed, failOn === 'retail' ? 0 : 1);
+    assert.equal(await fs.readFile(file, 'utf8'), before);
+    assert.deepEqual(await updater.status(data), previous);
+  }
+});
 test('daily updates avoid downgrades and uncertain versions', () => {
   assert.equal(updater.newer({ version: '1.2.3' }, { version: '1.2.2' }), false);
   assert.equal(updater.newer({ version: 'v1.2.3-release' }, { version: '1.3' }), true);
