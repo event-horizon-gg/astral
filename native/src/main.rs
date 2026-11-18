@@ -1811,7 +1811,7 @@ impl Astral {
                     )
                     .child(icon("arrow-right", 13., palette.muted))
             };
-            actions = actions.child(if busy || self.root(self.preferences.client).is_none() {
+            actions = actions.child(if busy {
                 button.opacity(0.45).cursor_default()
             } else {
                 keyboard_button(

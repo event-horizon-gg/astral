@@ -9,7 +9,7 @@ use std::{
 pub struct ProjectReview {
     request: u64,
     repo: String,
-    root: PathBuf,
+    root: Option<PathBuf>,
     client: Client,
     release: Option<Result<releases::ProjectRelease, String>>,
     inspected: Option<(Definition, Arc<packages::Inspection>)>,
@@ -45,15 +45,16 @@ fn asset_pattern(name: &str, tag: &str) -> String {
 }
 
 fn review_current(
-    root: &Path,
+    root: Option<&Path>,
     client: Client,
     current_root: Option<&Path>,
     current_client: Client,
     inspected_at: Option<Instant>,
     now: Instant,
 ) -> bool {
-    client == current_client
-        && current_root == Some(root)
+    root.is_some()
+        && client == current_client
+        && current_root == root
         && inspected_at
             .is_some_and(|at| now.saturating_duration_since(at) <= Duration::from_secs(600))
 }
@@ -68,7 +69,14 @@ mod registration_tests {
         let other = Path::new("/other/_retail_");
         let at = Instant::now();
         let valid = |root_now, client_now, inspected, now| {
-            review_current(root, Client::Retail, root_now, client_now, inspected, now)
+            review_current(
+                Some(root),
+                Client::Retail,
+                root_now,
+                client_now,
+                inspected,
+                now,
+            )
         };
         assert!(valid(
             Some(root),
@@ -86,6 +94,22 @@ mod registration_tests {
         assert!(!valid(Some(root), Client::Forever, Some(at), at));
         assert!(!valid(None, Client::Retail, Some(at), at));
         assert!(!valid(Some(root), Client::Retail, None, at));
+        assert!(!review_current(
+            None,
+            Client::Retail,
+            None,
+            Client::Retail,
+            Some(at),
+            at
+        ));
+        assert!(!review_current(
+            None,
+            Client::Retail,
+            Some(root),
+            Client::Retail,
+            Some(at),
+            at
+        ));
     }
 
     #[test]
@@ -183,9 +207,7 @@ impl Astral {
             return;
         }
         let client = self.preferences.client;
-        let Some(root) = self.root(client).cloned() else {
-            return;
-        };
+        let root = self.root(client).cloned();
         self.release_request += 1;
         let request = self.release_request;
         self.project_review = Some(ProjectReview {
@@ -238,6 +260,12 @@ impl Astral {
         let Some(review) = self.project_review.as_mut().filter(|review| !review.busy) else {
             return;
         };
+        let Some(root) = review.root.clone() else {
+            review.error =
+                Some("Choose your WoW folder in Settings before checking compatibility.".into());
+            cx.notify();
+            return;
+        };
         let Some(Ok(release)) = &review.release else {
             return;
         };
@@ -249,12 +277,8 @@ impl Astral {
             return;
         };
         let pattern = asset_pattern(&asset.name, &release.tag);
-        let (request, root, client, repo) = (
-            review.request,
-            review.root.clone(),
-            review.client,
-            review.repo.clone(),
-        );
+        let (request, root, client, repo) =
+            (review.request, root, review.client, review.repo.clone());
         review.busy = true;
         review.choosing_package = false;
         review.dialog_focus.focus(window);
@@ -310,7 +334,7 @@ impl Astral {
             return;
         };
         if !review_current(
-            &review.root,
+            review.root.as_deref(),
             review.client,
             current_root.as_deref(),
             current_client,
