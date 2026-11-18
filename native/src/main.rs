@@ -1020,6 +1020,9 @@ impl Astral {
             if self.page == Page::Discover {
                 self.github_search = None;
                 self.discovery_source = None;
+                if let Some(review) = &mut self.project_review {
+                    review.leave_discovery();
+                }
             }
             self.query = query.clone();
             self.search.update(cx, |input, cx| input.set(&query, cx));
@@ -3426,9 +3429,12 @@ impl Render for Astral {
             .when_some(self.removal.as_ref(), |app, removal| {
                 app.child(self.removal_dialog(removal, palette, cx))
             })
-            .when_some(self.project_review.as_ref(), |app, review| {
-                app.child(self.project_dialog(review, palette, cx))
-            })
+            .when_some(
+                self.project_review
+                    .as_ref()
+                    .filter(|review| review.is_visible()),
+                |app, review| app.child(self.project_dialog(review, palette, cx)),
+            )
             .when_some(self.sync_conflict_dialog(palette, cx), |app, dialog| {
                 app.child(dialog)
             })

@@ -12,6 +12,7 @@ pub struct ProjectReview {
     root: Option<PathBuf>,
     client: Client,
     release: Option<Result<releases::ProjectRelease, String>>,
+    abandoned: bool,
     inspected: Option<(Definition, Arc<packages::Inspection>)>,
     inspected_at: Option<Instant>,
     error: Option<String>,
@@ -27,6 +28,16 @@ pub struct ProjectReview {
 impl ProjectReview {
     pub(crate) fn is_busy(&self) -> bool {
         self.busy
+    }
+
+    pub(crate) fn is_visible(&self) -> bool {
+        self.release.as_ref().is_some_and(Result::is_ok)
+    }
+
+    pub(crate) fn leave_discovery(&mut self) {
+        if self.release.is_none() {
+            self.abandoned = true;
+        }
     }
 }
 
@@ -216,10 +227,11 @@ impl Astral {
             root,
             client,
             release: None,
+            abandoned: false,
             inspected: None,
             inspected_at: None,
             error: None,
-            busy: false,
+            busy: true,
             selected: None,
             choosing_package: false,
             show_notes: false,
@@ -227,29 +239,36 @@ impl Astral {
             close_focus: cx.focus_handle().tab_stop(true),
             dialog_focus: cx.focus_handle(),
         });
-        if let Some(review) = &self.project_review {
-            review.close_focus.focus(window);
-        }
         self.poll_profile_game_status(cx);
         let task = cx
             .background_executor()
             .spawn(async move { releases::project_packages(&repo) });
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
-            let _ = this.update(cx, |app, cx| {
-                if let Some(review) = app
+            let _ = this.update_in(cx, |app, window, cx| {
+                let Some(review) = app
                     .project_review
                     .as_mut()
                     .filter(|review| review.request == request)
-                {
-                    review.selected = result
-                        .as_ref()
-                        .ok()
-                        .filter(|release| release.packages.len() == 1)
-                        .map(|_| 0);
-                    review.release = Some(result);
-                    cx.notify();
+                else {
+                    return;
+                };
+                match result {
+                    Ok(release) if !review.abandoned => {
+                        review.busy = false;
+                        review.selected = (release.packages.len() == 1).then_some(0);
+                        review.release = Some(Ok(release));
+                        review.close_focus.focus(window);
+                    }
+                    Ok(_) => {
+                        app.project_review = None;
+                    }
+                    Err(error) => {
+                        app.project_review = None;
+                        app.show_notification(error, true, cx);
+                    }
                 }
+                cx.notify();
             });
         })
         .detach();
@@ -403,6 +422,9 @@ impl Astral {
         let Some(review) = &mut self.project_review else {
             return false;
         };
+        if !review.is_visible() {
+            return false;
+        }
         if review.choosing_package {
             review.choosing_package = false;
             review.dialog_focus.focus(window);
@@ -723,7 +745,7 @@ impl Astral {
                 div()
                     .id("project-release-backdrop")
                     .absolute()
-                    .top(px(78.))
+                    .top_0()
                     .left_0()
                     .right_0()
                     .bottom_0()
