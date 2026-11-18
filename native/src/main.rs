@@ -557,6 +557,9 @@ impl Astral {
     }
 
     fn change_client(&mut self, target: Client, cx: &mut Context<Self>) {
+        if self.addon_batch_running() {
+            return;
+        }
         self.close_cloud_profile_manager();
         self.batch_result = None;
         self.github_search = None;

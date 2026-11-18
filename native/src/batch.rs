@@ -481,6 +481,10 @@ mod tests {
 impl Astral {
     pub(crate) fn addon_batch_running(&self) -> bool {
         self.batch.as_ref().is_some_and(Batch::running)
+            || self
+                .project_review
+                .as_ref()
+                .is_some_and(|review| review.is_busy())
     }
 
     pub fn excluded_from_daily(&self, folder: &str) -> bool {

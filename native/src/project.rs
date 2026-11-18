@@ -24,6 +24,12 @@ pub struct ProjectReview {
     dialog_focus: FocusHandle,
 }
 
+impl ProjectReview {
+    pub(crate) fn is_busy(&self) -> bool {
+        self.busy
+    }
+}
+
 fn asset_pattern(name: &str, tag: &str) -> String {
     let version = tag.trim_start_matches('v');
     let versioned =
