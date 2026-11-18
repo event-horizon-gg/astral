@@ -18,6 +18,7 @@ mod library;
 mod local_time;
 #[cfg(any(target_os = "windows", test))]
 mod localized_dates;
+mod menu_events;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod native_dates;
 mod notifications;
@@ -2244,6 +2245,7 @@ impl Astral {
 
 impl Render for Astral {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        application_menu::refresh_window_menu(window);
         self.validate_account_profile_picker(window);
         if self.local_profile_review_open() || self.cloud_profile_review_open() {
             self.profile_review_focus
@@ -3776,6 +3778,11 @@ fn main() {
                 },
             )
             .expect("open Astral window");
+        if fixture.is_none()
+            && let Err(error) = application_menu::install_window(handle, cx)
+        {
+            eprintln!("Couldn't create the Astral application menu. {error}");
+        }
         if fixture.is_none()
             && let Err(error) = tray::install(handle, background, cx)
         {

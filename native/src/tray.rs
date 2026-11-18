@@ -39,7 +39,7 @@ mod platform {
     use gpui::{Global, WindowHandle};
     use tray_icon::{
         Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
-        menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+        menu::{Menu, MenuItem, PredefinedMenuItem},
     };
 
     const OPEN: &str = "astral-open";
@@ -165,11 +165,15 @@ mod platform {
         let _ = background;
         let (sender, receiver) = async_channel::unbounded();
         let menu_sender = sender.clone();
-        MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-            if let Some(action) = menu_action(event.id.as_ref()) {
-                let _ = menu_sender.try_send(action);
+        let menu_events = crate::menu_events::subscribe();
+        cx.spawn(async move |_| {
+            while let Ok(id) = menu_events.recv().await {
+                if let Some(action) = menu_action(&id) {
+                    let _ = menu_sender.try_send(action);
+                }
             }
-        }));
+        })
+        .detach();
         TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
             // Electron's macOS menu owns left clicks; selecting Open Astral
             // opens the window. On Windows, a left click opens it directly.
