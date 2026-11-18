@@ -92,7 +92,7 @@ mod platform {
         Icon::from_rgba(image.into_raw(), 18, 18).map_err(|error| error.to_string())
     }
 
-    fn hide(window: &Window, cx: &App) -> bool {
+    pub(super) fn hide(window: &Window, cx: &App) -> bool {
         #[cfg(target_os = "macos")]
         {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -242,6 +242,18 @@ mod platform {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use platform::install;
+
+pub fn hide_window(window: &Window, cx: &App) -> bool {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        platform::hide(window, cx)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (window, cx);
+        false
+    }
+}
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn install(_: gpui::WindowHandle<crate::Astral>, _: bool, _: &mut App) -> Result<(), String> {

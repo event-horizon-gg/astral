@@ -8,7 +8,10 @@ use gpui::{
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
-gpui::actions!(astral_text, [Undo, Redo, Cut, Copy, Paste, SelectAll]);
+gpui::actions!(
+    astral_text,
+    [Undo, Redo, Cut, Copy, Paste, PasteMatchStyle, SelectAll]
+);
 
 pub fn edit_menu() -> gpui::Menu {
     use gpui::{Menu, MenuItem, OsAction};
@@ -21,7 +24,7 @@ pub fn edit_menu() -> gpui::Menu {
             MenuItem::os_action("Cut", Cut, OsAction::Cut),
             MenuItem::os_action("Copy", Copy, OsAction::Copy),
             MenuItem::os_action("Paste", Paste, OsAction::Paste),
-            MenuItem::separator(),
+            MenuItem::os_action("Paste and Match Style", PasteMatchStyle, OsAction::Paste),
             MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
         ],
     }
@@ -62,6 +65,15 @@ fn menu_keys(mac: bool) -> Vec<gpui::KeyBinding> {
         KeyBinding::new(
             if mac { "cmd-a" } else { "ctrl-a" },
             SelectAll,
+            Some("AstralText"),
+        ),
+        KeyBinding::new(
+            if mac {
+                "cmd-alt-shift-v"
+            } else {
+                "ctrl-shift-v"
+            },
+            PasteMatchStyle,
             Some("AstralText"),
         ),
     ]
@@ -659,6 +671,9 @@ pub fn field(
                     .on_action(cx.listener(|input, _: &Paste, _, cx| {
                         input.edit(EditAction::Paste, false, cx)
                     }))
+                    .on_action(cx.listener(|input, _: &PasteMatchStyle, _, cx| {
+                        input.edit(EditAction::Paste, false, cx)
+                    }))
                     .on_action(cx.listener(|input, _: &SelectAll, _, cx| {
                         input.edit(EditAction::SelectAll, false, cx)
                     }))
@@ -877,6 +892,15 @@ mod tests {
             let select = gpui::Keystroke::parse(if mac { "cmd-a" } else { "ctrl-a" }).unwrap();
             let (matches, _) = keymap.bindings_for_input(&[select], &[text.clone()]);
             assert!(matches[0].action().as_any().is::<SelectAll>());
+            let paste = gpui::Keystroke::parse(if mac {
+                "cmd-alt-shift-v"
+            } else {
+                "ctrl-shift-v"
+            })
+            .unwrap();
+            let (matches, _) = keymap.bindings_for_input(&[paste], &[text.clone()]);
+            assert_eq!(matches.len(), 1);
+            assert!(matches[0].action().as_any().is::<PasteMatchStyle>());
             assert!(
                 keymap
                     .bindings_for_input(&[gpui::Keystroke::parse("ctrl-alt-a").unwrap()], &[text])
