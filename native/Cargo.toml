@@ -42,7 +42,7 @@ libc = "0.2"
 security-framework = "3"
 core-foundation-sys = "0.8"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSView", "NSWindow", "NSResponder"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSView", "NSWindow", "NSResponder", "NSAccessibility", "NSWorkspace"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security_Credentials", "Win32_System_Time", "Win32_UI_WindowsAndMessaging"] }

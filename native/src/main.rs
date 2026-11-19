@@ -19,6 +19,7 @@ mod local_time;
 #[cfg(any(target_os = "windows", test))]
 mod localized_dates;
 mod menu_events;
+mod motion;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod native_dates;
 mod notifications;
@@ -419,6 +420,7 @@ impl Astral {
             })
             .collect();
         if work.is_empty() {
+            self.notify_release_check(cx);
             return;
         }
         self.checking = true;
@@ -461,12 +463,34 @@ impl Astral {
             let _ = this.update(cx, |app, cx| {
                 if app.scan_id == scan_id {
                     app.checking = false;
-                    cx.notify();
+                    app.notify_release_check(cx);
                 }
             });
         })
         .detach();
         cx.notify();
+    }
+
+    fn notify_release_check(&mut self, cx: &mut Context<Self>) {
+        let errors = self
+            .addons
+            .iter()
+            .filter(|addon| self.checks.get(&addon.folder).is_some_and(Result::is_err))
+            .count();
+        let updates = self
+            .addons
+            .iter()
+            .filter(|addon| self.update_status(addon) == "Update available")
+            .count();
+        let message = if errors > 0 {
+            format!(
+                "Checked available sources. {errors} release check{} attention.",
+                if errors == 1 { " needs" } else { "s need" }
+            )
+        } else {
+            format!("Release checks complete. {updates} update(s) available.")
+        };
+        self.show_notification(message, false, cx);
     }
 
     fn update_status(&self, addon: &Addon) -> &'static str {
@@ -1734,7 +1758,18 @@ impl Astral {
                             .text_size(px(10.))
                             .text_color(rgb(status_color))
                             .when_some(status_icon, |label, glyph| {
-                                label.child(icon(glyph, 12., status_color))
+                                if updating {
+                                    label.child(motion::spinner(
+                                        "addon-update-spinner",
+                                        12.,
+                                        status_color,
+                                        self.single_update
+                                            .as_ref()
+                                            .is_some_and(|state| state.reduce_motion),
+                                    ))
+                                } else {
+                                    label.child(icon(glyph, 12., status_color))
+                                }
                             })
                             .when(ready && !updating, |label| {
                                 label.child(div().size(px(5.)).rounded_full().bg(rgb(0xd6b786)))
@@ -2792,10 +2827,10 @@ impl Render for Astral {
 
         let can_check = !self.checking
             && !self.scanning
-            && self.addons.iter().any(|addon| {
-                self.definition(addon)
-                    .is_some_and(|source| source.repo.is_some() || source.bundled == Some(true))
-            });
+            && !self.addon_batch_running()
+            && !self.account_work_in_progress()
+            && !self.settings_write_in_progress()
+            && !self.daily_running;
         let header = div()
             .flex_shrink_0()
             .flex()
