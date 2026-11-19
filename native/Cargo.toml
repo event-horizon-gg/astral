@@ -33,6 +33,7 @@ debug = 0
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tray-icon = { version = "=0.26.1", default-features = false }
+rfd = { version = "=0.17.2", default-features = false }
 async-channel = "2"
 raw-window-handle = "0.6"
 

@@ -3496,7 +3496,11 @@ fn main() {
         return;
     }
     if args.first().is_some_and(|arg| arg == "--licenses") {
-        print!("Lucide icons\n{}", include_str!("../assets/icons/LICENSE"));
+        print!(
+            "Lucide icons\n{}\nRFD native dialogs\n{}",
+            include_str!("../assets/icons/LICENSE"),
+            include_str!("../assets/licenses/rfd.txt")
+        );
         return;
     }
     let fixture = if args.first().is_some_and(|arg| arg == "--ui-fixture") {

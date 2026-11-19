@@ -1,7 +1,7 @@
 //! The Library's single-addon action updates directly; package review belongs
 //! to community source discovery.
 use crate::{Astral, Client, Definition, bundled, installer, library, packages, releases};
-use gpui::{Context, PathPromptOptions, Window};
+use gpui::{Context, Window};
 use std::{
     cmp::Ordering,
     path::{Path, PathBuf},
@@ -204,18 +204,21 @@ impl Astral {
             folder: folder.clone(),
             progress: None,
         });
-        let picker = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some(format!("Update {} from ZIP", source.name).into()),
-        });
+        // RFD's title is the NSOpenPanel message on macOS; Electron supplies
+        // that message separately from its Windows dialog title.
+        let title = if cfg!(target_os = "macos") {
+            "Choose the addon ZIP from its official source. Astral backs up the current version and keeps your settings.".to_owned()
+        } else {
+            format!("Update {} from ZIP", source.name)
+        };
+        let picker = rfd::AsyncFileDialog::new()
+            .set_parent(window)
+            .set_title(title)
+            .add_filter("Addon ZIP", &["zip"])
+            .set_can_create_directories(false)
+            .pick_file();
         cx.spawn_in(window, async move |this, cx| {
-            let result = match picker.await {
-                Ok(Ok(paths)) => Ok(paths.and_then(|paths| paths.into_iter().next())),
-                Ok(Err(error)) => Err(error.to_string()),
-                Err(error) => Err(error.to_string()),
-            };
+            let selected = picker.await.map(|file| file.path().to_owned());
             let _ = this.update_in(cx, |app, window, cx| {
                 if !app
                     .single_update
@@ -228,8 +231,8 @@ impl Astral {
                 if let Some(previous) = previous {
                     previous.focus(window);
                 }
-                match result {
-                    Ok(Some(path)) => {
+                match selected {
+                    Some(path) => {
                         if import_scope_matches(
                             &root,
                             client,
@@ -253,8 +256,7 @@ impl Astral {
                             );
                         }
                     }
-                    Ok(None) => {}
-                    Err(error) => app.show_notification(error, true, cx),
+                    None => {}
                 }
                 cx.notify();
             });
