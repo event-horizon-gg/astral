@@ -19,6 +19,7 @@ pub struct ProjectReview {
     selected: Option<usize>,
     package_request: Option<uuid::Uuid>,
     package_focus: FocusHandle,
+    action_focus: [FocusHandle; 2],
     package_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     show_notes: bool,
     previous_focus: Option<FocusHandle>,
@@ -233,6 +234,7 @@ impl Astral {
             selected: None,
             package_request: None,
             package_focus: cx.focus_handle().tab_stop(true),
+            action_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             package_bounds: Default::default(),
             show_notes: false,
             previous_focus: window.focused(cx),
@@ -529,25 +531,35 @@ impl Astral {
         if event.keystroke.key != "tab" {
             return false;
         }
-        // useDialog captures Tab even after a pointer click focused the header.
-        // Track visited stops: when every modal control is disabled, the old
-        // focused handle may no longer be in the traversal and cannot bound it.
-        let mut visited = vec![window.focused(cx)];
-        loop {
-            if event.keystroke.modifiers.shift {
-                window.focus_prev();
+        // Match useDialog's explicit selector: summary disclosures are clickable
+        // but are not part of the trapped button/input/select sequence.
+        let mut stops = Vec::new();
+        if !review.busy {
+            stops.push(&review.close_focus);
+            if review.inspected.is_none() {
+                stops.push(&review.package_focus);
+            }
+            stops.push(&review.action_focus[0]);
+            let second_enabled = if let Some((_, package)) = &review.inspected {
+                !self.profile_game_running() && package.missing.is_empty()
             } else {
-                window.focus_next();
+                review.selected.is_some()
+            };
+            if second_enabled {
+                stops.push(&review.action_focus[1]);
             }
-            if review.dialog_focus.contains_focused(window, cx) {
-                break;
-            }
-            let current = window.focused(cx);
-            if visited.contains(&current) {
-                review.dialog_focus.focus(window);
-                break;
-            }
-            visited.push(current);
+        }
+        if stops.is_empty() {
+            review.dialog_focus.focus(window);
+        } else {
+            let current = stops.iter().position(|handle| handle.is_focused(window));
+            let next = match (current, event.keystroke.modifiers.shift) {
+                (Some(0) | None, true) => stops.len() - 1,
+                (Some(index), true) => index - 1,
+                (Some(index), false) => (index + 1) % stops.len(),
+                (None, false) => 0,
+            };
+            stops[next].focus(window);
         }
         cx.notify();
         true
@@ -651,7 +663,7 @@ impl Astral {
                                 alternate.opacity(0.45).cursor_default()
                             } else {
                                 crate::keyboard_button(
-                                    alternate,
+                                    alternate.track_focus(&review.action_focus[0]),
                                     palette,
                                     cx.listener(|app, _: &(), window, cx| {
                                         if let Some(review) = &mut app.project_review {
@@ -667,7 +679,7 @@ impl Astral {
                                 install.opacity(0.45).cursor_default()
                             } else {
                                 crate::keyboard_button(
-                                    install,
+                                    install.track_focus(&review.action_focus[1]),
                                     palette,
                                     cx.listener(|app, _: &(), window, cx| {
                                         app.install_project(window, cx)
@@ -746,16 +758,18 @@ impl Astral {
                                 if review.busy {
                                     view.opacity(0.45).cursor_default()
                                 } else {
-                                    crate::keyboard_button(view, palette, move |_, _, cx| {
-                                        cx.open_url(&url)
-                                    })
+                                    crate::keyboard_button(
+                                        view.track_focus(&review.action_focus[0]),
+                                        palette,
+                                        move |_, _, cx| cx.open_url(&url),
+                                    )
                                 }
                             })
                             .child(if review.busy || selected.is_none() {
                                 inspect.opacity(0.45).cursor_default()
                             } else {
                                 crate::keyboard_button(
-                                    inspect,
+                                    inspect.track_focus(&review.action_focus[1]),
                                     palette,
                                     cx.listener(|app, _: &(), window, cx| {
                                         app.inspect_project(window, cx)
@@ -770,6 +784,7 @@ impl Astral {
                             div().mt(px(23.)).child(crate::keyboard_button(
                                 palette
                                     .text_button("community-release-notes", "Release notes")
+                                    .debug_selector(|| "project-release-notes".into())
                                     .flex()
                                     .flex_row_reverse()
                                     .items_center()
@@ -929,6 +944,7 @@ mod ui_tests {
             selected: None,
             package_request: None,
             package_focus: cx.focus_handle().tab_stop(true),
+            action_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             package_bounds: Default::default(),
             show_notes: false,
             previous_focus: Some(app.brand_focus.clone()),
@@ -1036,6 +1052,53 @@ mod ui_tests {
                     .package_focus
                     .is_focused(window)
             )
+        });
+    }
+
+    #[gpui::test]
+    fn release_notes_are_clickable_but_skipped_by_the_dialog_tab_cycle(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = fixture(directory.path(), cx);
+            add_packages(&mut app);
+            let review = app.project_review.as_mut().unwrap();
+            review.selected = Some(0);
+            review.release.as_mut().unwrap().as_mut().unwrap().notes = "Fixture notes".into();
+            app
+        });
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, _| {
+            app.project_review.as_ref().unwrap().action_focus[1].focus(window);
+        });
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(
+                app.project_review
+                    .as_ref()
+                    .unwrap()
+                    .close_focus
+                    .is_focused(window)
+            );
+        });
+        press(cx, "shift-tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.project_review.as_ref().unwrap().action_focus[1].is_focused(window));
+        });
+        let notes = cx.debug_bounds("project-release-notes").unwrap().center();
+        cx.simulate_click(notes, Modifiers::default());
+        assert!(view.read_with(cx, |app, _| app.project_review.as_ref().unwrap().show_notes));
+        press(cx, "enter");
+        assert!(!view.read_with(cx, |app, _| app.project_review.as_ref().unwrap().show_notes));
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(
+                app.project_review
+                    .as_ref()
+                    .unwrap()
+                    .close_focus
+                    .is_focused(window)
+            );
         });
     }
 
