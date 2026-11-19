@@ -552,6 +552,12 @@ impl Astral {
         if stops.is_empty() {
             review.dialog_focus.focus(window);
         } else {
+            crate::focus_visible::dialog_tab(
+                stops.iter().copied(),
+                event.keystroke.modifiers.shift,
+                window,
+                cx,
+            );
             let current = stops.iter().position(|handle| handle.is_focused(window));
             let next = match (current, event.keystroke.modifiers.shift) {
                 (Some(0) | None, true) => stops.len() - 1,
@@ -1150,8 +1156,13 @@ mod ui_tests {
         assert!(view.read_with(cx, |app, _| app.project_review.is_none()));
         // useDialog stops Main's Escape listener, so the toolbar is preserved.
         assert!(view.read_with(cx, |app, _| app.menu == Some(ToolbarMenu::Tools)));
-        view.update_in(cx, |app, window, _| {
-            assert!(app.brand_focus.is_focused(window))
+        view.update_in(cx, |app, window, cx| {
+            assert!(app.brand_focus.is_focused(window));
+            assert!(crate::focus_visible::indicated(
+                &app.brand_focus,
+                window,
+                cx
+            ));
         });
     }
 

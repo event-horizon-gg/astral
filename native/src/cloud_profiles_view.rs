@@ -1174,6 +1174,7 @@ impl Astral {
         if controls.is_empty() {
             return;
         }
+        crate::focus_visible::dialog_tab(controls.iter(), backwards, window, cx);
         let current = controls.iter().position(|focus| focus.is_focused(window));
         let index = match (current, backwards) {
             (Some(0), true) | (None, true) => controls.len() - 1,

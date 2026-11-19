@@ -437,3 +437,126 @@ fn focusing_header_controls_preserves_their_bounds_in_both_themes(cx: &mut TestA
         }
     }
 }
+
+#[gpui::test]
+fn button_focus_indication_follows_mouse_keyboard_and_script_focus(cx: &mut TestAppContext) {
+    for light in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = Astral::new(
+                [None, None],
+                Some(directory.path()),
+                Some(Client::Retail),
+                false,
+                cx,
+            );
+            app.preferences.light_theme = light;
+            app
+        });
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        view.update_in(cx, |app, window, _| app.root_focus.focus(window));
+        cx.run_until_parked();
+        let appearance = cx.debug_bounds("appearance-trigger").unwrap().center();
+        cx.simulate_click(appearance, Modifiers::default());
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            assert!(app.header_button_focus[4].is_focused(window));
+            assert!(!focus_visible::indicated(
+                &app.header_button_focus[4],
+                window,
+                cx
+            ));
+        });
+        press(cx, "tab");
+        view.update_in(cx, |app, window, cx| {
+            assert!(focus_visible::indicated(
+                &app.header_button_focus[5],
+                window,
+                cx
+            ));
+        });
+        press(cx, "shift-tab");
+        // Clicking the already keyboard-focused button keeps its last focus
+        // source, just as Chromium's unchanged-element focus update does.
+        cx.simulate_click(appearance, Modifiers::default());
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            assert!(focus_visible::indicated(
+                &app.header_button_focus[4],
+                window,
+                cx
+            ));
+        });
+        let brand = cx.debug_bounds("astral-brand").unwrap().center();
+        cx.simulate_click(brand, Modifiers::default());
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            assert!(!focus_visible::indicated(&app.brand_focus, window, cx));
+            app.header_button_focus[4].focus(window);
+            assert!(!focus_visible::indicated(
+                &app.header_button_focus[4],
+                window,
+                cx
+            ));
+        });
+        press(cx, "ctrl-a");
+        view.update_in(cx, |app, window, cx| {
+            assert!(!focus_visible::indicated(
+                &app.header_button_focus[4],
+                window,
+                cx
+            ));
+        });
+        press(cx, "a");
+        view.update_in(cx, |app, window, cx| {
+            assert!(focus_visible::indicated(
+                &app.header_button_focus[4],
+                window,
+                cx
+            ));
+        });
+    }
+}
+
+#[gpui::test]
+fn pointer_focus_mode_is_scoped_to_the_window(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (first, first_cx) = cx.add_window_view(|_, cx| {
+        Astral::new(
+            [None, None],
+            Some(directory.path()),
+            Some(Client::Retail),
+            false,
+            cx,
+        )
+    });
+    let mut first_cx = first_cx.clone();
+    let (second, second_cx) = cx.add_window_view(|_, cx| {
+        Astral::new(
+            [None, None],
+            Some(directory.path()),
+            Some(Client::Forever),
+            false,
+            cx,
+        )
+    });
+    first_cx.simulate_resize(size(px(1250.), px(700.)));
+    first_cx.run_until_parked();
+    let appearance = first_cx
+        .debug_bounds("appearance-trigger")
+        .unwrap()
+        .center();
+    first_cx.simulate_click(appearance, Modifiers::default());
+    first_cx.run_until_parked();
+    second.update_in(second_cx, |app, window, cx| {
+        app.brand_focus.focus(window);
+        assert!(focus_visible::indicated(&app.brand_focus, window, cx));
+    });
+    first.update_in(&mut first_cx, |app, window, cx| {
+        assert!(!focus_visible::indicated(
+            &app.header_button_focus[4],
+            window,
+            cx
+        ));
+    });
+}

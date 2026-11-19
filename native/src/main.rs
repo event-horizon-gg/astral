@@ -11,6 +11,7 @@ mod cloud;
 mod credentials;
 mod daily;
 mod discovery;
+mod focus_visible;
 mod gamepad_settings;
 mod icons;
 mod installer;
@@ -198,6 +199,7 @@ impl Astral {
         fixture_light: bool,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.default_global::<focus_visible::State>();
         let preferences_path = match fixture {
             Some(folder) => Some(folder.join("preferences.json")),
             None => preferences::path(),
@@ -718,8 +720,8 @@ fn button_outline(
 fn focus_outline(focus: gpui::FocusHandle, color: u32) -> impl IntoElement {
     gpui::canvas(
         |_, _, _| (),
-        move |bounds, (), window, _| {
-            if focus.is_focused(window) {
+        move |bounds, (), window, cx| {
+            if focus_visible::indicated(&focus, window, cx) {
                 // editorial.css: 2px outline, 4px offset, 4px button radius.
                 // Paint a transparent-center ring so surrounding surfaces show
                 // through the offset, without adding to the button's layout.
@@ -3516,6 +3518,7 @@ impl Render for Astral {
                     .child(list),
             )
             .track_focus(&self.root_focus)
+            .child(focus_visible::pointer_events())
             .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
             .on_mouse_move(
                 cx.listener(|app, event, window, cx| app.drag_scrollbar(event, window, cx)),
@@ -3532,7 +3535,8 @@ impl Render for Astral {
                 cx.listener(|app, _: &FindAddon, window, cx| app.toggle_quick_find(window, cx)),
             )
             .capture_key_down(cx.listener(|app, event: &gpui::KeyDownEvent, window, cx| {
-                if app.profile_review_key(event, window)
+                focus_visible::key_down(event, window, cx);
+                if app.profile_review_key(event, window, cx)
                     || app.project_review_key(event, window, cx)
                     || app.cloud_confirmation_key(event, window, cx)
                     || app.cloud_manager_key(event, window, cx)
@@ -3541,6 +3545,7 @@ impl Render for Astral {
                 }
             }))
             .capture_action(cx.listener(|app, _: &DismissOverlay, window, cx| {
+                focus_visible::keyboard(window, cx);
                 if app.dismiss_active_profile_review(cx)
                     || app.dismiss_project_review(window, cx)
                     || app.dismiss_cloud_confirmation(cx)
@@ -3551,6 +3556,7 @@ impl Render for Astral {
             }))
             .on_key_down(cx.listener(|app, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "tab" {
+                    focus_visible::native_tab(window, cx);
                     if app.dismiss_account_profile_picker(cx) {
                         app.profile_review_focus.picker.focus(window);
                     }

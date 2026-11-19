@@ -909,6 +909,7 @@ impl Astral {
         &self,
         event: &gpui::KeyDownEvent,
         window: &mut Window,
+        cx: &gpui::App,
     ) -> bool {
         if event.keystroke.key != "tab" {
             return false;
@@ -929,6 +930,12 @@ impl Astral {
             }
         }
         if !controls.is_empty() {
+            crate::focus_visible::dialog_tab(
+                controls.iter().copied(),
+                event.keystroke.modifiers.shift,
+                window,
+                cx,
+            );
             let current = controls.iter().position(|item| item.is_focused(window));
             let index = match (current, event.keystroke.modifiers.shift) {
                 (Some(index), false) => (index + 1) % controls.len(),
