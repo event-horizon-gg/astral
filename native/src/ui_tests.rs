@@ -244,3 +244,38 @@ fn focusing_the_brand_does_not_change_its_layout(cx: &mut TestAppContext) {
     });
     assert_eq!(cx.debug_bounds("astral-brand").unwrap(), before);
 }
+
+#[gpui::test]
+fn clicking_outside_tools_dismisses_it_and_activates_the_clicked_control(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut app = Astral::new(
+            [None, None],
+            Some(directory.path()),
+            Some(Client::Retail),
+            false,
+            cx,
+        );
+        app.addons = vec![addon()];
+        app
+    });
+    cx.simulate_resize(size(px(1250.), px(700.)));
+    cx.run_until_parked();
+    let trigger = cx.debug_bounds("tools-trigger").unwrap().center();
+    cx.simulate_click(trigger, Modifiers::default());
+    assert!(view.read_with(cx, |app, _| app.menu == Some(ToolbarMenu::Tools)));
+    let manual = cx.debug_bounds("manual").unwrap().center();
+    cx.simulate_click(manual, Modifiers::default());
+    assert!(view.read_with(cx, |app, _| app.menu.is_none()));
+    assert!(view.read_with(cx, |app, _| app.filter == Filter::Manual));
+    cx.simulate_click(trigger, Modifiers::default());
+    assert!(view.read_with(cx, |app, _| app.menu == Some(ToolbarMenu::Tools)));
+    // The owning trigger must still toggle the menu closed, not dismiss on
+    // mouse-down and then accidentally reopen on click.
+    cx.simulate_click(trigger, Modifiers::default());
+    assert!(view.read_with(cx, |app, _| app.menu.is_none()));
+    cx.simulate_click(trigger, Modifiers::default());
+    assert!(view.read_with(cx, |app, _| app.menu.is_some()));
+    cx.simulate_click(point(px(630.), px(10.)), Modifiers::default());
+    assert!(view.read_with(cx, |app, _| app.menu.is_none()));
+}

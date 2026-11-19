@@ -139,6 +139,7 @@ struct Astral {
     profile_review_focus: settings_backup_view::ProfileReviewFocus,
     menu: Option<ToolbarMenu>,
     menu_return_focus: Option<gpui::FocusHandle>,
+    menu_trigger_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui::Pixels>>>>,
     client_menu_focus: [gpui::FocusHandle; 2],
     tools_first_focus: gpui::FocusHandle,
     account_first_focus: gpui::FocusHandle,
@@ -267,6 +268,7 @@ impl Astral {
             profile_review_focus: settings_backup_view::ProfileReviewFocus::new(cx),
             menu: None,
             menu_return_focus: None,
+            menu_trigger_bounds: Default::default(),
             client_menu_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             tools_first_focus: cx.focus_handle().tab_stop(true),
             account_first_focus: cx.focus_handle().tab_stop(true),
@@ -672,6 +674,17 @@ fn focus_outline(focus: gpui::FocusHandle, color: u32) -> impl IntoElement {
                 );
             }
         },
+    )
+    .absolute()
+    .inset_0()
+}
+
+fn remember_bounds(
+    target: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui::Pixels>>>>,
+) -> impl IntoElement {
+    gpui::canvas(
+        move |bounds, _, _| target.set(Some(bounds)),
+        |_, (), _, _| {},
     )
     .absolute()
     .inset_0()
@@ -2476,6 +2489,10 @@ impl Render for Astral {
                         keyboard_button(
                             palette
                                 .button("client-menu", "")
+                                .relative()
+                                .when(self.menu == Some(ToolbarMenu::Client), |button| {
+                                    button.child(remember_bounds(self.menu_trigger_bounds.clone()))
+                                })
                                 .px(px(10.))
                                 .font_weight(gpui::FontWeight::NORMAL)
                                 .h(px(40.))
@@ -2537,7 +2554,13 @@ impl Render for Astral {
                     ))
                     .child(
                         keyboard_button(
-                            palette.icon_button("tools-menu", "more"),
+                            palette
+                                .icon_button("tools-menu", "more")
+                                .relative()
+                                .debug_selector(|| "tools-trigger".into())
+                                .when(self.menu == Some(ToolbarMenu::Tools), |button| {
+                                    button.child(remember_bounds(self.menu_trigger_bounds.clone()))
+                                }),
                             palette,
                             cx.listener(|app, _: &(), window, cx| {
                                 app.toggle_menu(ToolbarMenu::Tools, window, cx)
@@ -2559,6 +2582,10 @@ impl Render for Astral {
                         keyboard_button(
                             div()
                                 .id("account-menu")
+                                .relative()
+                                .when(self.menu == Some(ToolbarMenu::Account), |button| {
+                                    button.child(remember_bounds(self.menu_trigger_bounds.clone()))
+                                })
                                 .flex()
                                 .items_center()
                                 .gap(px(9.))
@@ -2591,6 +2618,20 @@ impl Render for Astral {
         let menu = self.menu.map(|kind| {
             let mut panel = div()
                 .id("toolbar-menu")
+                .on_mouse_down_out(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
+                    if app
+                        .menu_trigger_bounds
+                        .get()
+                        .is_some_and(|bounds| bounds.contains(&event.position))
+                    {
+                        return;
+                    }
+                    // Source dismisses on document pointerdown and lets the
+                    // clicked control run normally, without restoring focus.
+                    app.menu = None;
+                    app.menu_return_focus = None;
+                    cx.notify();
+                }))
                 .absolute()
                 .when(kind == ToolbarMenu::Sources, |panel| {
                     panel.top(px(350.)).left(px(47.)).w(px(158.))
@@ -3070,6 +3111,7 @@ impl Render for Astral {
                                 keyboard_button(
                                     palette
                                         .tab(id, name, self.filter == filter)
+                                        .debug_selector(|| id.into())
                                         .text_size(px(12.))
                                         .line_height(px(14.4))
                                         .flex()
@@ -3282,6 +3324,12 @@ impl Render for Astral {
                                         },
                                     )
                                     .h(px(37.))
+                                    .relative()
+                                    .when(self.menu == Some(ToolbarMenu::Sources), |button| {
+                                        button.child(remember_bounds(
+                                            self.menu_trigger_bounds.clone(),
+                                        ))
+                                    })
                                     .min_w(px(129.))
                                     .justify_between()
                                     .bg(rgb(palette.panel))
@@ -3464,25 +3512,8 @@ impl Render for Astral {
             })
             .when_some(menu, |app, menu| {
                 app.child(
-                    gpui::deferred(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .child(
-                                div()
-                                    .id("menu-dismiss")
-                                    .absolute()
-                                    .top(px(78.))
-                                    .left_0()
-                                    .right_0()
-                                    .bottom_0()
-                                    .on_click(cx.listener(|app, _, window, cx| {
-                                        app.close_toolbar_menu(window, cx);
-                                    })),
-                            )
-                            .child(menu),
-                    )
-                    .with_priority(TOOLBAR_LAYER),
+                    gpui::deferred(div().absolute().inset_0().child(menu))
+                        .with_priority(TOOLBAR_LAYER),
                 )
             })
             .when_some(
