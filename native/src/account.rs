@@ -579,7 +579,15 @@ impl Astral {
     }
 
     fn expire_account_read(&mut self, message: String, cx: &mut Context<Self>) {
-        self.begin_account_work("Signing out…");
+        if self.credential_cleanup_pending {
+            return;
+        }
+        let owns_busy = self.account.busy.is_none();
+        if owns_busy {
+            self.begin_account_work("Signing out…");
+        } else {
+            self.account.metadata.invalidate();
+        }
         self.account.session = None;
         self.account.overview = None;
         self.account.revoke = None;
@@ -588,13 +596,25 @@ impl Astral {
         self.account.metadata_context = None;
         self.account.metadata_error = None;
         self.account.error = Some(message);
+        if self.fixture {
+            // Reference fixtures may exercise expiry but never a real secret store.
+            if owns_busy {
+                self.account.busy = None;
+            }
+            cx.notify();
+            return;
+        }
+        self.credential_cleanup_pending = true;
         let cleanup = cx
             .background_executor()
             .spawn(async { credentials::remove_background() });
         cx.spawn(async move |this, cx| {
             let result = cleanup.await;
             let _ = this.update(cx, |app, cx| {
-                app.account.busy = None;
+                app.credential_cleanup_pending = false;
+                if owns_busy {
+                    app.account.busy = None;
+                }
                 if let Err(error) = result {
                     app.account.error = Some(error.to_string());
                 }
@@ -965,7 +985,7 @@ impl Astral {
     }
 
     pub fn account_work_in_progress(&self) -> bool {
-        self.account.busy.is_some()
+        self.account.busy.is_some() || self.credential_cleanup_pending
     }
 
     pub fn start_auto_sync_timer(&self, cx: &mut Context<Self>) {
@@ -1059,7 +1079,7 @@ impl Astral {
         if self.fixture {
             return;
         }
-        if self.account.busy.is_some() {
+        if self.account_work_in_progress() {
             return;
         }
         if self.account.loaded {
@@ -1105,7 +1125,7 @@ impl Astral {
         if self.fixture {
             return;
         }
-        if self.account.session.is_some() || self.account.busy.is_some() {
+        if self.account.session.is_some() || self.account_work_in_progress() {
             return;
         }
         self.account.error = None;
@@ -1314,7 +1334,7 @@ impl Astral {
         if self.fixture {
             return;
         }
-        if self.account.busy.is_some() {
+        if self.account_work_in_progress() {
             return;
         }
         let Some(session) = self.account.session.clone() else {
@@ -2649,7 +2669,7 @@ impl Astral {
         let signed_in = name.is_some();
         // Fixture sign-in is blocked at the handler; keep its appearance equal
         // to the normal signed-out state for visual comparisons.
-        let ready = account.busy.is_none() && !self.settings_write_in_progress();
+        let ready = !self.account_work_in_progress() && !self.settings_write_in_progress();
         let game_running = self.profile_game_running();
         let can_activate = ready && !(signed_in && game_running);
         let identity =

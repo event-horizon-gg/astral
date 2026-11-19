@@ -171,7 +171,7 @@ mod ui_tests {
         });
     }
 
-    type ListResult = std::result::Result<Vec<CloudProfile>, String>;
+    type ListResult = std::result::Result<Vec<CloudProfile>, ListError>;
     fn deferred_list() -> (
         impl std::future::Future<Output = ListResult>,
         impl FnOnce(ListResult),
@@ -354,6 +354,34 @@ mod ui_tests {
                 && app.account.profiles.rows[0].name == "Loaded after close")
         );
     }
+    #[gpui::test]
+    fn expired_list_read_clears_the_fixture_session_without_releasing_a_write(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        view.update(cx, |app, cx| {
+            app.account.session = Some(session('f'));
+            app.account.busy = Some("Fixture write");
+            app.await_profile_list(
+                std::future::ready(Err(ListError {
+                    message: "Expired fixture session".into(),
+                    expired: true,
+                })),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |app, _| {
+            assert!(app.fixture);
+            assert!(app.account.session.is_none());
+            assert_eq!(app.account.busy, Some("Fixture write"));
+            assert_eq!(
+                app.account.profiles.error.as_deref(),
+                Some("Expired fixture session")
+            );
+        });
+    }
 }
 
 #[derive(Default)]
@@ -400,6 +428,26 @@ enum Work {
     Apply(CloudProfile, ProfileReview),
 }
 
+struct ListError {
+    message: String,
+    expired: bool,
+}
+
+impl From<String> for ListError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            expired: false,
+        }
+    }
+}
+
+impl From<&str> for ListError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 impl Astral {
@@ -438,14 +486,17 @@ impl Astral {
         let task = cx.background_executor().spawn(async move {
             Service::new()
                 .profiles(&session, client)
-                .map_err(|error| error.to_string())
+                .map_err(|error| ListError {
+                    expired: error.status == Some(401),
+                    message: error.to_string(),
+                })
         });
         self.await_profile_list(task, cx);
     }
 
     fn await_profile_list(
         &mut self,
-        task: impl std::future::Future<Output = std::result::Result<Vec<CloudProfile>, String>>
+        task: impl std::future::Future<Output = std::result::Result<Vec<CloudProfile>, ListError>>
         + 'static,
         cx: &mut Context<Self>,
     ) {
@@ -464,7 +515,12 @@ impl Astral {
                 }
                 match result {
                     Ok(rows) => app.remember_cloud_profiles(client, rows),
-                    Err(error) => app.remember_cloud_profile_error(error),
+                    Err(error) => {
+                        app.remember_cloud_profile_error(error.message.clone());
+                        if error.expired {
+                            app.expire_account_read(error.message, cx);
+                        }
+                    }
                 }
                 cx.notify();
             });
