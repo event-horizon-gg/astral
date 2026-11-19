@@ -1,4 +1,4 @@
-use crate::{Astral, Client, Definition, Palette, installer, packages, releases, review::Receipt};
+use crate::{Astral, Client, Definition, Palette, installer, packages, releases};
 use gpui::{Context, FocusHandle, Window, div, prelude::*, px, rgb};
 use std::{
     path::{Path, PathBuf},
@@ -377,21 +377,11 @@ impl Astral {
         }
         review.busy = true;
         review.dialog_focus.focus(window);
-        let (request, client, tag) = (review.request, review.client, release.tag.clone());
+        let (request, tag) = (review.request, release.tag.clone());
         let notes = release.notes.clone();
         let (source, package) = (source.clone(), package.clone());
         let task = cx.background_executor().spawn(async move {
-            installer::install(&package, &source.name, &tag, &notes).map(|backup| {
-                let message = format!("Installed {} {tag}", source.name);
-                (
-                    source,
-                    Receipt {
-                        client,
-                        message,
-                        backup,
-                    },
-                )
-            })
+            installer::install(&package, &source.name, &tag, &notes).map(|_| source)
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -404,14 +394,18 @@ impl Astral {
                     return;
                 };
                 match result {
-                    Ok((source, receipt)) => {
+                    Ok(source) => {
                         if remember_project(&mut app.preferences, &mut app.catalog, source) {
                             app.save_preferences();
                         }
                         app.project_review = None;
                         app.github_search = None;
-                        app.install_receipt = Some(receipt);
                         app.refresh_after_change(cx);
+                        app.show_notification(
+                            "Addon installed. Previous files are backed up in Activity.",
+                            false,
+                            cx,
+                        );
                     }
                     Err(error) => {
                         review.busy = false;
