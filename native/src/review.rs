@@ -1,5 +1,5 @@
 use crate::{Astral, Palette, bundled, icon, installer, library::Client, packages, releases};
-use gpui::{Context, PathPromptOptions, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Window, div, prelude::*, px, rgb};
 use std::{cmp::Ordering, path::PathBuf, sync::Arc};
 
 pub struct Review {
@@ -14,13 +14,11 @@ pub struct Review {
 
 enum Origin {
     GitHub(Option<Result<Arc<releases::Release>, String>>),
-    Local(PathBuf),
     Bundled,
 }
 
 enum PackageInput {
     Download(Arc<releases::Release>),
-    Local(PathBuf),
     Bundled,
 }
 
@@ -44,7 +42,7 @@ impl Review {
     ) -> Option<&'a str> {
         match &self.origin {
             Origin::GitHub(Some(Ok(release))) => Some(&release.tag),
-            Origin::Local(_) | Origin::Bundled => package
+            Origin::Bundled => package
                 .modules
                 .iter()
                 .find(|module| module.folder == folder)?
@@ -141,52 +139,6 @@ impl Astral {
         cx.notify();
     }
 
-    pub fn choose_addon_zip(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.addon_batch_running() {
-            return;
-        }
-        let client = self.preferences.client;
-        let Some(source) = self.catalog.iter().position(|source| {
-            source.id == id && source.supports(client) && source.source() != "Astral"
-        }) else {
-            return;
-        };
-        if self.root(client).is_none() {
-            return;
-        }
-        window.focus(&self.root_focus);
-        let scan = self.scan_id;
-        let picker = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Choose an addon ZIP".into()),
-        });
-        cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(paths))) = picker.await else {
-                return;
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return;
-            };
-            let _ = this.update(cx, |app, cx| {
-                if app.scan_id != scan || app.preferences.client != client {
-                    return;
-                }
-                app.release_request += 1;
-                app.release_review = Some(Review::new(
-                    app.release_request,
-                    source,
-                    Origin::Local(path),
-                ));
-                app.menu = None;
-                app.selected = None;
-                app.inspect_release(cx);
-            });
-        })
-        .detach();
-    }
-
     fn inspect_release(&mut self, cx: &mut Context<Self>) {
         let client = self.preferences.client;
         let Some(root) = self.root(client).cloned() else {
@@ -197,7 +149,6 @@ impl Astral {
         };
         let input = match &review.origin {
             Origin::GitHub(Some(Ok(release))) => PackageInput::Download(release.clone()),
-            Origin::Local(path) => PackageInput::Local(path.clone()),
             Origin::Bundled => PackageInput::Bundled,
             Origin::GitHub(_) => return,
         };
@@ -210,7 +161,6 @@ impl Astral {
         let task = cx.background_executor().spawn(async move {
             let bytes = match input {
                 PackageInput::Download(release) => releases::download(&release.package)?,
-                PackageInput::Local(path) => packages::read_zip(&path)?,
                 PackageInput::Bundled => bundled::package(&catalog[source].folder)?,
             };
             packages::inspect(bytes, &root, client, &catalog[source], &catalog).map(Arc::new)
@@ -260,7 +210,7 @@ impl Astral {
             root: package.root.clone(),
             client: package.client,
             name: name.clone(),
-            retry_source: (!matches!(review.origin, Origin::Local(_))).then(|| source.id.clone()),
+            retry_source: Some(source.id.clone()),
             from: package.installed_version.clone(),
             to: Some(tag.clone()),
             verb: if package.installed_version.is_some() {
@@ -369,7 +319,7 @@ impl Astral {
         let source = &self.catalog[review.source];
         let repo = match &review.origin {
             Origin::GitHub(_) => source.repo.clone(),
-            Origin::Local(_) | Origin::Bundled => None,
+            Origin::Bundled => None,
         };
         let source_label = repo.clone().unwrap_or_else(|| match review.origin {
             Origin::Bundled => "Astral".into(),
@@ -475,13 +425,6 @@ impl Astral {
                     meta = meta.child(palette.label(format!("Installed version {version}")));
                 }
                 body = body.child(meta);
-            }
-            Origin::Local(path) => {
-                let name = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("Addon ZIP");
-                body = body.child(div().text_size(px(14.)).child(name.to_owned()));
             }
             Origin::Bundled => {}
         }

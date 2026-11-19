@@ -1,10 +1,10 @@
 //! The Library's single-addon action updates directly; package review belongs
-//! to community source discovery and manual ZIP imports.
+//! to community source discovery.
 use crate::{Astral, Client, Definition, bundled, installer, library, packages, releases};
-use gpui::Context;
+use gpui::{Context, PathPromptOptions, Window};
 use std::{
     cmp::Ordering,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicU8, Ordering as AtomicOrdering},
@@ -14,12 +14,14 @@ use std::{
 
 pub(crate) struct State {
     pub folder: String,
-    progress: Arc<AtomicU8>,
+    progress: Option<Arc<AtomicU8>>,
 }
 
 impl State {
-    pub fn percentage(&self) -> u8 {
-        self.progress.load(AtomicOrdering::Relaxed)
+    pub fn percentage(&self) -> Option<u8> {
+        self.progress
+            .as_ref()
+            .map(|progress| progress.load(AtomicOrdering::Relaxed))
     }
 }
 
@@ -111,8 +113,158 @@ fn update(
     }
 }
 
+enum Input {
+    Latest,
+    Zip(PathBuf),
+}
+
+fn import_scope_matches(
+    root: &Path,
+    client: Client,
+    current_root: Option<&Path>,
+    current_client: Client,
+) -> bool {
+    current_root == Some(root) && current_client == client
+}
+
+fn import_zip(
+    root: &Path,
+    client: Client,
+    source: &Definition,
+    catalog: &[Definition],
+    archive: &Path,
+    mut progress: impl FnMut(u8),
+) -> Result<Outcome, String> {
+    installer::game_closed()?;
+    if source.bundled == Some(true) || source.local == Some(true) {
+        return Err("ZIP updates are available for supported third-party addons.".into());
+    }
+    if !archive
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+    {
+        return Err("Choose an addon ZIP downloaded from its official source.".into());
+    }
+    let installed = library::scan(root, client, catalog)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|addon| addon.folder == source.folder)
+        .ok_or("Select an installed addon before importing its update.")?;
+    let package = packages::inspect(packages::read_zip(archive)?, root, client, source, catalog)?;
+    if package.installed_version.as_deref() != Some(installed.version.as_str()) {
+        return Err("The installed version changed. Choose the ZIP again.".into());
+    }
+    let name = archive
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Addon.zip");
+    let tag = format!("ZIP: {name}");
+    progress(90);
+    installer::install(&package, &source.name, &tag, "")?;
+    progress(100);
+    let version = library::scan(root, client, catalog)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|addon| addon.folder == source.folder)
+        .ok_or("The imported addon could not be found. Refresh your Library.")?
+        .version;
+    Ok(Outcome {
+        version,
+        tag,
+        notes: String::new(),
+        changed: true,
+    })
+}
+
 impl Astral {
     pub(crate) fn update_one_addon(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.start_addon_operation(id, Input::Latest, cx);
+    }
+
+    pub fn choose_addon_zip(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.fixture || !self.can_start_update_batch() {
+            return;
+        }
+        let client = self.preferences.client;
+        let Some(root) = self.root(client).cloned() else {
+            return;
+        };
+        let Some(source) = self.catalog.iter().find(|source| {
+            source.id == id
+                && source.supports(client)
+                && source.bundled != Some(true)
+                && source.local != Some(true)
+        }) else {
+            return;
+        };
+        let id = source.id.clone();
+        let folder = source.folder.clone();
+        let previous = window.focused(cx);
+        self.single_update = Some(State {
+            folder: folder.clone(),
+            progress: None,
+        });
+        let picker = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(format!("Update {} from ZIP", source.name).into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = match picker.await {
+                Ok(Ok(paths)) => Ok(paths.and_then(|paths| paths.into_iter().next())),
+                Ok(Err(error)) => Err(error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+            let _ = this.update_in(cx, |app, window, cx| {
+                if !app
+                    .single_update
+                    .as_ref()
+                    .is_some_and(|state| state.folder == folder && state.progress.is_none())
+                {
+                    return;
+                }
+                app.single_update = None;
+                if let Some(previous) = previous {
+                    previous.focus(window);
+                }
+                match result {
+                    Ok(Some(path)) => {
+                        if import_scope_matches(
+                            &root,
+                            client,
+                            app.root(app.preferences.client).map(PathBuf::as_path),
+                            app.preferences.client,
+                        ) {
+                            if app.profile_game_running() {
+                                app.show_notification(
+                                    "Close World of Warcraft before updating addons.",
+                                    true,
+                                    cx,
+                                );
+                            } else {
+                                app.start_addon_operation(&id, Input::Zip(path), cx);
+                            }
+                        } else {
+                            app.show_notification(
+                                "The selected game client changed. Choose the ZIP again.",
+                                true,
+                                cx,
+                            );
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => app.show_notification(error, true, cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn start_addon_operation(&mut self, id: &str, input: Input, cx: &mut Context<Self>) {
+        let importing = matches!(&input, Input::Zip(_));
         if self.fixture || !self.can_start_update_batch() {
             return;
         }
@@ -126,7 +278,11 @@ impl Astral {
             .find(|source| {
                 source.id == id
                     && source.supports(client)
-                    && (source.bundled == Some(true) || source.repo.is_some())
+                    && if importing {
+                        source.bundled != Some(true) && source.local != Some(true)
+                    } else {
+                        source.bundled == Some(true) || source.repo.is_some()
+                    }
             })
             .cloned()
         else {
@@ -147,7 +303,7 @@ impl Astral {
         let progress = Arc::new(AtomicU8::new(0));
         self.single_update = Some(State {
             folder: folder.clone(),
-            progress: progress.clone(),
+            progress: Some(progress.clone()),
         });
         let observed = progress.clone();
         let executor = cx.background_executor().clone();
@@ -159,10 +315,14 @@ impl Astral {
                     let Some(state) = &app.single_update else {
                         return false;
                     };
-                    if !Arc::ptr_eq(&state.progress, &observed) {
+                    if !state
+                        .progress
+                        .as_ref()
+                        .is_some_and(|progress| Arc::ptr_eq(progress, &observed))
+                    {
                         return false;
                     }
-                    let percent = state.percentage();
+                    let percent = state.percentage().unwrap_or(0);
                     if percent != last {
                         last = percent;
                         cx.notify();
@@ -176,18 +336,26 @@ impl Astral {
         })
         .detach();
         let task = cx.background_executor().spawn(async move {
-            let result = update(&root, client, &source, &catalog, |percent| {
-                progress.store(percent, AtomicOrdering::Relaxed);
-            });
+            let progress = |percent| progress.store(percent, AtomicOrdering::Relaxed);
+            let result = match input {
+                Input::Latest => update(&root, client, &source, &catalog, progress),
+                Input::Zip(path) => import_zip(&root, client, &source, &catalog, &path, progress),
+            };
             crate::activity::record(
                 preferences.as_deref(),
                 crate::activity::Action {
                     root: root.clone(),
                     client,
                     name: source.name.clone(),
-                    retry_source: Some(source.id.clone()),
+                    retry_source: (!importing).then(|| source.id.clone()),
                     from: Some(original.clone()),
-                    to: result.as_ref().ok().map(|outcome| outcome.tag.clone()),
+                    to: result.as_ref().ok().map(|outcome| {
+                        if importing {
+                            "Imported ZIP".into()
+                        } else {
+                            outcome.tag.clone()
+                        }
+                    }),
                     verb: match &result {
                         Ok(outcome) if outcome.changed => "Updated",
                         Ok(_) => "Already up to date",
@@ -201,20 +369,27 @@ impl Astral {
             let outcome = result?;
             let addons = library::scan_library(&root, client, &catalog)
                 .map_err(|error| error.to_string())?;
-            let message = format!(
-                "{}{}",
-                source.name,
-                if outcome.version == original {
-                    " is already up to date."
-                } else {
-                    " is installed and backed up."
-                }
-            );
-            let check = releases::Check {
+            let message = if importing {
+                format!(
+                    "{} updated from ZIP. Previous version saved in Activity.",
+                    source.name
+                )
+            } else {
+                format!(
+                    "{}{}",
+                    source.name,
+                    if outcome.version == original {
+                        " is already up to date."
+                    } else {
+                        " is installed and backed up."
+                    }
+                )
+            };
+            let check = (!importing).then(|| releases::Check {
                 comparison: releases::compare(&source, &outcome.version, &outcome.tag),
                 tag: outcome.tag,
                 notes: outcome.notes,
-            };
+            });
             Ok::<_, String>((addons, check, message))
         });
         cx.spawn(async move |this, cx| {
@@ -231,7 +406,11 @@ impl Astral {
                             })
                         });
                         app.addons = addons;
-                        app.checks.insert(folder.clone(), Ok(check));
+                        if let Some(check) = check {
+                            app.checks.insert(folder.clone(), Ok(check));
+                        } else {
+                            app.checks.remove(&folder);
+                        }
                         app.open_addon_details(folder, cx);
                         app.show_notification(message, false, cx);
                     }
@@ -287,6 +466,127 @@ mod tests {
             .unwrap()
             .clone();
         (temp, root, catalog, source)
+    }
+
+    fn third_party_fixture(
+        version: &str,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        Vec<Definition>,
+        Definition,
+    ) {
+        let (temp, root, mut catalog, mut source) = fixture(version);
+        source.bundled = None;
+        source.local = None;
+        source.repo = Some("fixture/AstralTalents".into());
+        let index = catalog
+            .iter()
+            .position(|entry| entry.id == source.id)
+            .unwrap();
+        catalog[index] = source.clone();
+        (temp, root, catalog, source)
+    }
+
+    #[test]
+    fn explicit_zip_import_can_restore_an_older_version_and_keeps_settings_and_backup() {
+        let (temp, root, catalog, source) = third_party_fixture("999.0.0");
+        let archive = temp.path().join("restore.ZIP");
+        fs::write(&archive, bundled::package(&source.folder).unwrap()).unwrap();
+        let mut progress = vec![];
+        let outcome = import_zip(
+            &root,
+            Client::Retail,
+            &source,
+            &catalog,
+            &archive,
+            |percent| progress.push(percent),
+        )
+        .unwrap();
+        assert!(outcome.changed);
+        assert_eq!(outcome.tag, "ZIP: restore.ZIP");
+        assert_eq!(outcome.version, bundled::version(&source.folder).unwrap());
+        assert_eq!(progress, [90, 100]);
+        assert_eq!(
+            fs::read_to_string(root.join("WTF/config.wtf")).unwrap(),
+            "settings"
+        );
+        let backups = installer::list(&root, Client::Retail).unwrap();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            fs::read_to_string(backups[0].path.join("previous/AstralTalents/old.lua")).unwrap(),
+            "-- previous"
+        );
+    }
+
+    #[test]
+    fn zip_import_rejects_another_addon_non_zip_files_and_bundled_targets_without_writes() {
+        let (temp, root, catalog, source) = third_party_fixture("0.1.0");
+        let archive = temp.path().join("wrong.zip");
+        fs::write(&archive, bundled::package("AstralClock").unwrap()).unwrap();
+        assert!(import_zip(&root, Client::Retail, &source, &catalog, &archive, |_| {}).is_err());
+        let renamed = temp.path().join("wrong.txt");
+        fs::copy(&archive, &renamed).unwrap();
+        assert!(
+            import_zip(&root, Client::Retail, &source, &catalog, &renamed, |_| {})
+                .err()
+                .unwrap()
+                .contains("Choose an addon ZIP")
+        );
+        let mut bundled_source = source.clone();
+        bundled_source.bundled = Some(true);
+        assert!(
+            import_zip(
+                &root,
+                Client::Retail,
+                &bundled_source,
+                &catalog,
+                &archive,
+                |_| {}
+            )
+            .err()
+            .unwrap()
+            .contains("third-party")
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Interface/AddOns/AstralTalents/old.lua")).unwrap(),
+            "-- previous"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("WTF/config.wtf")).unwrap(),
+            "settings"
+        );
+        assert!(installer::list(&root, Client::Retail).unwrap().is_empty());
+    }
+
+    #[test]
+    fn choosing_a_zip_cannot_target_a_changed_game_client_or_folder() {
+        let root = Path::new("installation/_retail_");
+        let other = Path::new("other/_retail_");
+        assert!(import_scope_matches(
+            root,
+            Client::Retail,
+            Some(root),
+            Client::Retail
+        ));
+        assert!(!import_scope_matches(
+            root,
+            Client::Retail,
+            Some(other),
+            Client::Retail
+        ));
+        assert!(!import_scope_matches(
+            root,
+            Client::Retail,
+            Some(root),
+            Client::Forever
+        ));
+        assert!(!import_scope_matches(
+            root,
+            Client::Retail,
+            None,
+            Client::Retail
+        ));
     }
 
     #[test]

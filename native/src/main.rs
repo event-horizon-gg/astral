@@ -1591,7 +1591,7 @@ impl Astral {
             .single_update
             .as_ref()
             .filter(|state| state.folder == addon.folder)
-            .map(single_update::State::percentage);
+            .and_then(single_update::State::percentage);
         let updating = update_progress.is_some();
         let (status, status_color, status_icon) = match self.update_status(addon) {
             _ if updating => ("Updating…", palette.muted, Some("loader")),
