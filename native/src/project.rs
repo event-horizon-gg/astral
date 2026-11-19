@@ -662,9 +662,10 @@ impl Astral {
                             .child(if review.busy {
                                 alternate.opacity(0.45).cursor_default()
                             } else {
-                                crate::keyboard_button(
-                                    alternate.track_focus(&review.action_focus[0]),
+                                crate::outlined_button(
+                                    alternate,
                                     palette,
+                                    &review.action_focus[0],
                                     cx.listener(|app, _: &(), window, cx| {
                                         if let Some(review) = &mut app.project_review {
                                             review.inspected = None;
@@ -678,9 +679,10 @@ impl Astral {
                             .child(if blocked || !package.missing.is_empty() {
                                 install.opacity(0.45).cursor_default()
                             } else {
-                                crate::keyboard_button(
-                                    install.track_focus(&review.action_focus[1]),
+                                crate::outlined_button(
+                                    install,
                                     palette,
+                                    &review.action_focus[1],
                                     cx.listener(|app, _: &(), window, cx| {
                                         app.install_project(window, cx)
                                     }),
@@ -726,9 +728,10 @@ impl Astral {
                         .child(if review.busy {
                             package.opacity(0.45).cursor_default()
                         } else {
-                            crate::keyboard_button(
-                                package.track_focus(&review.package_focus),
+                            crate::outlined_button(
+                                package,
                                 palette,
+                                &review.package_focus,
                                 cx.listener(|app, _: &(), window, cx| {
                                     app.choose_project_package(window, cx)
                                 }),
@@ -758,9 +761,10 @@ impl Astral {
                                 if review.busy {
                                     view.opacity(0.45).cursor_default()
                                 } else {
-                                    crate::keyboard_button(
-                                        view.track_focus(&review.action_focus[0]),
+                                    crate::outlined_button(
+                                        view,
                                         palette,
+                                        &review.action_focus[0],
                                         move |_, _, cx| cx.open_url(&url),
                                     )
                                 }
@@ -768,9 +772,10 @@ impl Astral {
                             .child(if review.busy || selected.is_none() {
                                 inspect.opacity(0.45).cursor_default()
                             } else {
-                                crate::keyboard_button(
-                                    inspect.track_focus(&review.action_focus[1]),
+                                crate::outlined_button(
+                                    inspect,
                                     palette,
+                                    &review.action_focus[1],
                                     cx.listener(|app, _: &(), window, cx| {
                                         app.inspect_project(window, cx)
                                     }),
@@ -832,9 +837,10 @@ impl Astral {
         let close = if review.busy {
             close.opacity(0.45).cursor_default()
         } else {
-            crate::keyboard_button(
+            crate::outlined_button(
                 close,
                 palette,
+                &review.close_focus,
                 cx.listener(|app, _: &(), window, cx| {
                     if let Some(review) = &mut app.project_review {
                         review.package_request = None;

@@ -147,6 +147,7 @@ struct Astral {
     account_first_focus: gpui::FocusHandle,
     root_focus: gpui::FocusHandle,
     brand_focus: gpui::FocusHandle,
+    header_button_focus: [gpui::FocusHandle; 7],
     header_focus: gpui::FocusHandle,
     main_scroll: gpui::ScrollHandle,
     main_overflows: bool,
@@ -278,6 +279,7 @@ impl Astral {
             account_first_focus: cx.focus_handle().tab_stop(true),
             root_focus: cx.focus_handle().tab_index(-2),
             brand_focus: cx.focus_handle().tab_stop(true),
+            header_button_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             header_focus: cx.focus_handle().tab_index(-1),
             main_scroll: gpui::ScrollHandle::new(),
             main_overflows: false,
@@ -691,6 +693,22 @@ fn keyboard_button(
         .tab_stop(true)
         .focus(move |style| style.border_color(rgb(palette.accent)).border_1())
         .on_click(move |_, window, cx| activate(&(), window, cx))
+}
+
+fn outlined_button(
+    button: gpui::Stateful<gpui::Div>,
+    palette: Palette,
+    focus: &gpui::FocusHandle,
+    activate: impl Fn(&(), &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    keyboard_button(
+        button
+            .track_focus(focus)
+            .child(focus_outline(focus.clone(), palette.accent)),
+        palette,
+        activate,
+    )
+    .focus(|style| style)
 }
 
 fn focus_outline(focus: gpui::FocusHandle, color: u32) -> impl IntoElement {
@@ -2523,9 +2541,10 @@ impl Render for Astral {
                             (Page::Discover, "discover", "Discover"),
                         ]
                         .map(|(page, id, name)| {
-                            keyboard_button(
+                            outlined_button(
                                 palette
                                     .tab(id, name, self.page == page)
+                                    .debug_selector(move || id.into())
                                     .h(px(78.))
                                     .py_0()
                                     .flex()
@@ -2535,6 +2554,8 @@ impl Render for Astral {
                                         tab.font_weight(gpui::FontWeight::SEMIBOLD)
                                     }),
                                 palette,
+                                &self.header_button_focus
+                                    [if page == Page::Library { 0 } else { 1 }],
                                 cx.listener(move |app, _: &(), window, cx| {
                                     app.navigate(page, window, cx)
                                 }),
@@ -2548,7 +2569,7 @@ impl Render for Astral {
                     .items_center()
                     .gap(px(action_gap))
                     .child(
-                        keyboard_button(
+                        outlined_button(
                             palette
                                 .button("client-menu", "")
                                 .relative()
@@ -2567,6 +2588,9 @@ impl Render for Astral {
                                 .child(client.label())
                                 .child(icon("chevron", 14., palette.muted)),
                             palette,
+                            &self.header_button_focus[2]
+                                .clone()
+                                .tab_stop(!self.addon_controls_busy()),
                             cx.listener(|app, _: &(), window, cx| {
                                 app.toggle_menu(ToolbarMenu::Client, window, cx);
                             }),
@@ -2585,16 +2609,17 @@ impl Render for Astral {
                             },
                         )),
                     )
-                    .child(keyboard_button(
+                    .child(outlined_button(
                         palette
                             .icon_button("quick-find", "search")
                             .debug_selector(|| "quick-find-trigger".into()),
                         palette,
+                        &self.header_button_focus[3],
                         cx.listener(|app, _: &(), window, cx| {
                             app.open_quick_find(window, cx);
                         }),
                     ))
-                    .child(keyboard_button(
+                    .child(outlined_button(
                         palette
                             .icon_button(
                                 "appearance",
@@ -2606,6 +2631,7 @@ impl Render for Astral {
                             )
                             .debug_selector(|| "appearance-trigger".into()),
                         palette,
+                        &self.header_button_focus[4],
                         cx.listener(|app, _: &(), window, cx| {
                             app.preferences.light_theme = !app.preferences.light_theme;
                             app.save_preferences();
@@ -2617,7 +2643,7 @@ impl Render for Astral {
                         }),
                     ))
                     .child(
-                        keyboard_button(
+                        outlined_button(
                             palette
                                 .icon_button("tools-menu", "more")
                                 .relative()
@@ -2626,6 +2652,7 @@ impl Render for Astral {
                                     button.child(remember_bounds(self.menu_trigger_bounds.clone()))
                                 }),
                             palette,
+                            &self.header_button_focus[5],
                             cx.listener(|app, _: &(), window, cx| {
                                 app.toggle_menu(ToolbarMenu::Tools, window, cx)
                             }),
@@ -2643,9 +2670,10 @@ impl Render for Astral {
                         )),
                     )
                     .child(
-                        keyboard_button(
+                        outlined_button(
                             div()
                                 .id("account-menu")
+                                .debug_selector(|| "account-trigger".into())
                                 .relative()
                                 .when(self.menu == Some(ToolbarMenu::Account), |button| {
                                     button.child(remember_bounds(self.menu_trigger_bounds.clone()))
@@ -2657,6 +2685,7 @@ impl Render for Astral {
                                 .child(palette.profile_avatar(account_name, false))
                                 .child(icon("chevron", 13., palette.muted)),
                             palette,
+                            &self.header_button_focus[6],
                             cx.listener(|app, _: &(), window, cx| {
                                 app.toggle_menu(ToolbarMenu::Account, window, cx);
                                 if app.menu == Some(ToolbarMenu::Account) {

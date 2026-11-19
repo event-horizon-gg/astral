@@ -389,3 +389,51 @@ fn folder_choice_owns_the_operation_until_cancel_error_or_selection(cx: &mut Tes
         assert!(app.root(Client::Retail).is_none());
     });
 }
+
+#[gpui::test]
+fn focusing_header_controls_preserves_their_bounds_in_both_themes(cx: &mut TestAppContext) {
+    for light in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = Astral::new(
+                [None, None],
+                Some(directory.path()),
+                Some(Client::Retail),
+                false,
+                cx,
+            );
+            app.preferences.light_theme = light;
+            app
+        });
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        view.update_in(cx, |app, window, _| app.root_focus.focus(window));
+        cx.run_until_parked();
+        let selectors = [
+            "library",
+            "discover",
+            "client-selector",
+            "quick-find-trigger",
+            "appearance-trigger",
+            "tools-trigger",
+            "account-trigger",
+        ];
+        let before: Vec<_> = selectors
+            .iter()
+            .map(|selector| cx.debug_bounds(selector).unwrap())
+            .collect();
+        for index in 0..selectors.len() {
+            view.update_in(cx, |app, window, _| {
+                app.header_button_focus[index].focus(window)
+            });
+            cx.run_until_parked();
+            for (selector, expected) in selectors.iter().zip(&before) {
+                assert_eq!(
+                    cx.debug_bounds(selector).unwrap(),
+                    *expected,
+                    "{selector} moved when focusing {} in light={light}",
+                    selectors[index]
+                );
+            }
+        }
+    }
+}
