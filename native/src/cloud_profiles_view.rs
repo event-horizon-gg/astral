@@ -1100,10 +1100,7 @@ impl Astral {
         let button = |button: gpui::Stateful<gpui::Div>, index: usize, enabled: bool| {
             button
                 .when(enabled && !busy, |button| {
-                    button
-                        .track_focus(&focus.controls[index])
-                        .tab_stop(true)
-                        .focus(move |style| style.border_color(rgb(palette.accent)))
+                    crate::button_outline(button, palette, &focus.controls[index]).tab_stop(true)
                 })
                 .when(!enabled || busy, |button| {
                     button.opacity(0.45).cursor_default()
@@ -1351,9 +1348,10 @@ impl Astral {
                     )
                     .debug_selector(|| "new-cloud-profile".into());
                 let primary = if retry {
-                    crate::keyboard_button(
-                        primary.track_focus(&focus.controls[17]),
+                    crate::outlined_button(
+                        primary,
                         palette,
+                        &focus.controls[17],
                         cx.listener(|app, _: &(), _, cx| app.refresh_cloud_profile_list(cx)),
                     )
                 } else {

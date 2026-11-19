@@ -941,16 +941,14 @@ impl Astral {
                     .child(palette.button("cancel-profile-review", "Cancel")
                         .debug_selector(|| "cancel-profile-review".into())
                         .h(px(38.)).font_weight(gpui::FontWeight(550.))
-                        .track_focus(&cancel)
+                        .map(|button| crate::button_outline(button, palette, &cancel))
                         .when(busy, |button| button.opacity(0.45).cursor_default())
-                        .focus(move |style| style.bg(rgb(palette.panel)).shadow(palette.focus_ring_on(palette.panel)))
                         .on_click(cx.listener(move |app, _, _, cx| app.cancel_profile_review(cloud, cx))))
                     .child(palette.primary_button("apply-profile-review", if review.editing_addons { "Apply choices" } else { "Save and switch" })
                         .h(px(38.)).font_weight(gpui::FontWeight(550.))
                         .track_focus(&apply)
                         .when(blocked, |button| button.opacity(0.45).cursor_default())
-                        .when(!blocked, |button| button
-                            .focus(move |style| style.shadow(palette.focus_ring_on(palette.panel)))
+                        .when(!blocked, |button| crate::button_outline(button, palette, &apply)
                             .on_click(cx.listener(move |app, _, _, cx| app.apply_profile_review(cloud, cx)))))))
     }
 

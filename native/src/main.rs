@@ -701,14 +701,18 @@ fn outlined_button(
     focus: &gpui::FocusHandle,
     activate: impl Fn(&(), &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
-    keyboard_button(
-        button
-            .track_focus(focus)
-            .child(focus_outline(focus.clone(), palette.accent)),
-        palette,
-        activate,
-    )
-    .focus(|style| style)
+    button_outline(keyboard_button(button, palette, activate), palette, focus)
+}
+
+fn button_outline(
+    button: gpui::Stateful<gpui::Div>,
+    palette: Palette,
+    focus: &gpui::FocusHandle,
+) -> gpui::Stateful<gpui::Div> {
+    button
+        .track_focus(focus)
+        .child(focus_outline(focus.clone(), palette.accent))
+        .focus(|style| style)
 }
 
 fn focus_outline(focus: gpui::FocusHandle, color: u32) -> impl IntoElement {

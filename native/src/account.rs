@@ -894,10 +894,11 @@ impl Astral {
                                     .child(addon.name.clone()))
                                 .child(div().text_size(px(14.)).child(addon.reason))
                         })))
-                    .child(div().mt(px(25.)).flex().justify_end().child(crate::keyboard_button(
+                    .child(div().mt(px(25.)).flex().justify_end().child(crate::outlined_button(
                         palette.primary_button("view-shared-addons", "View shared addons")
-                            .font_weight(gpui::FontWeight(550.)).track_focus(&focus.cloud),
+                            .font_weight(gpui::FontWeight(550.)),
                         palette,
+                        &focus.cloud,
                         cx.listener(|app, _: &(), window, cx| {
                             let names = crate::shared_library::missing_names(&app.account.sync_missing);
                             app.dismiss_sync_dialog(cx);
@@ -927,9 +928,10 @@ impl Astral {
             if blocked {
                 button.opacity(0.45).cursor_default()
             } else {
-                crate::keyboard_button(
+                crate::outlined_button(
                     button,
                     palette,
+                    handle,
                     cx.listener(move |app, _: &(), _, cx| {
                         if app.fixture {
                             app.dismiss_sync_dialog(cx);
@@ -1928,9 +1930,10 @@ impl Astral {
             .primary_button("confirm-cloud-restore", "Restore backup")
             .when(blocked, |button| button.opacity(0.45).cursor_default())
             .when(!blocked, |button| {
-                crate::keyboard_button(
-                    button.track_focus(&focus.local),
+                crate::outlined_button(
+                    button,
                     palette,
+                    &focus.local,
                     cx.listener(|app, _: &(), _, cx| app.restore_cloud_history(cx)),
                 )
             });
@@ -1951,7 +1954,9 @@ impl Astral {
                 .child(div().flex().justify_end().gap(px(9.))
                     .child(palette.button("cancel-cloud-restore", "Cancel")
                         .when(busy, |button| button.opacity(0.45).cursor_default())
-                        .when(!busy, |button| crate::keyboard_button(button.track_focus(&focus.cloud), palette,
+                        .when(!busy, |button| crate::outlined_button(button,
+                        palette,
+                        &focus.cloud,
                             cx.listener(|app, _: &(), _, cx| { app.dismiss_sync_dialog(cx); }))))
                     .child(restore))))
     }
@@ -2220,9 +2225,10 @@ impl Astral {
         if busy {
             confirm = confirm.opacity(0.45).cursor_default();
         } else {
-            confirm = crate::keyboard_button(
-                confirm.track_focus(&focus.local),
+            confirm = crate::outlined_button(
+                confirm,
                 palette,
+                &focus.local,
                 cx.listener(move |app, _: &(), _, cx| {
                     if current {
                         app.sign_out(cx);
@@ -2286,11 +2292,10 @@ impl Astral {
                                 .justify_end()
                                 .gap(px(9.))
                                 .child(
-                                    crate::keyboard_button(
-                                        palette
-                                            .button("cancel-revoke-device", "Cancel")
-                                            .track_focus(&focus.cloud),
+                                    crate::outlined_button(
+                                        palette.button("cancel-revoke-device", "Cancel"),
                                         palette,
+                                        &focus.cloud,
                                         cx.listener(|app, _: &(), _, cx| {
                                             app.dismiss_sync_dialog(cx);
                                         }),
@@ -2319,9 +2324,10 @@ impl Astral {
         if self.account.busy.is_some() {
             return button.opacity(0.45).cursor_default();
         }
-        crate::keyboard_button(
-            button.track_focus(&focus.close),
+        crate::outlined_button(
+            button,
             palette,
+            &focus.close,
             cx.listener(|app, _: &(), _, cx| {
                 app.dismiss_sync_dialog(cx);
             }),
@@ -2449,11 +2455,15 @@ impl Astral {
                 .child(div().flex().justify_end().gap(px(9.))
                     .child(palette.button("cancel-cloud-deletion", "Cancel")
                         .when(busy, |button| button.opacity(0.45).cursor_default())
-                        .when(!busy, |button| crate::keyboard_button(button.track_focus(&focus.cloud), palette,
+                        .when(!busy, |button| crate::outlined_button(button,
+                        palette,
+                        &focus.cloud,
                             cx.listener(|app, _: &(), _, cx| { app.dismiss_sync_dialog(cx); }))))
                     .child(palette.danger_button("confirm-cloud-deletion", "Delete cloud data")
                         .when(!enabled, |button| button.opacity(0.45).cursor_default())
-                        .when(enabled, |button| crate::keyboard_button(button.track_focus(&focus.local), palette,
+                        .when(enabled, |button| crate::outlined_button(button,
+                        palette,
+                        &focus.local,
                             cx.listener(|app, _: &(), _, cx| app.delete_cloud_data(cx))))))))
     }
 
