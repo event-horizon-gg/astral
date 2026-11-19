@@ -24,6 +24,7 @@ struct Snapshot {
     controller: Option<gamepad_settings::Settings>,
 }
 
+#[derive(Clone)]
 pub struct ProfileReview {
     pub target: Profile,
     pub name: String,

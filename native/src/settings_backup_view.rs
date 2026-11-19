@@ -77,6 +77,48 @@ mod ui_tests {
         press(cx, "tab");
         assert!(view.read_with(cx, |app, _| app.local_profile_review_open()));
     }
+
+    #[gpui::test]
+    fn leaving_profile_review_keeps_the_clicked_header_focused(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        let brand = cx.debug_bounds("astral-brand").unwrap().center();
+        cx.simulate_click(brand, Modifiers::default());
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |app, _| app.page == Page::Library
+            && !app.local_profile_review_open()));
+        view.update_in(cx, |app, window, _| {
+            assert!(app.brand_focus.is_focused(window))
+        });
+    }
+
+    #[gpui::test]
+    fn profile_review_stays_open_until_the_write_reports_its_result(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("_retail_");
+        std::fs::create_dir_all(root.join("Interface/AddOns")).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = fixture(directory.path(), cx);
+            app.detected_roots[Client::Retail.index()] = Some(root.clone());
+            app.settings_backups.account = Some("MISSING_ACCOUNT".into());
+            app
+        });
+        view.update(cx, |app, cx| {
+            app.apply_local_profile_review(cx);
+            assert!(app.settings_backups.writing);
+            assert!(app.settings_backups.review.is_some());
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |app, _| {
+            assert!(!app.settings_backups.writing);
+            assert!(app.settings_backups.review.is_none());
+            assert!(matches!(&app.settings_backups.status, Some(Err(error)) if error.contains("account was not found")));
+        });
+        // Store::open fails before process queries, downloads or any game write.
+        assert!(!root.join("WTF").exists());
+    }
 }
 
 pub(crate) struct ProfileReviewFocus {
@@ -772,7 +814,13 @@ impl Astral {
         }
         if cloud {
             self.apply_cloud_profile_review(cx);
-        } else if let Some(review) = self.settings_backups.review.take() {
+        } else {
+            self.apply_local_profile_review(cx);
+        }
+    }
+
+    fn apply_local_profile_review(&mut self, cx: &mut Context<Self>) {
+        if let Some(review) = self.settings_backups.review.clone() {
             self.write_settings_backup(Action::ApplyReview(review), cx);
         }
     }
@@ -1066,6 +1114,7 @@ impl Astral {
             return;
         }
         let request = state.request;
+        let applying_review = matches!(&action, Action::ApplyReview(_));
         let installing_addons =
             matches!(&action, Action::ApplyReview(review) if !review.packages.is_empty());
         let catalog = self.catalog.clone();
@@ -1118,6 +1167,10 @@ impl Astral {
                 let state = &mut app.settings_backups;
                 state.writing = false;
                 if state.request == request {
+                    if applying_review {
+                        state.review = None;
+                        state.show_review_files = false;
+                    }
                     match result {
                         Ok((outcome, backups, profile, addons)) => {
                             if outcome.is_ok() {

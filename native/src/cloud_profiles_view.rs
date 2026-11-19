@@ -140,7 +140,7 @@ impl Astral {
     }
 
     pub(crate) fn apply_cloud_profile_review(&mut self, cx: &mut Context<Self>) {
-        if let Some((profile, review)) = self.account.profiles.review.take() {
+        if let Some((profile, review)) = self.account.profiles.review.clone() {
             self.cloud_profiles_work(Work::Apply(profile, review), cx);
         }
     }
@@ -158,6 +158,7 @@ impl Astral {
         };
         let client = self.preferences.client;
         let operation_feedback = !matches!(&work, Work::Refresh);
+        let applying_review = matches!(&work, Work::Apply(_, _));
         let installing_addons =
             matches!(&work, Work::Apply(_, review) if !review.packages.is_empty());
         if !matches!(&work, Work::Refresh) && self.account.profiles.client != Some(client) {
@@ -326,6 +327,9 @@ impl Astral {
                         ..AccountState::default()
                     };
                 } else if app.preferences.client == client {
+                    if applying_review {
+                        app.account.profiles.review = None;
+                    }
                     if installing_addons {
                         app.refresh_after_change(cx);
                     }

@@ -1165,6 +1165,8 @@ impl Astral {
             self.dismiss_local_profile_review(cx);
             self.dismiss_account_profile_picker(cx);
             self.profile_review_focus.return_to = None;
+            // The new page's navigation owns focus after unmounting this dialog.
+            self.profile_review_focus.open = false;
         }
         self.page = page;
         header_focus

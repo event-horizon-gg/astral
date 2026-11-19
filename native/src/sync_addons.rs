@@ -21,6 +21,7 @@ pub struct ProfileAddon {
     pub managed: bool,
 }
 
+#[derive(Clone)]
 pub struct ChoiceChange {
     pub name: String,
     pub before: Option<bool>,
