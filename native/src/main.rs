@@ -1151,6 +1151,13 @@ impl Astral {
                 if let Some(review) = &mut self.project_review {
                     review.leave_discovery();
                 }
+                if self
+                    .project_review
+                    .as_ref()
+                    .is_some_and(|review| !review.is_busy())
+                {
+                    self.project_review = None;
+                }
             }
             self.query = query.clone();
             self.search.update(cx, |input, cx| input.set(&query, cx));
@@ -2564,14 +2571,16 @@ impl Render for Astral {
                         }),
                     ))
                     .child(keyboard_button(
-                        palette.icon_button(
-                            "appearance",
-                            if self.preferences.light_theme {
-                                "moon"
-                            } else {
-                                "sun"
-                            },
-                        ),
+                        palette
+                            .icon_button(
+                                "appearance",
+                                if self.preferences.light_theme {
+                                    "moon"
+                                } else {
+                                    "sun"
+                                },
+                            )
+                            .debug_selector(|| "appearance-trigger".into()),
                         palette,
                         cx.listener(|app, _: &(), window, cx| {
                             app.preferences.light_theme = !app.preferences.light_theme;
@@ -3464,6 +3473,16 @@ impl Render for Astral {
             .on_action(
                 cx.listener(|app, _: &FindAddon, window, cx| app.toggle_quick_find(window, cx)),
             )
+            .capture_key_down(cx.listener(|app, event: &gpui::KeyDownEvent, window, cx| {
+                if app.project_review_key(event, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|app, _: &DismissOverlay, window, cx| {
+                if app.dismiss_project_review(window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
             .on_key_down(cx.listener(|app, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "tab" && app.cloud_profile_manager_open() {
                     app.cycle_cloud_manager_focus(event.keystroke.modifiers.shift, window, cx);

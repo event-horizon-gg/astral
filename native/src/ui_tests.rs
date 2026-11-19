@@ -3,7 +3,7 @@
 use super::*;
 use gpui::{KeyUpEvent, Keystroke, Modifiers, TestAppContext, VisualTestContext, point};
 
-fn press(cx: &mut VisualTestContext, key: &str) {
+pub(crate) fn press(cx: &mut VisualTestContext, key: &str) {
     // GPUI's simulate_keystrokes emits key-down/IME input only; real button
     // activation occurs on key-up, so exercise both halves of the OS event.
     cx.run_until_parked();

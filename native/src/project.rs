@@ -30,13 +30,11 @@ impl ProjectReview {
     }
 
     pub(crate) fn is_visible(&self) -> bool {
-        self.release.as_ref().is_some_and(Result::is_ok)
+        !self.abandoned && self.release.as_ref().is_some_and(Result::is_ok)
     }
 
     pub(crate) fn leave_discovery(&mut self) {
-        if self.release.is_none() {
-            self.abandoned = true;
-        }
+        self.abandoned = true;
     }
 }
 
@@ -324,6 +322,7 @@ impl Astral {
                     .filter(|review| review.request == request)
                 {
                     review.busy = false;
+                    let abandoned = review.abandoned;
                     match result {
                         Ok((release, selected, source, package)) => {
                             review.release = Some(Ok(release));
@@ -332,6 +331,9 @@ impl Astral {
                             review.inspected_at = Some(Instant::now());
                         }
                         Err(error) => app.show_notification(error, true, cx),
+                    }
+                    if abandoned {
+                        app.project_review = None;
                     }
                     cx.notify();
                 }
@@ -408,7 +410,11 @@ impl Astral {
                         );
                     }
                     Err(error) => {
-                        review.busy = false;
+                        if review.abandoned {
+                            app.project_review = None;
+                        } else {
+                            review.busy = false;
+                        }
                         app.show_notification(error, true, cx);
                     }
                 }
@@ -416,6 +422,50 @@ impl Astral {
         })
         .detach();
         cx.notify();
+    }
+
+    pub(crate) fn project_review_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(review) = self
+            .project_review
+            .as_ref()
+            .filter(|review| review.is_visible())
+        else {
+            return false;
+        };
+        if event.keystroke.key == "escape" {
+            self.dismiss_project_review(window, cx);
+            return true;
+        }
+        if event.keystroke.key != "tab" {
+            return false;
+        }
+        // useDialog captures Tab even after a pointer click focused the header.
+        // Track visited stops: when every modal control is disabled, the old
+        // focused handle may no longer be in the traversal and cannot bound it.
+        let mut visited = vec![window.focused(cx)];
+        loop {
+            if event.keystroke.modifiers.shift {
+                window.focus_prev();
+            } else {
+                window.focus_next();
+            }
+            if review.dialog_focus.contains_focused(window, cx) {
+                break;
+            }
+            let current = window.focused(cx);
+            if visited.contains(&current) {
+                review.dialog_focus.focus(window);
+                break;
+            }
+            visited.push(current);
+        }
+        cx.notify();
+        true
     }
 
     pub fn dismiss_project_review(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -727,7 +777,6 @@ impl Astral {
                 }),
             )
         };
-        let modal_focus = review.dialog_focus.clone();
         div()
             .absolute()
             .top_0()
@@ -773,31 +822,6 @@ impl Astral {
                     .border_1()
                     .border_color(palette.line)
                     .track_focus(&review.dialog_focus)
-                    .on_key_down(move |event, window, cx| {
-                        if event.keystroke.key != "tab" {
-                            return;
-                        }
-                        cx.stop_propagation();
-                        // GPUI's tab order includes the underlying page. Skip those
-                        // stops while the modal is open, in either direction.
-                        let initial = window.focused(cx);
-                        loop {
-                            let prior = window.focused(cx);
-                            if event.keystroke.modifiers.shift {
-                                window.focus_prev();
-                            } else {
-                                window.focus_next();
-                            }
-                            let current = window.focused(cx);
-                            if modal_focus.contains_focused(window, cx) {
-                                break;
-                            }
-                            if current == prior || current == initial {
-                                modal_focus.focus(window);
-                                break;
-                            }
-                        }
-                    })
                     .child(close)
                     .child(
                         div()
@@ -818,6 +842,155 @@ impl Astral {
                     )
                     .child(body),
             )
+    }
+}
+
+#[cfg(all(test, feature = "headless-ui-tests"))]
+mod ui_tests {
+    use super::*;
+    use crate::{Page, ToolbarMenu, ui_tests::press};
+    use gpui::{KeyBinding, Modifiers, TestAppContext, size};
+
+    fn fixture(directory: &Path, cx: &mut Context<Astral>) -> Astral {
+        cx.bind_keys([KeyBinding::new("escape", crate::DismissOverlay, None)]);
+        let mut app = Astral::new(
+            [None, None],
+            Some(directory),
+            Some(Client::Retail),
+            false,
+            cx,
+        );
+        app.page = Page::Discover;
+        app.project_review = Some(ProjectReview {
+            request: 1,
+            repo: "fixture/addon".into(),
+            root: None,
+            client: Client::Retail,
+            release: Some(Ok(releases::ProjectRelease {
+                tag: "v1".into(),
+                notes: String::new(),
+                packages: vec![],
+            })),
+            abandoned: false,
+            inspected: None,
+            inspected_at: None,
+            busy: false,
+            selected: None,
+            choosing_package: false,
+            show_notes: false,
+            previous_focus: Some(app.brand_focus.clone()),
+            close_focus: cx.focus_handle().tab_stop(true),
+            dialog_focus: cx.focus_handle(),
+        });
+        app
+    }
+
+    #[gpui::test]
+    fn release_dialog_captures_tab_and_escape_after_header_clicks(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        let appearance = cx.debug_bounds("appearance-trigger").unwrap().center();
+        cx.simulate_click(appearance, Modifiers::default());
+        assert!(view.read_with(cx, |app, _| app.preferences.light_theme));
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(
+                app.project_review
+                    .as_ref()
+                    .unwrap()
+                    .close_focus
+                    .is_focused(window)
+            );
+        });
+        press(cx, "shift-tab");
+        view.update_in(cx, |app, window, cx| {
+            let review = app.project_review.as_ref().unwrap();
+            assert!(!review.close_focus.is_focused(window));
+            assert!(review.dialog_focus.contains_focused(window, cx));
+        });
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(
+                app.project_review
+                    .as_ref()
+                    .unwrap()
+                    .close_focus
+                    .is_focused(window)
+            );
+        });
+        let tools = cx.debug_bounds("tools-trigger").unwrap().center();
+        cx.simulate_click(tools, Modifiers::default());
+        assert!(view.read_with(cx, |app, _| app.menu == Some(ToolbarMenu::Tools)));
+        press(cx, "escape");
+        assert!(view.read_with(cx, |app, _| app.project_review.is_none()));
+        // useDialog stops Main's Escape listener, so the toolbar is preserved.
+        assert!(view.read_with(cx, |app, _| app.menu == Some(ToolbarMenu::Tools)));
+        view.update_in(cx, |app, window, _| {
+            assert!(app.brand_focus.is_focused(window))
+        });
+    }
+
+    #[gpui::test]
+    fn leaving_discovery_unmounts_the_review_without_canceling_pending_work(
+        cx: &mut TestAppContext,
+    ) {
+        for busy in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                let mut app = fixture(directory.path(), cx);
+                app.project_review.as_mut().unwrap().busy = busy;
+                app
+            });
+            cx.simulate_resize(size(px(1250.), px(700.)));
+            cx.run_until_parked();
+            let brand = cx.debug_bounds("astral-brand").unwrap().center();
+            cx.simulate_click(brand, Modifiers::default());
+            assert!(view.read_with(cx, |app, _| app.page == Page::Library));
+            view.read_with(cx, |app, _| {
+                assert_eq!(app.project_review.is_some(), busy);
+                assert!(
+                    !app.project_review
+                        .as_ref()
+                        .is_some_and(ProjectReview::is_visible)
+                );
+            });
+            press(cx, "tab");
+            view.update_in(cx, |app, window, cx| {
+                assert!(app.header_focus.contains_focused(window, cx));
+                app.navigate(Page::Discover, window, cx);
+            });
+            assert!(!view.read_with(cx, |app, _| {
+                app.project_review
+                    .as_ref()
+                    .is_some_and(ProjectReview::is_visible)
+            }));
+        }
+    }
+
+    #[gpui::test]
+    fn busy_release_dialog_does_not_let_tab_or_escape_operate_the_page(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        view.update_in(cx, |app, window, _| {
+            let review = app.project_review.as_mut().unwrap();
+            review.close_focus.focus(window);
+            review.busy = true;
+        });
+        press(cx, "tab");
+        view.update_in(cx, |app, window, cx| {
+            assert!(
+                app.project_review
+                    .as_ref()
+                    .unwrap()
+                    .dialog_focus
+                    .contains_focused(window, cx)
+            );
+        });
+        press(cx, "shift-tab");
+        press(cx, "escape");
+        assert!(view.read_with(cx, |app, _| app.project_review.is_some()));
     }
 }
 
