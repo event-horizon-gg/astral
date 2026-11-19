@@ -3498,6 +3498,7 @@ impl Render for Astral {
                 if app.profile_review_key(event, window)
                     || app.project_review_key(event, window, cx)
                     || app.cloud_confirmation_key(event, window, cx)
+                    || app.cloud_manager_key(event, window, cx)
                 {
                     cx.stop_propagation();
                 }
@@ -3506,16 +3507,12 @@ impl Render for Astral {
                 if app.dismiss_active_profile_review(cx)
                     || app.dismiss_project_review(window, cx)
                     || app.dismiss_cloud_confirmation(cx)
+                    || app.dismiss_cloud_manager(cx)
                 {
                     cx.stop_propagation();
                 }
             }))
             .on_key_down(cx.listener(|app, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "tab" && app.cloud_profile_manager_open() {
-                    app.cycle_cloud_manager_focus(event.keystroke.modifiers.shift, window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
                 if event.keystroke.key == "tab" {
                     if app.dismiss_account_profile_picker(cx) {
                         app.profile_review_focus.picker.focus(window);

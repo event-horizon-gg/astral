@@ -265,6 +265,22 @@ mod ui_tests {
         assert!(view.read_with(cx, |app, _| app.account.delete_confirmation.is_some()));
         // Never activate a destructive button, load credentials or call a service.
     }
+
+    #[gpui::test]
+    fn leaving_account_confirmation_keeps_navigation_focus(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        let brand = cx.debug_bounds("astral-brand").unwrap().center();
+        cx.simulate_click(brand, Modifiers::default());
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |app, _| app.page == Page::Library
+            && app.account.delete_confirmation.is_none()));
+        view.update_in(cx, |app, window, _| {
+            assert!(app.brand_focus.is_focused(window))
+        });
+    }
 }
 
 struct SyncDialogFocus {
@@ -934,6 +950,9 @@ impl Astral {
     }
 
     pub(crate) fn close_account_overlays(&mut self) {
+        if self.cloud_confirmation_open() {
+            self.account.sync_dialog_focus = None;
+        }
         self.account.history_restore = None;
         self.account.revoke = None;
         self.account.delete_confirmation = None;

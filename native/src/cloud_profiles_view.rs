@@ -11,6 +11,167 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(all(test, feature = "headless-ui-tests"))]
+mod ui_tests {
+    use super::*;
+    use crate::{Client, Page, ToolbarMenu, ui_tests::press};
+    use gpui::{KeyBinding, Modifiers, TestAppContext, size};
+
+    fn fixture(directory: &Path, cx: &mut Context<Astral>) -> Astral {
+        cx.bind_keys([KeyBinding::new("escape", crate::DismissOverlay, None)]);
+        let mut app = Astral::new(
+            [None, None],
+            Some(directory),
+            Some(Client::Retail),
+            false,
+            cx,
+        );
+        app.page = Page::Account;
+        app.seed_cloud_profile_fixture();
+        app.account.profiles.manage = true;
+        app
+    }
+
+    #[gpui::test]
+    fn manager_keeps_header_focus_and_captures_tab_and_escape(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        let appearance = cx.debug_bounds("appearance-trigger").unwrap().center();
+        cx.simulate_click(appearance, Modifiers::default());
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            assert!(app.header_focus.contains_focused(window, cx))
+        });
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.account.profiles.focus.as_ref().unwrap().controls[0].is_focused(window))
+        });
+        press(cx, "shift-tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.account.profiles.focus.as_ref().unwrap().controls[17].is_focused(window))
+        });
+        let tools = cx.debug_bounds("tools-trigger").unwrap().center();
+        cx.simulate_click(tools, Modifiers::default());
+        press(cx, "escape");
+        assert!(
+            view.read_with(cx, |app, _| !app.cloud_profile_manager_open()
+                && app.menu == Some(ToolbarMenu::Tools))
+        );
+    }
+
+    #[gpui::test]
+    fn busy_name_editor_keeps_only_the_input_in_its_tab_loop(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            app.start_cloud_name(None, window, cx);
+            app.account.busy = Some("Fixture operation");
+        });
+        cx.run_until_parked();
+        let appearance = cx.debug_bounds("appearance-trigger").unwrap().center();
+        cx.simulate_click(appearance, Modifiers::default());
+        press(cx, "tab");
+        view.update_in(cx, |app, window, cx| {
+            assert!(
+                app.account
+                    .profiles
+                    .name_input
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .focus
+                    .is_focused(window)
+            )
+        });
+        cx.simulate_input("Raid");
+        press(cx, "shift-tab");
+        view.update_in(cx, |app, window, cx| {
+            assert!(
+                app.account
+                    .profiles
+                    .name_input
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .focus
+                    .is_focused(window)
+            )
+        });
+        press(cx, "escape");
+        assert!(view.read_with(cx, |app, _| app.cloud_profile_manager_open()));
+        // No profile is saved or deleted; all edits remain in the fixture model.
+    }
+
+    #[gpui::test]
+    fn leaving_manager_keeps_the_clicked_navigation_focused(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        let brand = cx.debug_bounds("astral-brand").unwrap().center();
+        cx.simulate_click(brand, Modifiers::default());
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |app, _| app.page == Page::Library
+            && !app.cloud_profile_manager_open()));
+        view.update_in(cx, |app, window, _| {
+            assert!(app.brand_focus.is_focused(window))
+        });
+    }
+    #[gpui::test]
+    fn switching_manager_forms_does_not_repeat_initial_focus(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        let create = cx.debug_bounds("new-cloud-profile").unwrap().center();
+        cx.simulate_click(create, Modifiers::default());
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            assert!(app.root_focus.is_focused(window));
+            assert!(
+                !app.account
+                    .profiles
+                    .name_input
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .focus
+                    .is_focused(window)
+            );
+        });
+        press(cx, "tab");
+        view.update_in(cx, |app, window, cx| {
+            assert!(
+                app.account
+                    .profiles
+                    .name_input
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .focus
+                    .is_focused(window)
+            )
+        });
+        let cancel = cx
+            .debug_bounds("cancel-cloud-profile-edit")
+            .unwrap()
+            .center();
+        cx.simulate_click(cancel, Modifiers::default());
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, _| {
+            assert!(app.root_focus.is_focused(window))
+        });
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.account.profiles.focus.as_ref().unwrap().controls[0].is_focused(window))
+        });
+    }
+}
+
 #[derive(Default)]
 pub(super) struct State {
     client: Option<crate::Client>,
@@ -33,6 +194,7 @@ impl State {
 struct ManagerFocus {
     previous: Option<FocusHandle>,
     controls: Vec<FocusHandle>,
+    input: Option<FocusHandle>,
     mode: u8,
 }
 
@@ -376,7 +538,7 @@ impl Astral {
     fn start_cloud_name(
         &mut self,
         profile: Option<CloudProfile>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let value = profile
@@ -398,7 +560,6 @@ impl Astral {
             },
         )
         .detach();
-        input.read(cx).focus.focus(window);
         self.account.profiles.name_input = Some(input);
         self.account.profiles.edit = Some(Edit::Name { profile, value });
         self.account.profiles.message = None;
@@ -426,7 +587,16 @@ impl Astral {
             return vec![];
         };
         if self.account.busy.is_some() {
-            return vec![];
+            return if matches!(state.edit, Some(Edit::Name { .. })) {
+                state
+                    .name_input
+                    .as_ref()
+                    .map(|input| input.read(cx).focus.clone())
+                    .into_iter()
+                    .collect()
+            } else {
+                vec![]
+            };
         }
         let mut controls = vec![];
         match &state.edit {
@@ -489,6 +659,13 @@ impl Astral {
             Some(Edit::Name { .. }) => 1,
             Some(Edit::Delete(_)) => 2,
         };
+        let opening = self.account.profiles.focus.is_none();
+        let input = self
+            .account
+            .profiles
+            .name_input
+            .as_ref()
+            .map(|input| input.read(cx).focus.clone());
         let focus = self
             .account
             .profiles
@@ -496,15 +673,24 @@ impl Astral {
             .get_or_insert_with(|| ManagerFocus {
                 previous: window.focused(cx),
                 controls: (0..18).map(|_| cx.focus_handle().tab_stop(true)).collect(),
+                input: None,
                 mode,
             });
         let changed = focus.mode != mode;
+        let old_control_focused = focus.controls.iter().any(|item| item.is_focused(window))
+            || focus
+                .input
+                .as_ref()
+                .is_some_and(|input| input.is_focused(window));
         focus.mode = mode;
+        focus.input = input;
         let controls = self.manager_controls(cx);
-        if (changed || !controls.iter().any(|focus| focus.is_focused(window)))
-            && let Some(first) = controls.first()
-        {
+        if opening && let Some(first) = controls.first() {
             first.focus(window);
+        } else if changed && old_control_focused {
+            // SyncProfiles replaces its form/list without rerunning useDialog's
+            // initial-focus effect. The removed DOM control leaves body focused.
+            self.root_focus.focus(window);
         }
     }
 
@@ -532,6 +718,31 @@ impl Astral {
         self.account.profiles.manage = false;
         self.account.profiles.edit = None;
         self.account.profiles.name_input = None;
+        self.account.profiles.focus = None;
+    }
+
+    pub(crate) fn cloud_manager_key(
+        &self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &Context<Self>,
+    ) -> bool {
+        if !self.cloud_profile_manager_open() || event.keystroke.key != "tab" {
+            return false;
+        }
+        self.cycle_cloud_manager_focus(event.keystroke.modifiers.shift, window, cx);
+        true
+    }
+
+    pub(crate) fn dismiss_cloud_manager(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.cloud_profile_manager_open() {
+            return false;
+        }
+        if self.account.busy.is_none() {
+            self.dismiss_cloud_profiles();
+            cx.notify();
+        }
+        true
     }
 
     pub(super) fn cloud_profiles_panel(&self, palette: Palette, cx: &Context<Self>) -> gpui::Div {
@@ -582,7 +793,9 @@ impl Astral {
         };
         let cancel = {
             button(
-                palette.button("cancel-cloud-profile-edit", "Cancel"),
+                palette
+                    .button("cancel-cloud-profile-edit", "Cancel")
+                    .debug_selector(|| "cancel-cloud-profile-edit".into()),
                 16,
                 true,
             )
@@ -829,10 +1042,12 @@ impl Astral {
                         )
                         .child(
                             button(
-                                palette.primary_button(
-                                    "new-cloud-profile",
-                                    if retry { "Retry" } else { "New profile" },
-                                ),
+                                palette
+                                    .primary_button(
+                                        "new-cloud-profile",
+                                        if retry { "Retry" } else { "New profile" },
+                                    )
+                                    .debug_selector(|| "new-cloud-profile".into()),
                                 17,
                                 retry || state.client == Some(self.preferences.client),
                             )
