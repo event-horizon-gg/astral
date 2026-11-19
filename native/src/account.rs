@@ -686,7 +686,7 @@ impl Astral {
         let focus = self.account.sync_dialog_focus.as_ref()?;
         Some(
             div().absolute().size_full().top_0().left_0().flex().items_center().justify_center()
-                .child(div().id("sync-missing-backdrop").absolute().top(px(78.)).left_0().right_0().bottom_0()
+                .child(div().id("sync-missing-backdrop").absolute().top_0().left_0().right_0().bottom_0()
                     .bg(gpui::rgba(0x050b08b3)).occlude()
                     .on_click(cx.listener(|app, _, _, cx| { app.dismiss_sync_dialog(cx); })))
                 .child(dialog_panel("sync-missing-dialog", palette)
@@ -754,7 +754,7 @@ impl Astral {
             }
         };
         Some(div().absolute().size_full().top_0().left_0().flex().items_center().justify_center()
-            .child(div().id("sync-conflict-backdrop").absolute().top(px(78.)).left_0().right_0().bottom_0()
+            .child(div().id("sync-conflict-backdrop").absolute().top_0().left_0().right_0().bottom_0()
                 .bg(gpui::rgba(0x050b08b3)).occlude()
                 .on_click(cx.listener(|app, _, _, cx| { app.dismiss_sync_dialog(cx); })))
             .child(dialog_panel("sync-conflict-dialog", palette)
@@ -1744,7 +1744,7 @@ impl Astral {
                 )
             });
         Some(div().absolute().size_full().top_0().left_0().flex().items_center().justify_center()
-            .child(div().id("cloud-restore-backdrop").absolute().top(px(78.)).left_0().right_0().bottom_0()
+            .child(div().id("cloud-restore-backdrop").absolute().top_0().left_0().right_0().bottom_0()
                 .bg(gpui::rgba(0x050b08b3)).occlude()
                 .on_click(cx.listener(|app, _, _, cx| { app.dismiss_sync_dialog(cx); })))
             .child(dialog_panel("cloud-restore-dialog", palette).relative()
@@ -2054,7 +2054,7 @@ impl Astral {
                     div()
                         .id("device-confirmation-backdrop")
                         .absolute()
-                        .top(px(78.))
+                        .top_0()
                         .left_0()
                         .right_0()
                         .bottom_0()
@@ -2233,7 +2233,7 @@ impl Astral {
         let busy = self.account.busy.is_some();
         let enabled = !busy && value == "DELETE";
         Some(div().absolute().size_full().top_0().left_0().flex().items_center().justify_center()
-            .child(div().id("cloud-delete-backdrop").absolute().top(px(78.)).left_0().right_0().bottom_0()
+            .child(div().id("cloud-delete-backdrop").absolute().top_0().left_0().right_0().bottom_0()
                 .bg(gpui::rgba(0x050b08b3)).occlude().on_click(cx.listener(|app, _, _, cx| { app.dismiss_sync_dialog(cx); })))
             .child(dialog_panel("cloud-delete-dialog", palette).relative()
                 .on_key_down(cx.listener(|app, event: &gpui::KeyDownEvent, window, cx| {

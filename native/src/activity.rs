@@ -1172,7 +1172,7 @@ impl Astral {
             div()
                 .id("addon-restore-backdrop")
                 .absolute()
-                .top(px(78.))
+                .top_0()
                 .left_0()
                 .right_0()
                 .bottom_0()

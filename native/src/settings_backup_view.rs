@@ -709,7 +709,7 @@ impl Astral {
                 .mb(px(25.))
         };
         div().absolute().size_full().top_0().left_0().flex().items_center().justify_center()
-            .child(div().id("profile-review-backdrop").absolute().top(px(78.)).left_0().right_0().bottom_0()
+            .child(div().id("profile-review-backdrop").absolute().top_0().left_0().right_0().bottom_0()
                 .bg(gpui::rgba(0x050b08b3)).occlude()
                 .on_click(cx.listener(move |app, _, _, cx| { app.cancel_profile_review(cloud, cx); })))
             .child(crate::account::dialog_panel("profile-review-dialog", palette)
@@ -1348,7 +1348,7 @@ impl Astral {
                                 app.settings_backups.profile_type_ahead.reset();
                                 cx.stop_propagation();
                             }))
-                    }))).with_priority(1),
+                    }))).with_priority(crate::NATIVE_PICKER_LAYER),
             ))
             .when(active == Profile::Handheld && available, |picker| {
                 picker.child(div().child(palette.text_button("review-handheld-setup", "Review Handheld setup")

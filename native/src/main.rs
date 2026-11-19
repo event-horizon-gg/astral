@@ -107,6 +107,13 @@ enum ToolbarMenu {
     Account,
 }
 
+// Current editorial.css stacking; OS-style picker surfaces are above DOM toasts.
+const HEADER_LAYER: usize = 50;
+const TOOLBAR_LAYER: usize = 80;
+const TOAST_LAYER: usize = 1000;
+const NATIVE_PICKER_BACKDROP_LAYER: usize = 1001;
+const NATIVE_PICKER_LAYER: usize = 1002;
+
 struct Astral {
     fixture: bool,
     preferences: Preferences,
@@ -259,7 +266,7 @@ impl Astral {
             client_menu_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             tools_first_focus: cx.focus_handle().tab_stop(true),
             account_first_focus: cx.focus_handle().tab_stop(true),
-            root_focus: cx.focus_handle(),
+            root_focus: cx.focus_handle().tab_index(-2),
             main_scroll: gpui::ScrollHandle::new(),
             main_overflows: false,
             scrollbar_drag: None,
@@ -1335,7 +1342,7 @@ impl Astral {
                 div()
                     .id("quick-find-backdrop")
                     .absolute()
-                    .top(px(78.))
+                    .top_0()
                     .left_0()
                     .right_0()
                     .bottom_0()
@@ -2315,6 +2322,12 @@ impl Render for Astral {
             .filter(|addon| self.update_status(addon) == "Update available")
             .count();
         let top = div()
+            .id("app-header")
+            .tab_group()
+            .tab_index(-1)
+            .tab_stop(false)
+            .bg(rgb(palette.background))
+            .occlude()
             .h(px(78.))
             .flex_shrink_0()
             .flex()
@@ -3297,7 +3310,7 @@ impl Render for Astral {
             .bg(rgb(palette.background))
             .text_color(rgb(palette.text))
             .text_size(px(14.))
-            .child(top)
+            .child(gpui::deferred(top).with_priority(HEADER_LAYER))
             .child(
                 content
                     .when_some(
@@ -3430,18 +3443,26 @@ impl Render for Astral {
             })
             .when_some(menu, |app, menu| {
                 app.child(
-                    div()
-                        .id("menu-dismiss")
-                        .absolute()
-                        .top(px(78.))
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .on_click(cx.listener(|app, _, window, cx| {
-                            app.close_toolbar_menu(window, cx);
-                        })),
+                    gpui::deferred(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .child(
+                                div()
+                                    .id("menu-dismiss")
+                                    .absolute()
+                                    .top(px(78.))
+                                    .left_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .on_click(cx.listener(|app, _, window, cx| {
+                                        app.close_toolbar_menu(window, cx);
+                                    })),
+                            )
+                            .child(menu),
+                    )
+                    .with_priority(TOOLBAR_LAYER),
                 )
-                .child(menu)
             })
             .when_some(
                 self.selected
@@ -3452,7 +3473,7 @@ impl Render for Astral {
                         div()
                             .id("drawer-backdrop")
                             .absolute()
-                            .top(px(78.))
+                            .top_0()
                             .left_0()
                             .right_0()
                             .bottom_0()
@@ -3511,17 +3532,20 @@ impl Render for Astral {
                 app.child(dialog)
             })
             .when_some(self.notification_view(palette, window, cx), |app, toast| {
-                app.child(toast)
+                app.child(gpui::deferred(toast).with_priority(TOAST_LAYER))
             })
             .when(self.account_profile_picker_open(), |app| {
-                app.child(div().absolute().inset_0().occlude().on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|app, _, window, cx| {
-                        app.dismiss_account_profile_picker(cx);
-                        app.profile_review_focus.picker.focus(window);
-                        cx.stop_propagation();
-                    }),
-                ))
+                app.child(
+                    gpui::deferred(div().absolute().inset_0().occlude().on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|app, _, window, cx| {
+                            app.dismiss_account_profile_picker(cx);
+                            app.profile_review_focus.picker.focus(window);
+                            cx.stop_propagation();
+                        }),
+                    ))
+                    .with_priority(NATIVE_PICKER_BACKDROP_LAYER),
+                )
             })
     }
 }
