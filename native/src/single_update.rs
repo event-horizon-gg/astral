@@ -2,7 +2,26 @@
 //! to community source discovery and manual ZIP imports.
 use crate::{Astral, Client, Definition, bundled, installer, library, packages, releases};
 use gpui::Context;
-use std::{cmp::Ordering, path::Path};
+use std::{
+    cmp::Ordering,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering as AtomicOrdering},
+    },
+    time::Duration,
+};
+
+pub(crate) struct State {
+    pub folder: String,
+    progress: Arc<AtomicU8>,
+}
+
+impl State {
+    pub fn percentage(&self) -> u8 {
+        self.progress.load(AtomicOrdering::Relaxed)
+    }
+}
 
 struct Outcome {
     version: String,
@@ -18,7 +37,8 @@ fn install_if_newer(
     catalog: &[Definition],
     tag: String,
     notes: String,
-    download: impl FnOnce() -> Result<Vec<u8>, String>,
+    download: impl FnOnce(&mut dyn FnMut(u8)) -> Result<Vec<u8>, String>,
+    mut progress: impl FnMut(u8),
 ) -> Result<Outcome, String> {
     let installed = library::scan(root, client, catalog)
         .map_err(|error| error.to_string())?
@@ -35,11 +55,13 @@ fn install_if_newer(
             changed: false,
         });
     }
-    let package = packages::inspect(download()?, root, client, source, catalog)?;
+    let package = packages::inspect(download(&mut progress)?, root, client, source, catalog)?;
     if package.installed_version.as_deref() != Some(installed.version.as_str()) {
         return Err("The installed version changed. Check for updates again.".into());
     }
+    progress(90);
     installer::install(&package, &source.name, &tag, &notes)?;
+    progress(100);
     let version = library::scan(root, client, catalog)
         .map_err(|error| error.to_string())?
         .into_iter()
@@ -59,13 +81,21 @@ fn update(
     client: Client,
     source: &Definition,
     catalog: &[Definition],
+    progress: impl FnMut(u8),
 ) -> Result<Outcome, String> {
     installer::game_closed()?;
     if source.bundled == Some(true) {
         let tag = bundled::version(&source.folder).ok_or("Bundled addon unavailable.")?;
-        install_if_newer(root, client, source, catalog, tag, String::new(), || {
-            bundled::package(&source.folder)
-        })
+        install_if_newer(
+            root,
+            client,
+            source,
+            catalog,
+            tag,
+            String::new(),
+            |_| bundled::package(&source.folder),
+            progress,
+        )
     } else {
         let release = releases::latest(&releases::client(), source)?;
         install_if_newer(
@@ -75,7 +105,8 @@ fn update(
             catalog,
             release.tag,
             release.notes,
-            || releases::download(&release.package),
+            |progress| releases::download_with_progress(&release.package, progress),
+            progress,
         )
     }
 }
@@ -113,9 +144,41 @@ impl Astral {
         let preferences = self.preferences_path.clone();
         let folder = source.folder.clone();
         let name = source.name.clone();
-        self.single_update = Some(folder.clone());
+        let progress = Arc::new(AtomicU8::new(0));
+        self.single_update = Some(State {
+            folder: folder.clone(),
+            progress: progress.clone(),
+        });
+        let observed = progress.clone();
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            let mut last = 0;
+            loop {
+                executor.timer(Duration::from_millis(50)).await;
+                let active = this.update(cx, |app, cx| {
+                    let Some(state) = &app.single_update else {
+                        return false;
+                    };
+                    if !Arc::ptr_eq(&state.progress, &observed) {
+                        return false;
+                    }
+                    let percent = state.percentage();
+                    if percent != last {
+                        last = percent;
+                        cx.notify();
+                    }
+                    true
+                });
+                if !matches!(active, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
         let task = cx.background_executor().spawn(async move {
-            let result = update(&root, client, &source, &catalog);
+            let result = update(&root, client, &source, &catalog, |percent| {
+                progress.store(percent, AtomicOrdering::Relaxed);
+            });
             crate::activity::record(
                 preferences.as_deref(),
                 crate::activity::Action {
@@ -238,7 +301,8 @@ mod tests {
                 &catalog,
                 tag.clone(),
                 String::new(),
-                || panic!("An already-current addon must not download a ZIP"),
+                |_| panic!("An already-current addon must not download a ZIP"),
+                |_| {},
             )
             .unwrap();
             assert!(!result.changed);
@@ -262,10 +326,11 @@ mod tests {
             &catalog,
             bundled::version(&source.folder).unwrap(),
             String::new(),
-            || {
+            |_| {
                 fs::write(&toc, "## Interface: 120105\n## Version: 0.2.0\nold.lua\n").unwrap();
                 bundled::package(&source.folder)
             },
+            |_| {},
         );
         assert!(result.err().unwrap().contains("installed version changed"));
         assert!(fs::read_to_string(toc).unwrap().contains("0.2.0"));
@@ -275,7 +340,12 @@ mod tests {
     #[test]
     fn direct_update_installs_with_a_restorable_backup_and_preserves_settings() {
         let (_temp, root, catalog, source) = fixture("0.1.0");
-        let result = update(&root, Client::Retail, &source, &catalog).unwrap();
+        let mut progress = vec![];
+        let result = update(&root, Client::Retail, &source, &catalog, |percent| {
+            progress.push(percent)
+        })
+        .unwrap();
+        assert_eq!(progress, [90, 100]);
         assert!(result.changed);
         assert_eq!(result.version, bundled::version(&source.folder).unwrap());
         assert!(

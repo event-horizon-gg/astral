@@ -150,7 +150,7 @@ struct Astral {
     release_review: Option<review::Review>,
     release_request: u64,
     install_receipt: Option<review::Receipt>,
-    single_update: Option<String>,
+    single_update: Option<single_update::State>,
     removal: Option<removal::Removal>,
     batch: Option<batch::Batch>,
     batch_result: Option<batch::Batch>,
@@ -1587,9 +1587,14 @@ impl Astral {
         let folder = addon.folder.clone();
         let row_key = folder.clone();
         let definition = self.definition(addon);
-        let updating = self.single_update.as_deref() == Some(addon.folder.as_str());
+        let update_progress = self
+            .single_update
+            .as_ref()
+            .filter(|state| state.folder == addon.folder)
+            .map(single_update::State::percentage);
+        let updating = update_progress.is_some();
         let (status, status_color, status_icon) = match self.update_status(addon) {
-            _ if updating => ("Updating…", palette.muted, Some("refresh")),
+            _ if updating => ("Updating…", palette.muted, Some("loader")),
             "Update available" => ("Update ready", palette.accent, None),
             "Up to date" | "Ahead of release" => ("Up to date", 0x17ab79, Some("check")),
             "Check failed" => ("Needs attention", palette.error, Some("alert")),
@@ -1734,7 +1739,10 @@ impl Astral {
                             .when(ready && !updating, |label| {
                                 label.child(div().size(px(5.)).rounded_full().bg(rgb(0xd6b786)))
                             })
-                            .child(status),
+                            .child(update_progress.map_or_else(
+                                || status.to_owned(),
+                                |percent| format!("{percent}%"),
+                            )),
                     ),
             )
             .child(action)

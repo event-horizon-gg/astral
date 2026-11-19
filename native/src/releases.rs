@@ -174,8 +174,13 @@ fn select_release(
 }
 
 pub fn download(package: &Package) -> Result<Vec<u8>, String> {
-    use sha2::{Digest, Sha256};
+    download_with_progress(package, |_| {})
+}
 
+pub fn download_with_progress(
+    package: &Package,
+    progress: impl FnMut(u8),
+) -> Result<Vec<u8>, String> {
     if package.size > crate::packages::MAX_ZIP {
         return Err("The ZIP exceeds the 128 MB download limit.".into());
     }
@@ -184,16 +189,56 @@ pub fn download(package: &Package) -> Result<Vec<u8>, String> {
         .timeout_global(Some(Duration::from_secs(120)))
         .build()
         .into();
-    let bytes = agent
+    let mut response = agent
         .get(&package.url)
         .header("User-Agent", "Astral-Native")
         .call()
-        .map_err(|err| format!("Couldn't download the package. {err}"))?
-        .body_mut()
-        .with_config()
-        .limit(package.size + 1)
-        .read_to_vec()
-        .map_err(|err| format!("Couldn't read the downloaded package. {err}"))?;
+        .map_err(|err| format!("Couldn't download the package. {err}"))?;
+    read_download(
+        response
+            .body_mut()
+            .with_config()
+            .limit(package.size + 1)
+            .reader(),
+        package,
+        progress,
+    )
+}
+
+fn read_download(
+    mut reader: impl std::io::Read,
+    package: &Package,
+    mut progress: impl FnMut(u8),
+) -> Result<Vec<u8>, String> {
+    use sha2::{Digest, Sha256};
+    if package.size > crate::packages::MAX_ZIP {
+        return Err("The ZIP exceeds the 128 MB download limit.".into());
+    }
+    let mut bytes = Vec::with_capacity(package.size.min(65536) as usize);
+    let mut buffer = [0u8; 32768];
+    let mut last = 0;
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("Couldn't read the downloaded package. {error}")),
+        };
+        if bytes.len() as u64 + count as u64 > package.size {
+            return Err("The download is incomplete.".into());
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+        if package.size > 0 {
+            // Electron reserves 0–85 for actual downloaded bytes, then 90 for
+            // a validated package and 100 only after the install commits.
+            let percent =
+                ((bytes.len() as u64 * 85 + package.size / 2) / package.size).min(85) as u8;
+            if percent != last {
+                progress(percent);
+                last = percent;
+            }
+        }
+    }
     if bytes.len() as u64 != package.size {
         return Err("The download is incomplete.".into());
     }
@@ -293,6 +338,76 @@ pub fn compare(source: &Definition, installed: &str, tag: &str) -> Option<Orderi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn download_fixture(size: u64) -> Package {
+        Package {
+            id: 42,
+            name: "Addon.zip".into(),
+            size,
+            digest: None,
+            url: String::new(),
+        }
+    }
+
+    struct Chunks(std::io::Cursor<Vec<u8>>);
+    impl std::io::Read for Chunks {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let length = output.len().min(25);
+            std::io::Read::read(&mut self.0, &mut output[..length])
+        }
+    }
+
+    #[test]
+    fn download_progress_tracks_bytes_and_reserves_install_completion() {
+        let mut progress = vec![];
+        let data = vec![7u8; 100];
+        assert_eq!(
+            read_download(
+                Chunks(std::io::Cursor::new(data.clone())),
+                &download_fixture(100),
+                |percent| progress.push(percent)
+            )
+            .unwrap(),
+            data
+        );
+        assert_eq!(progress, [21, 43, 64, 85]);
+    }
+
+    #[test]
+    fn streamed_download_rejects_short_and_excess_data_and_bad_checksums() {
+        for length in [99, 101] {
+            assert!(
+                read_download(
+                    std::io::Cursor::new(vec![7u8; length]),
+                    &download_fixture(100),
+                    |_| {}
+                )
+                .is_err()
+            );
+        }
+        let mut package = download_fixture(5);
+        package.digest = Some("sha256:wrong".into());
+        assert!(
+            read_download(std::io::Cursor::new(b"hello"), &package, |_| {})
+                .unwrap_err()
+                .contains("checksum")
+        );
+        package.digest =
+            Some("sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into());
+        assert_eq!(
+            read_download(std::io::Cursor::new(b"hello"), &package, |_| {}).unwrap(),
+            b"hello"
+        );
+        assert!(
+            read_download(
+                std::io::empty(),
+                &download_fixture(crate::packages::MAX_ZIP + 1),
+                |_| {}
+            )
+            .unwrap_err()
+            .contains("limit")
+        );
+    }
 
     #[test]
     fn project_release_keeps_github_asset_identity_after_package_filtering() {

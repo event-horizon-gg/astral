@@ -7,7 +7,7 @@ const { renderToStaticMarkup } = require('react-dom/server');
 const lucide = require('lucide-react');
 const root = path.resolve(__dirname, '..');
 const icons = {
-  search: 'Search', user: 'User', chevron: 'ChevronDown', command: 'Command',
+  search: 'Search', loader: 'LoaderCircle', user: 'User', chevron: 'ChevronDown', command: 'Command',
   layers: 'Layers', 'chevron-right': 'ChevronRight', cloud: 'Cloud', monitor: 'Monitor',
   logout: 'LogOut', more: 'MoreHorizontal', history: 'History', refresh: 'RefreshCw',
   folder: 'FolderOpen', globe: 'Globe', drive: 'HardDrive', external: 'ExternalLink',
