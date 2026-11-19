@@ -481,6 +481,7 @@ mod tests {
 impl Astral {
     pub(crate) fn addon_batch_running(&self) -> bool {
         self.batch.as_ref().is_some_and(Batch::running)
+            || self.single_update.is_some()
             || self
                 .project_review
                 .as_ref()
@@ -511,6 +512,7 @@ impl Astral {
 
     pub(crate) fn can_start_update_batch(&self) -> bool {
         !self.checking
+            && self.single_update.is_none()
             && !self.scanning
             && self.batch.is_none()
             && !self.daily_running

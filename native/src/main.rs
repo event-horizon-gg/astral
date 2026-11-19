@@ -34,6 +34,7 @@ mod search_input;
 mod settings_backup;
 mod settings_backup_view;
 mod shared_library;
+mod single_update;
 mod startup;
 mod sync_addons;
 mod sync_engine;
@@ -149,6 +150,7 @@ struct Astral {
     release_review: Option<review::Review>,
     release_request: u64,
     install_receipt: Option<review::Receipt>,
+    single_update: Option<String>,
     removal: Option<removal::Removal>,
     batch: Option<batch::Batch>,
     batch_result: Option<batch::Batch>,
@@ -285,6 +287,7 @@ impl Astral {
             release_review: None,
             release_request: 0,
             install_receipt: None,
+            single_update: None,
             removal: None,
             batch: None,
             batch_result: None,
@@ -1584,7 +1587,9 @@ impl Astral {
         let folder = addon.folder.clone();
         let row_key = folder.clone();
         let definition = self.definition(addon);
+        let updating = self.single_update.as_deref() == Some(addon.folder.as_str());
         let (status, status_color, status_icon) = match self.update_status(addon) {
+            _ if updating => ("Updating…", palette.muted, Some("refresh")),
             "Update available" => ("Update ready", palette.accent, None),
             "Up to date" | "Ahead of release" => ("Up to date", 0x17ab79, Some("check")),
             "Check failed" => ("Needs attention", palette.error, Some("alert")),
@@ -1594,7 +1599,7 @@ impl Astral {
             status => (status, palette.muted, None),
         };
         let release = definition
-            .filter(|_| status == "Update ready")
+            .filter(|_| self.update_status(addon) == "Update available")
             .map(|source| source.id.clone());
         let ready = release.is_some();
         let artwork = self.addon_icon(addon, if compact { 62. } else { 84. });
@@ -1628,9 +1633,9 @@ impl Astral {
             keyboard_button(
                 action,
                 palette,
-                cx.listener(move |app, _: &(), window, cx| {
+                cx.listener(move |app, _: &(), _, cx| {
                     if let Some(source) = &release {
-                        app.open_release(source, window, cx);
+                        app.update_one_addon(source, cx);
                     } else {
                         app.open_addon_details(row_key.clone(), cx);
                     }
@@ -1726,7 +1731,7 @@ impl Astral {
                             .when_some(status_icon, |label, glyph| {
                                 label.child(icon(glyph, 12., status_color))
                             })
-                            .when(ready, |label| {
+                            .when(ready && !updating, |label| {
                                 label.child(div().size(px(5.)).rounded_full().bg(rgb(0xd6b786)))
                             })
                             .child(status),
@@ -1935,6 +1940,7 @@ impl Astral {
         let running = self.profile_game_running();
         let busy = self.checking
             || self.scanning
+            || self.addon_batch_running()
             || self.account_work_in_progress()
             || self.settings_write_in_progress()
             || self.daily_running;
@@ -2101,9 +2107,9 @@ impl Astral {
                     keyboard_button(
                         action,
                         palette,
-                        cx.listener(move |app, _: &(), window, cx| {
+                        cx.listener(move |app, _: &(), _, cx| {
                             if update && let Some(id) = &id {
-                                app.open_release(id, window, cx);
+                                app.update_one_addon(id, cx);
                             } else {
                                 app.check_updates(None, cx);
                             }
