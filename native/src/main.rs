@@ -1057,6 +1057,13 @@ impl Astral {
     }
 
     fn navigate(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = None;
+        self.menu_return_focus = None;
+        self.selected = None;
+        self.change_page(page, window, cx);
+    }
+
+    fn change_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         let header_focus = self
             .header_focus
             .contains_focused(window, cx)
@@ -1089,9 +1096,6 @@ impl Astral {
             self.profile_review_focus.return_to = None;
         }
         self.page = page;
-        self.menu = None;
-        self.menu_return_focus = None;
-        self.selected = None;
         header_focus
             .as_ref()
             .unwrap_or(&self.root_focus)
@@ -1214,6 +1218,13 @@ impl Astral {
         if self.dismiss_quick_find(window, cx) {
             return;
         }
+        self.open_quick_find(window, cx);
+    }
+
+    fn open_quick_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quick_find.is_some() {
+            return;
+        }
         if self.profile_review_focus.open
             || self.sync_dialog_open()
             || self.release_review.is_some()
@@ -1226,10 +1237,8 @@ impl Astral {
         }
         self.menu = None;
         self.menu_return_focus = None;
-        self.selected = None;
         self.quick_find_return = window.focused(cx);
         self.quick_find = Some(0);
-        self.root_focus.focus(window);
         cx.notify();
     }
 
@@ -1336,7 +1345,7 @@ impl Astral {
 
     fn quick_find_dialog(
         &self,
-        selected: usize,
+        _selected: usize,
         palette: Palette,
         window: &Window,
         cx: &Context<Self>,
@@ -1433,8 +1442,7 @@ impl Astral {
                                         .hover(move |style| style.bg(palette.hover))
                                         .track_focus(&self.quick_find_rows[index])
                                         .when(
-                                            selected == index
-                                                && self.quick_find_rows[index].is_focused(window),
+                                            self.quick_find_rows[index].is_focused(window),
                                             |row| row.bg(palette.hover),
                                         )
                                         .child(icon(glyph, 18., palette.text))
@@ -1445,7 +1453,9 @@ impl Astral {
                                     cx.listener(move |app, _: &(), window, cx| {
                                         app.quick_find = None;
                                         app.quick_find_return = None;
-                                        app.navigate(page, window, cx)
+                                        // Electron's command result changes the page without
+                                        // dismissing the currently selected addon drawer.
+                                        app.change_page(page, window, cx)
                                     }),
                                 )
                             }),
@@ -2470,10 +2480,12 @@ impl Render for Astral {
                         )),
                     )
                     .child(keyboard_button(
-                        palette.icon_button("quick-find", "search"),
+                        palette
+                            .icon_button("quick-find", "search")
+                            .debug_selector(|| "quick-find-trigger".into()),
                         palette,
                         cx.listener(|app, _: &(), window, cx| {
-                            app.toggle_quick_find(window, cx);
+                            app.open_quick_find(window, cx);
                         }),
                     ))
                     .child(keyboard_button(
@@ -3355,7 +3367,7 @@ impl Render for Astral {
                     cx.stop_propagation();
                     return;
                 }
-                if event.keystroke.key == "tab" && app.quick_find.is_none() {
+                if event.keystroke.key == "tab" {
                     if app.dismiss_account_profile_picker(cx) {
                         app.profile_review_focus.picker.focus(window);
                     }
@@ -3368,33 +3380,6 @@ impl Render for Astral {
                     cx.notify();
                     return;
                 }
-                let Some(selected) = app.quick_find else {
-                    return;
-                };
-                let row_focused = app.quick_find_rows.iter().any(|row| row.is_focused(window));
-                let next = match event.keystroke.key.as_str() {
-                    "up" | "tab"
-                        if event.keystroke.key == "up" || event.keystroke.modifiers.shift =>
-                    {
-                        if row_focused {
-                            selected.checked_sub(1).unwrap_or(QUICK_PAGES.len() - 1)
-                        } else {
-                            QUICK_PAGES.len() - 1
-                        }
-                    }
-                    "down" | "tab" => {
-                        if row_focused {
-                            (selected + 1) % QUICK_PAGES.len()
-                        } else {
-                            0
-                        }
-                    }
-                    _ => return,
-                };
-                app.quick_find = Some(next);
-                app.quick_find_rows[next].focus(window);
-                cx.stop_propagation();
-                cx.notify();
             }))
             .on_action(cx.listener(|app, _: &DismissOverlay, window, cx| {
                 if app.dismiss_sync_dialog(cx) {

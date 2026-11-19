@@ -137,3 +137,56 @@ fn header_navigation_keeps_quick_find_until_a_result_is_chosen(cx: &mut TestAppC
     assert_eq!(view.read_with(cx, |app, _| app.quick_find), None);
     assert!(view.read_with(cx, |app, _| app.page == QUICK_PAGES[1].0));
 }
+
+#[gpui::test]
+fn quick_find_preserves_the_addon_drawer_when_opened_and_when_a_page_is_chosen(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut app = Astral::new(
+            [None, None],
+            Some(directory.path()),
+            Some(Client::Retail),
+            false,
+            cx,
+        );
+        app.addons = vec![addon()];
+        app.selected = Some("FixtureAddon".into());
+        app
+    });
+    cx.simulate_resize(size(px(1000.), px(700.)));
+    view.update_in(cx, |app, window, _| app.brand_focus.focus(window));
+    // Brand → Library → Discover → client selector → Quick find.
+    for _ in 0..4 {
+        press(cx, "tab");
+    }
+    press(cx, "enter");
+    assert!(view.read_with(cx, |app, _| app.quick_find.is_some()));
+    // The header search action opens the palette; only the shortcut toggles it.
+    let trigger = cx.debug_bounds("quick-find-trigger").unwrap();
+    cx.simulate_click(trigger.center(), Modifiers::default());
+    assert!(view.read_with(cx, |app, _| app.quick_find.is_some()));
+    // Main's command dialog uses ordinary browser Tab order, not the
+    // separate components' useDialog trap or a roving arrow-key list.
+    let opener = cx.update(|window, cx| window.focused(cx).unwrap());
+    press(cx, "down");
+    cx.update(|window, _| assert!(opener.is_focused(window)));
+    press(cx, "tab");
+    view.update_in(cx, |app, window, cx| {
+        assert!(!opener.is_focused(window));
+        assert!(app.header_focus.contains_focused(window, cx));
+    });
+    assert_eq!(
+        view.read_with(cx, |app, _| app.selected.clone()).as_deref(),
+        Some("FixtureAddon")
+    );
+    view.update_in(cx, |app, window, _| app.quick_find_rows[1].focus(window));
+    press(cx, "enter");
+    assert!(view.read_with(cx, |app, _| app.page == QUICK_PAGES[1].0));
+    assert_eq!(view.read_with(cx, |app, _| app.quick_find), None);
+    assert_eq!(
+        view.read_with(cx, |app, _| app.selected.clone()).as_deref(),
+        Some("FixtureAddon")
+    );
+}
