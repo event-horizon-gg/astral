@@ -213,7 +213,7 @@ fn remember_project(
 
 impl Astral {
     pub fn review_project(&mut self, repo: String, window: &mut Window, cx: &mut Context<Self>) {
-        if self.addon_batch_running() {
+        if self.addon_controls_busy() {
             return;
         }
         let client = self.preferences.client;

@@ -158,6 +158,7 @@ struct Astral {
     activity: activity::State,
     account: account::State,
     notifications: notifications::State,
+    motion: motion::State,
     startup: startup::State,
     app_updates: app_updates::State,
     settings_backups: settings_backup_view::State,
@@ -295,6 +296,7 @@ impl Astral {
             activity: activity::State::default(),
             account: account::State::default(),
             notifications: notifications::State::default(),
+            motion: motion::State::default(),
             startup: startup::State::default(),
             app_updates: app_updates::State::default(),
             settings_backups: settings_backup_view::State::default(),
@@ -402,8 +404,18 @@ impl Astral {
         cx.notify();
     }
 
+    pub(crate) fn addon_controls_busy(&self) -> bool {
+        self.scanning
+            || self.checking
+            || self.discovery_search_busy()
+            || self.addon_batch_running()
+            || self.account_work_in_progress()
+            || self.settings_write_in_progress()
+            || self.daily_running
+    }
+
     fn check_updates(&mut self, only: Option<&str>, cx: &mut Context<Self>) {
-        if self.scanning || self.checking || self.addon_batch_running() {
+        if self.addon_controls_busy() {
             return;
         }
         let work: Vec<_> = self
@@ -1653,10 +1665,7 @@ impl Astral {
             .icon_button("addon-row-action", if ready { "download" } else { "more" })
             .w(px(if compact { 18. } else { 22. }))
             .flex_shrink_0();
-        let action = if self.scanning
-            || self.addon_batch_running()
-            || (ready && self.profile_game_running())
-        {
+        let action = if self.addon_controls_busy() || (ready && self.profile_game_running()) {
             action.opacity(0.45).cursor_default()
         } else {
             keyboard_button(
@@ -1763,9 +1772,7 @@ impl Astral {
                                         "addon-update-spinner",
                                         12.,
                                         status_color,
-                                        self.single_update
-                                            .as_ref()
-                                            .is_some_and(|state| state.reduce_motion),
+                                        self.motion.reduced,
                                     ))
                                 } else {
                                     label.child(icon(glyph, 12., status_color))
@@ -1813,12 +1820,7 @@ impl Astral {
         let artwork = installed
             .and_then(|addon| addon.artwork.clone())
             .or_else(|| bundled.then(|| self.brand_icon.clone()));
-        let busy = self.discovery_search_busy()
-            || self.addon_batch_running()
-            || self.scanning
-            || self.daily_running
-            || self.account_work_in_progress()
-            || self.settings_write_in_progress();
+        let busy = self.addon_controls_busy();
         let mut actions = div()
             .w_full()
             .mt_auto()
@@ -1981,12 +1983,7 @@ impl Astral {
             definition.is_some_and(|source| source.repo.is_some() || source.bundled == Some(true));
         let update = managed && self.update_status(addon) == "Update available";
         let running = self.profile_game_running();
-        let busy = self.checking
-            || self.scanning
-            || self.addon_batch_running()
-            || self.account_work_in_progress()
-            || self.settings_write_in_progress()
-            || self.daily_running;
+        let busy = self.addon_controls_busy();
         let can_import = definition.is_some_and(|source| source.source() != "Astral");
         let check = self.checks.get(&addon.folder);
         let item = |name: &'static str, value: String| {
@@ -2276,6 +2273,7 @@ impl Astral {
 
 impl Render for Astral {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.observe_busy_motion(cx);
         application_menu::refresh_window_menu(window);
         self.validate_account_profile_picker(window);
         if self.local_profile_review_open() || self.cloud_profile_review_open() {
@@ -2825,12 +2823,8 @@ impl Render for Astral {
             panel
         });
 
-        let can_check = !self.checking
-            && !self.scanning
-            && !self.addon_batch_running()
-            && !self.account_work_in_progress()
-            && !self.settings_write_in_progress()
-            && !self.daily_running;
+        let controls_busy = self.addon_controls_busy();
+        let can_check = !controls_busy;
         let header = div()
             .flex_shrink_0()
             .flex()
@@ -2882,7 +2876,17 @@ impl Render for Astral {
                                         },
                                     )
                                     .flex_row_reverse()
-                                    .child(icon("refresh", 15., palette.muted))
+                                    .child(if controls_busy {
+                                        motion::rotating_icon(
+                                            "release-check-spinner",
+                                            "refresh",
+                                            15.,
+                                            palette.muted,
+                                            self.motion.reduced,
+                                        )
+                                    } else {
+                                        icon("refresh", 15., palette.muted).into_any_element()
+                                    })
                                     .when(!can_check, |button| {
                                         button.opacity(0.45).cursor_default()
                                     })
@@ -3175,10 +3179,17 @@ impl Render for Astral {
                             .border_b_1()
                             .border_color(palette.line)
                             .child(self.search_box(window, cx))
-                            .child(if searching || self.addon_batch_running() {
+                            .child(if controls_busy {
                                 palette
                                     .primary_button("search-catalog", "Search")
                                     .h(px(41.))
+                                    .flex_row_reverse()
+                                    .child(motion::spinner(
+                                        "discovery-search-spinner",
+                                        15.,
+                                        0xffffff,
+                                        self.motion.reduced,
+                                    ))
                                     .opacity(0.45)
                                     .cursor_default()
                             } else {

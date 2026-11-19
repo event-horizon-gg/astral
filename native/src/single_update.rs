@@ -9,12 +9,10 @@ use std::{
         Arc,
         atomic::{AtomicU8, Ordering as AtomicOrdering},
     },
-    time::Duration,
 };
 
 pub(crate) struct State {
     pub folder: String,
-    pub reduce_motion: bool,
     progress: Option<Arc<AtomicU8>>,
 }
 
@@ -203,7 +201,6 @@ impl Astral {
         let previous = window.focused(cx);
         self.single_update = Some(State {
             folder: folder.clone(),
-            reduce_motion: true,
             progress: None,
         });
         // RFD's title is the NSOpenPanel message on macOS; Electron supplies
@@ -307,42 +304,8 @@ impl Astral {
         let progress = Arc::new(AtomicU8::new(0));
         self.single_update = Some(State {
             folder: folder.clone(),
-            reduce_motion: crate::motion::reduced_motion(),
             progress: Some(progress.clone()),
         });
-        let observed = progress.clone();
-        let executor = cx.background_executor().clone();
-        cx.spawn(async move |this, cx| {
-            let mut last = 0;
-            loop {
-                executor.timer(Duration::from_millis(50)).await;
-                let active = this.update(cx, |app, cx| {
-                    let Some(state) = &mut app.single_update else {
-                        return false;
-                    };
-                    if !state
-                        .progress
-                        .as_ref()
-                        .is_some_and(|progress| Arc::ptr_eq(progress, &observed))
-                    {
-                        return false;
-                    }
-                    let percent = state.percentage().unwrap_or(0);
-                    let reduced = crate::motion::reduced_motion();
-                    let motion_changed = state.reduce_motion != reduced;
-                    state.reduce_motion = reduced;
-                    if percent != last || motion_changed {
-                        last = percent;
-                        cx.notify();
-                    }
-                    true
-                });
-                if !matches!(active, Ok(true)) {
-                    break;
-                }
-            }
-        })
-        .detach();
         let task = cx.background_executor().spawn(async move {
             let progress = |percent| progress.store(percent, AtomicOrdering::Relaxed);
             let result = match input {

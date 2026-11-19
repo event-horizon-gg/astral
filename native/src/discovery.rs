@@ -102,8 +102,7 @@ fn search(query: &str) -> Result<Vec<Project>, String> {
 
 impl Astral {
     pub fn search_github(&mut self, cx: &mut Context<Self>) {
-        if self.page != Page::Discover || self.discovery_search_busy() || self.addon_batch_running()
-        {
+        if self.page != Page::Discover || self.addon_controls_busy() {
             return;
         }
         let query = match clean_query(&self.query) {
