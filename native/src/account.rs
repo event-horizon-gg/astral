@@ -552,12 +552,16 @@ impl Astral {
             });
         })
         .detach();
+        let profile_request = self.begin_profile_list_read();
         let profiles = cx
             .background_executor()
             .spawn(async move { Service::new().profiles(&session, client) });
         cx.spawn(async move |this, cx| {
             let result = profiles.await;
             let _ = this.update(cx, |app, cx| {
+                if !app.profile_list_reply_current(profile_request) {
+                    return;
+                }
                 if !app.account_reply_current(request, &context, cx) {
                     return;
                 }
@@ -566,7 +570,7 @@ impl Astral {
                     Err(error) if error.status == Some(401) => {
                         app.expire_account_read(error.to_string(), cx)
                     }
-                    Err(_) => {}
+                    Err(error) => app.remember_cloud_profile_error(error.to_string()),
                 }
                 cx.notify();
             });

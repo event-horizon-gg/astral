@@ -170,10 +170,196 @@ mod ui_tests {
             assert!(app.account.profiles.focus.as_ref().unwrap().controls[0].is_focused(window))
         });
     }
+
+    type ListResult = std::result::Result<Vec<CloudProfile>, String>;
+    fn deferred_list() -> (
+        impl std::future::Future<Output = ListResult>,
+        impl FnOnce(ListResult),
+    ) {
+        use std::{
+            cell::RefCell,
+            rc::Rc,
+            task::{Poll, Waker},
+        };
+        let response = Rc::new(RefCell::new(None));
+        let wake = Rc::new(RefCell::new(None::<Waker>));
+        let future = std::future::poll_fn({
+            let response = response.clone();
+            let wake = wake.clone();
+            move |cx| {
+                *wake.borrow_mut() = Some(cx.waker().clone());
+                response
+                    .borrow_mut()
+                    .take()
+                    .map_or(Poll::Pending, Poll::Ready)
+            }
+        });
+        (future, move |result| {
+            *response.borrow_mut() = Some(result);
+            if let Some(wake) = wake.borrow_mut().take() {
+                wake.wake();
+            }
+        })
+    }
+    fn session(token: char) -> crate::cloud::Session {
+        serde_json::from_value(
+            serde_json::json!({"token": token.to_string().repeat(43), "name": "Fixture#1234"}),
+        )
+        .unwrap()
+    }
+    fn rows(name: &str) -> Vec<CloudProfile> {
+        vec![CloudProfile {
+            id: "regular".into(),
+            name: name.into(),
+        }]
+    }
+
+    #[gpui::test]
+    fn profile_reads_do_not_block_the_manager_and_the_latest_reply_wins(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        let (old, finish_old) = deferred_list();
+        let (new, finish_new) = deferred_list();
+        view.update(cx, |app, cx| {
+            app.account.session = Some(session('f'));
+            app.await_profile_list(old, cx);
+            app.await_profile_list(new, cx);
+            assert!(app.account.busy.is_none());
+        });
+        cx.run_until_parked();
+        let appearance = cx.debug_bounds("appearance-trigger").unwrap().center();
+        cx.simulate_click(appearance, Modifiers::default());
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.account.profiles.focus.as_ref().unwrap().controls[0].is_focused(window))
+        });
+        finish_new(Ok(rows("Newest")));
+        cx.run_until_parked();
+        finish_old(Err("Obsolete failure".into()));
+        cx.run_until_parked();
+        view.read_with(cx, |app, _| {
+            assert_eq!(app.account.profiles.rows[0].name, "Newest");
+            assert!(app.account.profiles.error.is_none());
+            assert!(app.account.busy.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn profile_read_replies_cannot_cross_account_root_client_session_or_unmount(
+        cx: &mut TestAppContext,
+    ) {
+        for changed in ["account", "root", "client", "session", "unmount"] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().join("_retail_");
+            std::fs::create_dir_all(root.join("Interface/AddOns")).unwrap();
+            let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+            let (future, finish) = deferred_list();
+            view.update(cx, |app, cx| {
+                app.account.session = Some(session('f'));
+                app.detected_roots[Client::Retail.index()] = Some(root.clone());
+                app.preferences.local_accounts[Client::Retail.index()] =
+                    Some((root.clone(), "A".into()));
+                app.await_profile_list(future, cx);
+            });
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, cx| match changed {
+                "account" => {
+                    app.preferences.local_accounts[Client::Retail.index()] =
+                        Some((root.clone(), "B".into()))
+                }
+                "root" => app.detected_roots[Client::Retail.index()] = None,
+                "client" => app.preferences.client = Client::Forever,
+                "session" => app.account.session = Some(session('e')),
+                "unmount" => {
+                    app.navigate(Page::Library, window, cx);
+                    app.navigate(Page::Account, window, cx);
+                }
+                _ => unreachable!(),
+            });
+            finish(Ok(rows("Stale")));
+            cx.run_until_parked();
+            assert!(
+                view.read_with(cx, |app, _| !app
+                    .account
+                    .profiles
+                    .rows
+                    .iter()
+                    .any(|row| row.name == "Stale")),
+                "{changed}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn retry_remains_available_during_other_work_and_reads_do_not_release_that_work(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        view.update(cx, |app, cx| {
+            app.await_profile_list(std::future::ready(Err("Fixture read failed".into())), cx)
+        });
+        cx.run_until_parked();
+        view.update(cx, |app, cx| {
+            app.account.busy = Some("Fixture write");
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let appearance = cx.debug_bounds("appearance-trigger").unwrap().center();
+        cx.simulate_click(appearance, Modifiers::default());
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.account.profiles.focus.as_ref().unwrap().controls[17].is_focused(window))
+        });
+        let (future, finish) = deferred_list();
+        view.update(cx, |app, cx| app.await_profile_list(future, cx));
+        cx.run_until_parked();
+        finish(Ok(rows("Read result")));
+        cx.run_until_parked();
+        view.read_with(cx, |app, _| {
+            assert_eq!(app.account.busy, Some("Fixture write"));
+            assert!(app.account.error.is_none());
+            assert!(app.account.profiles.error.is_none());
+            assert_eq!(app.account.profiles.rows[0].name, "Read result");
+        });
+    }
+
+    #[gpui::test]
+    fn uncached_profile_loading_keeps_done_enabled_and_finishes_after_manager_closes(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (future, finish) = deferred_list();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = fixture(directory.path(), cx);
+            app.account.profiles.client = None;
+            app.account.profiles.rows.clear();
+            app.await_profile_list(future, cx);
+            app
+        });
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, _| {
+            assert!(app.account.busy.is_none());
+            assert!(app.account.profiles.focus.as_ref().unwrap().controls[16].is_focused(window));
+        });
+        press(cx, "enter");
+        assert!(view.read_with(cx, |app, _| !app.cloud_profile_manager_open()));
+        finish(Ok(rows("Loaded after close")));
+        cx.run_until_parked();
+        assert!(
+            view.read_with(cx, |app, _| !app.cloud_profile_manager_open()
+                && app.account.profiles.rows[0].name == "Loaded after close")
+        );
+    }
 }
 
 #[derive(Default)]
 pub(super) struct State {
+    list_request: Option<uuid::Uuid>,
+    error: Option<String>,
     client: Option<crate::Client>,
     rows: Vec<CloudProfile>,
     manage: bool,
@@ -208,7 +394,6 @@ enum Edit {
 }
 
 enum Work {
-    Refresh,
     Save(Option<CloudProfile>, String),
     Delete(CloudProfile),
     Review(CloudProfile),
@@ -218,6 +403,76 @@ enum Work {
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 impl Astral {
+    pub(super) fn begin_profile_list_read(&mut self) -> uuid::Uuid {
+        let state = &mut self.account.profiles;
+        let request = uuid::Uuid::new_v4();
+        state.list_request = Some(request);
+        state.error = None;
+        request
+    }
+
+    pub(super) fn profile_list_reply_current(&self, request: uuid::Uuid) -> bool {
+        self.account.profiles.list_request == Some(request)
+    }
+
+    fn invalidate_profile_list_read(&mut self) {
+        let state = &mut self.account.profiles;
+        state.list_request = None;
+    }
+
+    fn profile_list_context(&self) -> Option<super::AccountContext> {
+        self.account_context().map(|mut context| {
+            context.profile = None;
+            context
+        })
+    }
+
+    fn refresh_cloud_profile_list(&mut self, cx: &mut Context<Self>) {
+        if self.fixture {
+            return;
+        }
+        let Some(session) = self.account.session.clone() else {
+            return;
+        };
+        let client = self.preferences.client;
+        let task = cx.background_executor().spawn(async move {
+            Service::new()
+                .profiles(&session, client)
+                .map_err(|error| error.to_string())
+        });
+        self.await_profile_list(task, cx);
+    }
+
+    fn await_profile_list(
+        &mut self,
+        task: impl std::future::Future<Output = std::result::Result<Vec<CloudProfile>, String>>
+        + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let request = self.begin_profile_list_read();
+        let context = self.profile_list_context();
+        let client = self.preferences.client;
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |app, cx| {
+                if !app.profile_list_reply_current(request)
+                    || app.page != crate::Page::Account
+                    || app.preferences.client != client
+                    || app.profile_list_context() != context
+                {
+                    return;
+                }
+                match result {
+                    Ok(rows) => app.remember_cloud_profiles(client, rows),
+                    Err(error) => app.remember_cloud_profile_error(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub(super) fn remember_cloud_profiles(
         &mut self,
         client: crate::Client,
@@ -226,7 +481,12 @@ impl Astral {
         if self.preferences.client == client {
             self.account.profiles.client = Some(client);
             self.account.profiles.rows = rows;
+            self.account.profiles.error = None;
         }
+    }
+
+    pub(super) fn remember_cloud_profile_error(&mut self, error: String) {
+        self.account.profiles.error = Some(error);
     }
 
     pub(crate) fn cloud_picker_profiles(&self) -> Option<&[CloudProfile]> {
@@ -319,11 +579,10 @@ impl Astral {
             return;
         };
         let client = self.preferences.client;
-        let operation_feedback = !matches!(&work, Work::Refresh);
         let applying_review = matches!(&work, Work::Apply(_, _));
         let installing_addons =
             matches!(&work, Work::Apply(_, review) if !review.packages.is_empty());
-        if !matches!(&work, Work::Refresh) && self.account.profiles.client != Some(client) {
+        if self.account.profiles.client != Some(client) {
             self.account.profiles.edit = None;
             self.account.profiles.review = None;
             self.account.error = Some("The game client changed. Refresh cloud profiles.".into());
@@ -340,6 +599,7 @@ impl Astral {
             .as_deref()
             .and_then(|root| self.selected_local_account(client, root));
         self.account.error = None;
+        self.invalidate_profile_list_read();
         self.account.profiles.message = None;
         self.begin_account_work("Updating cloud profiles…");
         let catalog = self.catalog.clone();
@@ -360,7 +620,6 @@ impl Astral {
                     work => (work, None),
                 };
                 let (message, switched) = match work {
-                    Work::Refresh => (None, false),
                     Work::Save(profile, name) => {
                         let id = profile.as_ref().map(CloudProfile::profile).transpose()?;
                         let saved = service.save_profile(&session, client, id, &name)?;
@@ -482,6 +741,7 @@ impl Astral {
             let (result, expired) = task.await;
             let _ = this.update(cx, |app, cx| {
                 app.account.busy = None;
+                app.invalidate_profile_list_read();
                 if expired {
                     app.account = AccountState {
                         loaded: true,
@@ -504,15 +764,10 @@ impl Astral {
                             app.account.profiles.message = message;
                             match rows {
                                 Ok(rows) => {
-                                    app.account.profiles.rows = rows;
-                                    app.account.profiles.client = Some(client);
+                                    app.remember_cloud_profiles(client, rows);
                                 }
                                 Err(error) => {
-                                    let message = error.to_string();
-                                    if operation_feedback {
-                                        app.show_notification(message.clone(), true, cx);
-                                    }
-                                    app.account.error = Some(message);
+                                    app.account.profiles.error = Some(error.to_string());
                                 }
                             }
                             if switched {
@@ -525,7 +780,11 @@ impl Astral {
                                 app.refresh_account(None, cx);
                             }
                         }
-                        Err(error) => app.account.error = Some(error.to_string()),
+                        Err(error) => {
+                            let message = error.to_string();
+                            app.show_notification(message.clone(), true, cx);
+                            app.account.error = Some(message);
+                        }
                     }
                 }
                 cx.notify();
@@ -594,6 +853,8 @@ impl Astral {
                     .map(|input| input.read(cx).focus.clone())
                     .into_iter()
                     .collect()
+            } else if state.edit.is_none() && state.error.is_some() {
+                vec![focus.controls[17].clone()]
             } else {
                 vec![]
             };
@@ -630,7 +891,7 @@ impl Astral {
                     }
                 }
                 controls.push(focus.controls[16].clone());
-                if self.account.error.is_some() || state.client == Some(self.preferences.client) {
+                if state.error.is_some() || state.client == Some(self.preferences.client) {
                     controls.push(focus.controls[17].clone());
                 }
             }
@@ -715,6 +976,7 @@ impl Astral {
     }
 
     pub(crate) fn close_cloud_profile_manager(&mut self) {
+        self.invalidate_profile_list_read();
         self.account.profiles.manage = false;
         self.account.profiles.edit = None;
         self.account.profiles.name_input = None;
@@ -759,7 +1021,7 @@ impl Astral {
                         palette,
                         cx.listener(|app, _: &(), _, cx| {
                             app.account.profiles.manage = true;
-                            app.cloud_profiles_work(Work::Refresh, cx);
+                            app.refresh_cloud_profile_list(cx);
                             cx.notify();
                         }),
                     )
@@ -825,7 +1087,7 @@ impl Astral {
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(crate::typography::tracked(title, 24., 1.2, -0.7)),
             );
-        if let Some(error) = &self.account.error {
+        if let Some(error) = state.error.as_ref().filter(|_| state.edit.is_none()) {
             panel = panel.child(
                 palette
                     .label(error.clone())
@@ -924,7 +1186,7 @@ impl Astral {
                     .mb(px(16.))
                     .max_h(window.viewport_size().height * 0.42)
                     .overflow_y_scroll();
-                if state.client != Some(self.preferences.client) && self.account.error.is_none() {
+                if state.client != Some(self.preferences.client) && state.error.is_none() {
                     list = list.child(
                         palette
                             .label("Loading profiles…")
@@ -1025,7 +1287,30 @@ impl Astral {
                             .child(actions),
                     );
                 }
-                let retry = self.account.error.is_some();
+                let retry = state.error.is_some();
+                let primary = palette
+                    .primary_button(
+                        "new-cloud-profile",
+                        if retry { "Retry" } else { "New profile" },
+                    )
+                    .debug_selector(|| "new-cloud-profile".into());
+                let primary = if retry {
+                    crate::keyboard_button(
+                        primary.track_focus(&focus.controls[17]),
+                        palette,
+                        cx.listener(|app, _: &(), _, cx| app.refresh_cloud_profile_list(cx)),
+                    )
+                } else {
+                    button(primary, 17, state.client == Some(self.preferences.client)).on_click(
+                        cx.listener(|app, _, window, cx| {
+                            if app.account.busy.is_none()
+                                && app.account.profiles.client == Some(app.preferences.client)
+                            {
+                                app.start_cloud_name(None, window, cx);
+                            }
+                        }),
+                    )
+                };
                 panel = panel.child(list).child(
                     div()
                         .flex()
@@ -1040,32 +1325,7 @@ impl Astral {
                                     }
                                 })),
                         )
-                        .child(
-                            button(
-                                palette
-                                    .primary_button(
-                                        "new-cloud-profile",
-                                        if retry { "Retry" } else { "New profile" },
-                                    )
-                                    .debug_selector(|| "new-cloud-profile".into()),
-                                17,
-                                retry || state.client == Some(self.preferences.client),
-                            )
-                            .on_click(cx.listener(
-                                move |app, _, window, cx| {
-                                    if app.account.busy.is_some() {
-                                        return;
-                                    }
-                                    if retry {
-                                        app.cloud_profiles_work(Work::Refresh, cx);
-                                    } else if app.account.profiles.client
-                                        == Some(app.preferences.client)
-                                    {
-                                        app.start_cloud_name(None, window, cx);
-                                    }
-                                },
-                            )),
-                        ),
+                        .child(primary),
                 );
             }
         }
