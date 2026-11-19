@@ -111,7 +111,7 @@ cargo test --locked --manifest-path native/Cargo.toml --features headless-ui-tes
 
 These checks instantiate the actual Astral view on GPUI's `TestPlatform`, using `TestWindow`, `NoopTextSystem` and a temporary fixture directory. They exercise click routing, focus traversal and complete key-down/key-up events. They do not launch installed apps, use live credentials or access a game installation. GPUI's test-support feature adds optional test dependencies; normal builds leave it disabled. These are not screenshot, font-rendering or real-platform dialog tests. Windows verification runs them after the ordinary package checks.
 
-Folder-selection tests inject the pending result future and use temporary game folders. They verify operation ownership and completion, not the native chooser: `TestPlatform::prompt_for_paths` is unimplemented and must not be called by these tests.
+Folder-selection tests inject the pending result future and use temporary game folders. They verify operation ownership, focus restoration and completion even if the fake window closes. The native chooser uses a parented NSOpenPanel sheet on Mac and an owner-bound Windows folder dialog, with the source title, initial folder and confirmation label. Those platform panels still require real-window checks; fake-platform tests must not request native handles.
 
 Release-package popup tests inject the selection result. Native menus require real-window testing; the fake platform has no native handles. The popup uses the existing tray/menu dependency and shared event fan-out, without adding another global menu handler.
 

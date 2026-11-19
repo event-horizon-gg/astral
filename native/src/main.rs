@@ -23,6 +23,7 @@ mod menu_events;
 mod motion;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod native_dates;
+mod native_directory;
 mod native_select;
 mod notifications;
 mod packages;
@@ -52,8 +53,8 @@ mod ui_icons;
 mod ui_tests;
 
 use gpui::{
-    App, Application, Bounds, Context, KeyBinding, PathPromptOptions, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    App, Application, Bounds, Context, KeyBinding, SharedString, TitlebarOptions, Window,
+    WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 use library::{Addon, Client, Definition};
 use preferences::Preferences;
@@ -574,30 +575,20 @@ impl Astral {
         cx.notify();
     }
 
-    fn choose_root(&mut self, client: Client, cx: &mut Context<Self>) {
-        if self.addon_controls_busy() {
+    fn choose_root(&mut self, client: Client, window: &mut Window, cx: &mut Context<Self>) {
+        if self.addon_controls_busy() || self.fixture {
             return;
         }
-        if self.fixture {
-            return;
+        match native_directory::choose(self.root(client).cloned(), window, cx) {
+            Ok(picker) => {
+                let picker = native_directory::restore_focus(picker, window, cx);
+                self.await_root_choice(client, picker, cx);
+            }
+            Err(error) => {
+                self.folder_error = Some((client, error));
+                cx.notify();
+            }
         }
-        let picker = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Select folder".into()),
-        });
-        self.await_root_choice(
-            client,
-            async move {
-                picker
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .map(|paths| paths.and_then(|paths| paths.into_iter().next()))
-                    .map_err(|error| error.to_string())
-            },
-            cx,
-        );
     }
 
     fn await_root_choice(
@@ -1128,8 +1119,8 @@ impl Astral {
                             keyboard_button(
                                 change,
                                 palette,
-                                cx.listener(move |app, _: &(), _, cx| {
-                                    app.choose_root(client, cx);
+                                cx.listener(move |app, _: &(), window, cx| {
+                                    app.choose_root(client, window, cx);
                                 }),
                             )
                         }
@@ -2876,7 +2867,7 @@ impl Render for Astral {
                         palette,
                         cx.listener(move |app, _: &(), window, cx| {
                             app.close_toolbar_menu(window, cx);
-                            app.choose_root(client, cx);
+                            app.choose_root(client, window, cx);
                         }),
                     ));
                 }
@@ -3288,7 +3279,7 @@ impl Render for Astral {
                             keyboard_button(
                                 action,
                                 palette,
-                                cx.listener(move |app, _: &(), _, cx| {
+                                cx.listener(move |app, _: &(), window, cx| {
                                     if failed {
                                         app.refresh(cx);
                                     } else if has_addons {
@@ -3296,7 +3287,7 @@ impl Render for Astral {
                                         app.set_query("", cx);
                                         cx.notify();
                                     } else {
-                                        app.choose_root(client, cx);
+                                        app.choose_root(client, window, cx);
                                     }
                                 }),
                             )

@@ -194,6 +194,7 @@ dependencies = [
  "async-channel 2.5.0",
  "async_zip",
  "base64 0.22.1",
+ "block2",
  "core-foundation-sys",
  "flate2",
  "futures-lite 2.6.1",
@@ -205,6 +206,7 @@ dependencies = [
  "libc",
  "objc2",
  "objc2-app-kit",
+ "objc2-foundation",
  "raw-window-handle",
  "regex",
  "rfd",
@@ -221,6 +223,7 @@ dependencies = [
  "unicode-segmentation",
  "ureq",
  "uuid",
+ "windows 0.61.3",
  "windows-sys 0.61.2",
 ]
 

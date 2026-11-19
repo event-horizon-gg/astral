@@ -336,7 +336,9 @@ fn folder_choice_owns_the_operation_until_cancel_error_or_selection(cx: &mut Tes
                 .map_or(Poll::Pending, Poll::Ready)
         }
     });
-    view.update(cx, |app, cx| {
+    view.update_in(cx, |app, window, cx| {
+        app.header_button_focus[5].focus(window);
+        let picker = native_directory::restore_focus(picker, window, cx);
         app.await_root_choice(Client::Retail, picker, cx)
     });
     cx.run_until_parked();
@@ -360,6 +362,9 @@ fn folder_choice_owns_the_operation_until_cancel_error_or_selection(cx: &mut Tes
     cx.run_until_parked();
     assert!(view.read_with(cx, |app, _| !app.root_choice_pending
         && app.folder_error.is_none()));
+    view.update_in(cx, |app, window, _| {
+        assert!(app.header_button_focus[5].is_focused(window))
+    });
     assert!(view.read_with(cx, |app, _| {
         app.preferences.folders.iter().all(Option::is_none)
     }));
@@ -559,4 +564,31 @@ fn pointer_focus_mode_is_scoped_to_the_window(cx: &mut TestAppContext) {
             cx
         ));
     });
+}
+
+#[gpui::test]
+fn folder_choice_still_releases_ownership_if_the_window_closes(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        Astral::new(
+            [None, None],
+            Some(directory.path()),
+            Some(Client::Retail),
+            false,
+            cx,
+        )
+    });
+    let (picker, finish) = deferred();
+    view.update_in(cx, |app, window, cx| {
+        app.brand_focus.focus(window);
+        let picker = native_directory::restore_focus(picker, window, cx);
+        app.await_root_choice(Client::Retail, picker, cx);
+    });
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |app, _| app.root_choice_pending));
+    cx.update(|window, _| window.remove_window());
+    finish(Ok(None));
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |app, _| !app.root_choice_pending
+        && app.folder_error.is_none()));
 }
