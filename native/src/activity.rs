@@ -929,14 +929,25 @@ impl Astral {
                             .child(palette.label(activity_time(entry.time)).text_size(px(12.))),
                     )
                     .when_some(retry, |row, source| {
-                        row.child(activity_text_button(
-                            palette,
-                            ("retry-addon-action", index),
-                            "Retry",
-                            cx.listener(move |app, _: &(), window, cx| {
-                                app.open_release(&source, window, cx)
-                            }),
-                        ))
+                        let button = palette
+                            .text_button(("retry-addon-action", index), "Retry")
+                            .flex()
+                            .items_center()
+                            .gap(px(7.))
+                            .py(px(5.))
+                            .flex_shrink_0()
+                            .rounded(px(4.));
+                        row.child(if self.can_start_update_batch() {
+                            crate::keyboard_button(
+                                button,
+                                palette,
+                                cx.listener(move |app, _: &(), _, cx| {
+                                    app.update_one_addon(&source, cx)
+                                }),
+                            )
+                        } else {
+                            button.opacity(0.45).cursor_default()
+                        })
                     }),
             );
         }
