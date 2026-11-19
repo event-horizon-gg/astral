@@ -105,14 +105,15 @@ impl Astral {
             && state.review.is_some()
     }
 
-    pub(crate) fn cloud_profile_review_has_files(&self) -> bool {
-        self.cloud_profile_review_open()
-            && self
-                .account
-                .profiles
-                .review
-                .as_ref()
-                .is_some_and(|(_, review)| !review.changed.is_empty())
+    pub(crate) fn current_cloud_profile_review(&self) -> Option<&ProfileReview> {
+        if !self.cloud_profile_review_open() {
+            return None;
+        }
+        self.account
+            .profiles
+            .review
+            .as_ref()
+            .map(|(_, review)| review)
     }
 
     pub(crate) fn cloud_profile_review_dialog(

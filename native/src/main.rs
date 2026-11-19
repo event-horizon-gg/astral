@@ -2376,8 +2376,7 @@ impl Render for Astral {
         application_menu::refresh_window_menu(window);
         self.validate_account_profile_picker(window);
         if self.local_profile_review_open() || self.cloud_profile_review_open() {
-            self.profile_review_focus
-                .enter(self.profile_review_has_files(), window, cx);
+            self.profile_review_focus.enter(window, cx);
         } else {
             self.profile_review_focus.leave(window, &self.root_focus);
         }
@@ -3474,12 +3473,14 @@ impl Render for Astral {
                 cx.listener(|app, _: &FindAddon, window, cx| app.toggle_quick_find(window, cx)),
             )
             .capture_key_down(cx.listener(|app, event: &gpui::KeyDownEvent, window, cx| {
-                if app.project_review_key(event, window, cx) {
+                if app.profile_review_key(event, window)
+                    || app.project_review_key(event, window, cx)
+                {
                     cx.stop_propagation();
                 }
             }))
             .capture_action(cx.listener(|app, _: &DismissOverlay, window, cx| {
-                if app.dismiss_project_review(window, cx) {
+                if app.dismiss_active_profile_review(cx) || app.dismiss_project_review(window, cx) {
                     cx.stop_propagation();
                 }
             }))

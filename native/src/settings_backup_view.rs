@@ -5,6 +5,80 @@ use crate::{
 };
 use gpui::{Context, FocusHandle, Window, div, prelude::*, px, rgb};
 
+#[cfg(all(test, feature = "headless-ui-tests"))]
+mod ui_tests {
+    use super::*;
+    use crate::{Client, Page, ToolbarMenu, ui_tests::press};
+    use gpui::{KeyBinding, Modifiers, TestAppContext, size};
+
+    fn fixture(directory: &std::path::Path, cx: &mut Context<Astral>) -> Astral {
+        cx.bind_keys([KeyBinding::new("escape", crate::DismissOverlay, None)]);
+        let mut app = Astral::new(
+            [None, None],
+            Some(directory),
+            Some(Client::Retail),
+            false,
+            cx,
+        );
+        app.page = Page::Settings;
+        app.open_profile_review_fixture();
+        app.profile_review_focus.return_to = Some(app.brand_focus.clone());
+        app
+    }
+
+    #[gpui::test]
+    fn profile_review_focus_runs_once_and_captures_header_tab_and_escape(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, _| {
+            assert!(app.profile_review_focus.cancel.is_focused(window))
+        });
+        let appearance = cx.debug_bounds("appearance-trigger").unwrap().center();
+        cx.simulate_click(appearance, Modifiers::default());
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            assert!(app.header_focus.contains_focused(window, cx));
+        });
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.profile_review_focus.cancel.is_focused(window))
+        });
+        press(cx, "shift-tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.profile_review_focus.apply.is_focused(window))
+        });
+        let tools = cx.debug_bounds("tools-trigger").unwrap().center();
+        cx.simulate_click(tools, Modifiers::default());
+        press(cx, "escape");
+        assert!(view.read_with(cx, |app, _| !app.local_profile_review_open()));
+        assert!(view.read_with(cx, |app, _| app.menu == Some(ToolbarMenu::Tools)));
+        view.update_in(cx, |app, window, _| {
+            assert!(app.brand_focus.is_focused(window))
+        });
+    }
+
+    #[gpui::test]
+    fn busy_profile_review_ignores_cancel_and_escape(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        view.update(cx, |app, cx| {
+            app.settings_backups.writing = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let cancel = cx.debug_bounds("cancel-profile-review").unwrap().center();
+        cx.simulate_click(cancel, Modifiers::default());
+        assert!(view.read_with(cx, |app, _| app.local_profile_review_open()));
+        press(cx, "escape");
+        press(cx, "tab");
+        assert!(view.read_with(cx, |app, _| app.local_profile_review_open()));
+    }
+}
+
 pub(crate) struct ProfileReviewFocus {
     pub(crate) picker: FocusHandle,
     picker_options: [FocusHandle; 16],
@@ -28,22 +102,15 @@ impl ProfileReviewFocus {
         }
     }
 
-    pub(crate) fn enter(&mut self, has_files: bool, window: &mut Window, cx: &Context<Astral>) {
+    pub(crate) fn enter(&mut self, window: &mut Window, cx: &Context<Astral>) {
         if !self.open {
             self.open = true;
             if self.return_to.is_none() {
                 self.return_to = window.focused(cx);
             }
-        }
-        if ![&self.files, &self.cancel, &self.apply]
-            .iter()
-            .any(|item| item.is_focused(window))
-        {
-            if has_files {
-                self.files.focus(window);
-            } else {
-                self.cancel.focus(window);
-            }
+            // useDialog's selector includes buttons, not the details summary.
+            // Its initial-focus effect runs once when the dialog opens.
+            self.cancel.focus(window);
         }
     }
 
@@ -632,14 +699,63 @@ impl Astral {
             && self.settings_backups.review.is_some()
     }
 
-    pub(crate) fn profile_review_has_files(&self) -> bool {
-        (self.local_profile_review_open()
-            && self
-                .settings_backups
-                .review
-                .as_ref()
-                .is_some_and(|review| !review.changed.is_empty()))
-            || self.cloud_profile_review_has_files()
+    fn profile_review_busy(&self) -> bool {
+        self.settings_backups.writing
+            || self.account_work_in_progress()
+            || self.addon_batch_running()
+            || self.root_choice_pending
+            || self.daily_running
+            || self.scanning
+            || self.checking
+    }
+
+    fn profile_review_blocked(&self, review: &ProfileReview) -> bool {
+        review.blocker.is_some() || self.profile_game_running() || self.profile_review_busy()
+    }
+
+    pub(crate) fn profile_review_key(
+        &self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+    ) -> bool {
+        if event.keystroke.key != "tab" {
+            return false;
+        }
+        let review = if self.local_profile_review_open() {
+            self.settings_backups.review.as_ref()
+        } else {
+            self.current_cloud_profile_review()
+        };
+        let Some(review) = review else {
+            return false;
+        };
+        let mut controls = Vec::new();
+        if !self.profile_review_busy() {
+            controls.push(&self.profile_review_focus.cancel);
+            if !self.profile_review_blocked(review) {
+                controls.push(&self.profile_review_focus.apply);
+            }
+        }
+        if !controls.is_empty() {
+            let current = controls.iter().position(|item| item.is_focused(window));
+            let index = match (current, event.keystroke.modifiers.shift) {
+                (Some(index), false) => (index + 1) % controls.len(),
+                (Some(index), true) => (index + controls.len() - 1) % controls.len(),
+                (None, false) => 0,
+                (None, true) => controls.len() - 1,
+            };
+            controls[index].focus(window);
+        }
+        true
+    }
+
+    pub(crate) fn dismiss_active_profile_review(&mut self, cx: &mut Context<Self>) -> bool {
+        let cloud = self.cloud_profile_review_open();
+        if !cloud && !self.local_profile_review_open() {
+            return false;
+        }
+        self.cancel_profile_review(cloud, cx);
+        true
     }
 
     fn apply_profile_review(&mut self, cloud: bool, cx: &mut Context<Self>) {
@@ -651,11 +767,7 @@ impl Astral {
             );
             return;
         }
-        if self.profile_game_running()
-            || self.addon_batch_running()
-            || self.settings_backups.writing
-            || self.account_work_in_progress()
-        {
+        if self.profile_game_running() || self.profile_review_busy() {
             return;
         }
         if cloud {
@@ -675,22 +787,11 @@ impl Astral {
     ) -> gpui::Div {
         let retail = self.preferences.client == crate::Client::Retail;
         let has_files = !review.changed.is_empty();
-        let blocked = review.blocker.is_some()
-            || self.profile_game_running()
-            || self.addon_batch_running()
-            || self.settings_backups.writing
-            || self.account_work_in_progress();
+        let busy = self.profile_review_busy();
+        let blocked = self.profile_review_blocked(review);
         let files = self.profile_review_focus.files.clone();
         let cancel = self.profile_review_focus.cancel.clone();
         let apply = self.profile_review_focus.apply.clone();
-        let tab_order: Vec<_> = [
-            has_files.then_some(files.clone()),
-            Some(cancel.clone()),
-            (!blocked).then_some(apply.clone()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
         let toggle_files = move |app: &mut Self, cx: &mut Context<Self>| {
             if cloud {
                 app.toggle_cloud_profile_review_files();
@@ -714,20 +815,6 @@ impl Astral {
                 .on_click(cx.listener(move |app, _, _, cx| { app.cancel_profile_review(cloud, cx); })))
             .child(crate::account::dialog_panel("profile-review-dialog", palette)
                 .max_h(gpui::relative(0.85)).overflow_y_scroll().block().gap_0()
-                .on_key_down(move |event, window, cx| {
-                    if event.keystroke.key != "tab" {
-                        return;
-                    }
-                    let current = tab_order.iter().position(|item| item.is_focused(window));
-                    let index = match (current, event.keystroke.modifiers.shift) {
-                        (Some(index), false) => (index + 1) % tab_order.len(),
-                        (Some(index), true) => (index + tab_order.len() - 1) % tab_order.len(),
-                        (None, false) => 0,
-                        (None, true) => tab_order.len() - 1,
-                    };
-                    tab_order[index].focus(window);
-                    cx.stop_propagation();
-                })
                 .child(crate::account::sync_dialog_title(if review.editing_addons {
                     "Apply addon choices?".into()
                 } else { format!("Switch to {}?", review.name) }))
@@ -778,8 +865,10 @@ impl Astral {
                 ))
                 .child(div().flex().justify_end().gap(px(9.))
                     .child(palette.button("cancel-profile-review", "Cancel")
+                        .debug_selector(|| "cancel-profile-review".into())
                         .h(px(38.)).font_weight(gpui::FontWeight(550.))
                         .track_focus(&cancel)
+                        .when(busy, |button| button.opacity(0.45).cursor_default())
                         .focus(move |style| style.bg(rgb(palette.panel)).shadow(palette.focus_ring_on(palette.panel)))
                         .on_click(cx.listener(move |app, _, _, cx| app.cancel_profile_review(cloud, cx))))
                     .child(palette.primary_button("apply-profile-review", if review.editing_addons { "Apply choices" } else { "Save and switch" })
@@ -792,6 +881,9 @@ impl Astral {
     }
 
     fn cancel_profile_review(&mut self, cloud: bool, cx: &mut Context<Self>) {
+        if self.profile_review_busy() {
+            return;
+        }
         if cloud {
             self.dismiss_cloud_profile_review(cx);
         } else {
