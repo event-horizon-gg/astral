@@ -17,7 +17,9 @@ pub struct ProjectReview {
     inspected_at: Option<Instant>,
     busy: bool,
     selected: Option<usize>,
-    choosing_package: bool,
+    package_request: Option<uuid::Uuid>,
+    package_focus: FocusHandle,
+    package_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     show_notes: bool,
     previous_focus: Option<FocusHandle>,
     close_focus: FocusHandle,
@@ -229,7 +231,9 @@ impl Astral {
             inspected_at: None,
             busy: true,
             selected: None,
-            choosing_package: false,
+            package_request: None,
+            package_focus: cx.focus_handle().tab_stop(true),
+            package_bounds: Default::default(),
             show_notes: false,
             previous_focus: window.focused(cx),
             close_focus: cx.focus_handle().tab_stop(true),
@@ -296,7 +300,7 @@ impl Astral {
         let (request, root, client, repo) =
             (review.request, root, review.client, review.repo.clone());
         review.busy = true;
-        review.choosing_package = false;
+        review.package_request = None;
         review.dialog_focus.focus(window);
         review.inspected = None;
         review.inspected_at = None;
@@ -424,6 +428,87 @@ impl Astral {
         cx.notify();
     }
 
+    fn choose_project_package(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.fixture {
+            return;
+        }
+        let Some(review) = self.project_review.as_ref().filter(|review| {
+            review.is_visible() && !review.busy && review.package_request.is_none()
+        }) else {
+            return;
+        };
+        let Some(Ok(release)) = &review.release else {
+            return;
+        };
+        let Some(bounds) = review.package_bounds.get() else {
+            return;
+        };
+        let labels = std::iter::once("Choose an addon ZIP".to_owned())
+            .chain(release.packages.iter().map(package_label))
+            .collect();
+        let selected = review.selected.map_or(0, |index| index + 1);
+        match crate::native_select::choose(
+            window,
+            cx,
+            labels,
+            selected,
+            gpui::point(bounds.left(), bounds.bottom()),
+        ) {
+            Ok(task) => self.await_project_package(task, window, cx),
+            Err(error) => self.show_notification(error, true, cx),
+        }
+    }
+
+    fn await_project_package(
+        &mut self,
+        selection: impl std::future::Future<Output = Option<usize>> + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(review) = self.project_review.as_mut().filter(|review| {
+            review.is_visible() && !review.busy && review.package_request.is_none()
+        }) else {
+            return;
+        };
+        let Some(Ok(release)) = &review.release else {
+            return;
+        };
+        let assets: Vec<_> = std::iter::once(None)
+            .chain(release.packages.iter().map(|asset| Some(asset.id)))
+            .collect();
+        let request = review.request;
+        let popup = uuid::Uuid::new_v4();
+        review.package_request = Some(popup);
+        cx.spawn_in(window, async move |this, cx| {
+            let selection = selection.await;
+            let _ = this.update_in(cx, |app, window, cx| {
+                let Some(review) = app.project_review.as_mut().filter(|review| {
+                    review.request == request
+                        && review.package_request == Some(popup)
+                        && review.is_visible()
+                }) else {
+                    return;
+                };
+                review.package_request = None;
+                if !review.busy {
+                    if let Some(asset) = selection.and_then(|index| assets.get(index)) {
+                        review.selected = asset.and_then(|id| {
+                            review
+                                .release
+                                .as_ref()
+                                .and_then(|release| release.as_ref().ok())
+                                .and_then(|release| release.package_index(id).ok())
+                        });
+                    }
+                    review.package_focus.focus(window);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub(crate) fn project_review_key(
         &mut self,
         event: &gpui::KeyDownEvent,
@@ -475,9 +560,8 @@ impl Astral {
         if !review.is_visible() {
             return false;
         }
-        if review.choosing_package {
-            review.choosing_package = false;
-            review.dialog_focus.focus(window);
+        if review.package_request.take().is_some() {
+            review.package_focus.focus(window);
             cx.notify();
         } else if !review.busy {
             review
@@ -593,12 +677,18 @@ impl Astral {
                     );
                 } else {
                     let package = palette
-                        .button(
+                        .button_base(
                             "choose-project-package",
                             selected
                                 .map(package_label)
                                 .unwrap_or_else(|| "Choose an addon ZIP".into()),
                         )
+                        .relative()
+                        .cursor_default()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .debug_selector(|| "project-package-trigger".into())
+                        .child(crate::remember_bounds(review.package_bounds.clone()))
                         .w_full()
                         .h_auto()
                         .p(px(9.))
@@ -621,59 +711,20 @@ impl Astral {
                                 .text_size(px(12.))
                                 .text_color(rgb(palette.text)),
                         )
-                        .child(if release.packages.is_empty() || review.busy {
+                        .child(if review.busy {
                             package.opacity(0.45).cursor_default()
                         } else {
                             crate::keyboard_button(
-                                package,
+                                package.track_focus(&review.package_focus),
                                 palette,
-                                cx.listener(|app, _: &(), _, cx| {
-                                    if let Some(review) = &mut app.project_review {
-                                        review.choosing_package = !review.choosing_package;
-                                        cx.notify();
-                                    }
+                                cx.listener(|app, _: &(), window, cx| {
+                                    app.choose_project_package(window, cx)
                                 }),
                             )
                         });
                     body = body.child(selector);
                     if release.packages.is_empty() {
                         body = body.child(warning("The author has not published a packaged ZIP release. Source-code archives cannot be installed as addons.".into()));
-                    } else if review.choosing_package {
-                        body = body.child(
-                            div()
-                                .id("project-package-options")
-                                .max_h(px(180.))
-                                .overflow_y_scroll()
-                                .children(release.packages.iter().enumerate().map(
-                                    |(index, asset)| {
-                                        crate::keyboard_button(
-                                            palette
-                                                .button(
-                                                    ("review-asset", index),
-                                                    package_label(asset),
-                                                )
-                                                .w_full()
-                                                .justify_between()
-                                                .when(review.selected == Some(index), |row| {
-                                                    row.child(crate::icon(
-                                                        "check",
-                                                        13.,
-                                                        palette.accent,
-                                                    ))
-                                                }),
-                                            palette,
-                                            cx.listener(move |app, _: &(), window, cx| {
-                                                if let Some(review) = &mut app.project_review {
-                                                    review.selected = Some(index);
-                                                    review.choosing_package = false;
-                                                    review.dialog_focus.focus(window);
-                                                    cx.notify();
-                                                }
-                                            }),
-                                        )
-                                    },
-                                )),
-                        );
                     }
                     let inspect = palette.primary_button(
                         "check-community-package",
@@ -771,7 +822,7 @@ impl Astral {
                 palette,
                 cx.listener(|app, _: &(), window, cx| {
                     if let Some(review) = &mut app.project_review {
-                        review.choosing_package = false;
+                        review.package_request = None;
                     }
                     app.dismiss_project_review(window, cx);
                 }),
@@ -876,13 +927,116 @@ mod ui_tests {
             inspected_at: None,
             busy: false,
             selected: None,
-            choosing_package: false,
+            package_request: None,
+            package_focus: cx.focus_handle().tab_stop(true),
+            package_bounds: Default::default(),
             show_notes: false,
             previous_focus: Some(app.brand_focus.clone()),
             close_focus: cx.focus_handle().tab_stop(true),
             dialog_focus: cx.focus_handle(),
         });
         app
+    }
+
+    fn add_packages(app: &mut Astral) {
+        let review = app.project_review.as_mut().unwrap();
+        review.release.as_mut().unwrap().as_mut().unwrap().packages = [11, 22]
+            .into_iter()
+            .map(|id| releases::Package {
+                id,
+                name: format!("Fixture-{id}.zip"),
+                size: 2048,
+                digest: None,
+                url: format!("https://example.invalid/{id}.zip"),
+            })
+            .collect();
+    }
+
+    #[gpui::test]
+    fn package_choices_preserve_cancel_reset_placeholder_and_restore_field_focus(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = fixture(directory.path(), cx);
+            add_packages(&mut app);
+            app
+        });
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        let height = cx
+            .debug_bounds("project-package-trigger")
+            .unwrap()
+            .size
+            .height;
+        for (choice, expected) in [(Some(2), Some(1)), (None, Some(1)), (Some(0), None)] {
+            view.update_in(cx, |app, window, cx| {
+                app.await_project_package(std::future::ready(choice), window, cx)
+            });
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, _| {
+                let review = app.project_review.as_ref().unwrap();
+                assert_eq!(review.selected, expected);
+                assert!(review.package_request.is_none());
+                assert!(review.package_focus.is_focused(window));
+            });
+            assert_eq!(
+                cx.debug_bounds("project-package-trigger")
+                    .unwrap()
+                    .size
+                    .height,
+                height
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn a_late_package_choice_cannot_change_a_new_review(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = fixture(directory.path(), cx);
+            add_packages(&mut app);
+            app
+        });
+        let (choice, finish) = crate::ui_tests::deferred();
+        view.update_in(cx, |app, window, cx| {
+            app.await_project_package(choice, window, cx)
+        });
+        cx.run_until_parked();
+        view.update(cx, |app, cx| {
+            let review = app.project_review.as_mut().unwrap();
+            review.request += 1;
+            review.package_request = None;
+            cx.notify();
+        });
+        finish(Some(2));
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |app, _| {
+            app.project_review.as_ref().unwrap().selected.is_none()
+        }));
+    }
+
+    #[gpui::test]
+    fn empty_release_keeps_the_placeholder_selector_in_tab_order(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        view.update_in(cx, |app, window, _| {
+            app.project_review
+                .as_ref()
+                .unwrap()
+                .close_focus
+                .focus(window)
+        });
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(
+                app.project_review
+                    .as_ref()
+                    .unwrap()
+                    .package_focus
+                    .is_focused(window)
+            )
+        });
     }
 
     #[gpui::test]

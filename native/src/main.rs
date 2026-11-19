@@ -22,6 +22,7 @@ mod menu_events;
 mod motion;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod native_dates;
+mod native_select;
 mod notifications;
 mod packages;
 mod preferences;

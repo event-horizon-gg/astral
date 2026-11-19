@@ -7,11 +7,12 @@ pub fn subscribe() -> async_channel::Receiver<String> {
     static INIT: Once = Once::new();
     static SUBSCRIBERS: OnceLock<Mutex<Vec<async_channel::Sender<String>>>> = OnceLock::new();
     let (sender, receiver) = async_channel::unbounded();
-    SUBSCRIBERS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap()
-        .push(sender);
+    {
+        let mut subscribers = SUBSCRIBERS.get_or_init(Default::default).lock().unwrap();
+        // Transient popup subscribers may close without any selection event.
+        subscribers.retain(|sender| !sender.is_closed());
+        subscribers.push(sender);
+    }
     INIT.call_once(|| {
         MenuEvent::set_event_handler(Some(|event: MenuEvent| {
             let mut subscribers = SUBSCRIBERS.get().unwrap().lock().unwrap();

@@ -3,6 +3,33 @@
 use super::*;
 use gpui::{KeyUpEvent, Keystroke, Modifiers, TestAppContext, VisualTestContext, point};
 
+pub(crate) fn deferred<T>() -> (impl std::future::Future<Output = T>, impl FnOnce(T)) {
+    use std::{
+        cell::RefCell,
+        rc::Rc,
+        task::{Poll, Waker},
+    };
+    let result = Rc::new(RefCell::new(None));
+    let wake = Rc::new(RefCell::new(None::<Waker>));
+    let future = std::future::poll_fn({
+        let result = result.clone();
+        let wake = wake.clone();
+        move |cx| {
+            *wake.borrow_mut() = Some(cx.waker().clone());
+            result
+                .borrow_mut()
+                .take()
+                .map_or(Poll::Pending, Poll::Ready)
+        }
+    });
+    (future, move |value| {
+        *result.borrow_mut() = Some(value);
+        if let Some(wake) = wake.borrow_mut().take() {
+            wake.wake();
+        }
+    })
+}
+
 pub(crate) fn press(cx: &mut VisualTestContext, key: &str) {
     // GPUI's simulate_keystrokes emits key-down/IME input only; real button
     // activation occurs on key-up, so exercise both halves of the OS event.
