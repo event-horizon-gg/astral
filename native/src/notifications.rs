@@ -100,6 +100,7 @@ impl Astral {
                 .child(
                     div()
                         .id("notification")
+                        .debug_selector(|| "notification".into())
                         .relative()
                         .overflow_hidden()
                         .occlude()

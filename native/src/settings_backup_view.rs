@@ -119,6 +119,32 @@ mod ui_tests {
         // Store::open fails before process queries, downloads or any game write.
         assert!(!root.join("WTF").exists());
     }
+
+    #[gpui::test]
+    fn a_profile_error_is_reported_after_leaving_its_original_context(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("_retail_");
+        std::fs::create_dir_all(root.join("Interface/AddOns")).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = fixture(directory.path(), cx);
+            app.detected_roots[Client::Retail.index()] = Some(root.clone());
+            app.settings_backups.account = Some("MISSING_ACCOUNT".into());
+            app
+        });
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        view.update(cx, |app, cx| {
+            app.apply_local_profile_review(cx);
+            app.detected_roots = [None, None];
+            app.load_settings_backups(None, cx);
+            // Changing the displayed context must not release the active write.
+            assert!(app.settings_backups.writing);
+        });
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |app, _| !app.settings_backups.writing
+            && app.settings_backups.status.is_none()));
+        assert!(cx.debug_bounds("notification").is_some());
+        assert!(!root.join("WTF").exists());
+    }
 }
 
 pub(crate) struct ProfileReviewFocus {
@@ -1164,6 +1190,11 @@ impl Astral {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |app, cx| {
+                let feedback = match &result {
+                    Ok((Err(error), _, _, _)) => Some(error.to_string()),
+                    Err(error) => Some(error.to_string()),
+                    _ => None,
+                };
                 let state = &mut app.settings_backups;
                 state.writing = false;
                 if state.request == request {
@@ -1192,15 +1223,6 @@ impl Astral {
                         Err(error) => state.status = Some(Err(error.to_string())),
                     }
                 }
-                let feedback = if state.request == request {
-                    state
-                        .status
-                        .as_ref()
-                        .and_then(|status| status.as_ref().err())
-                        .cloned()
-                } else {
-                    None
-                };
                 if installing_addons && app.preferences.client == client {
                     app.refresh_after_change(cx);
                 }
