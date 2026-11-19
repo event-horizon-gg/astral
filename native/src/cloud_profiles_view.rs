@@ -215,6 +215,112 @@ mod ui_tests {
     }
 
     #[gpui::test]
+    fn cached_names_follow_root_and_account_without_closing_the_name_editor(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let first_root = directory.path().join("first/_retail_");
+        let second_root = directory.path().join("second/_retail_");
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = fixture(directory.path(), cx);
+            for (root, account, name) in [
+                (&first_root, "One", "First"),
+                (&first_root, "Two", "Second account"),
+                (&second_root, "One", "Second folder"),
+            ] {
+                app.preferences.remember_profile_names(
+                    crate::preferences::ProfileNamesScope {
+                        root: Some(root.clone()),
+                        account: Some(account.into()),
+                    },
+                    &rows(name),
+                );
+            }
+            app.preferences.folders[0] = Some(first_root.clone());
+            app.preferences.local_accounts[0] = Some((first_root.clone(), "One".into()));
+            app
+        });
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            assert!(app.account.session.is_none());
+            assert_eq!(app.cloud_picker_profiles().unwrap()[0].name, "First");
+            app.start_cloud_name(None, window, cx);
+        });
+        cx.run_until_parked();
+        for (root, account, expected) in [
+            (&first_root, "Two", "Second account"),
+            (&second_root, "One", "Second folder"),
+        ] {
+            view.update(cx, |app, cx| {
+                app.preferences.folders[0] = Some(root.clone());
+                app.preferences.local_accounts[0] = Some((root.clone(), account.into()));
+                // Even before the next render, the picker cannot leak old rows.
+                assert_eq!(app.cloud_picker_profiles().unwrap()[0].name, expected);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            view.read_with(cx, |app, _| {
+                assert!(matches!(app.account.profiles.edit, Some(Edit::Name { .. })));
+                assert!(app.cloud_profile_manager_open());
+                assert_eq!(app.account.profiles.rows[0].name, expected);
+            });
+        }
+        view.update(cx, |app, _| {
+            app.remember_cloud_profiles(Client::Retail, rows("Fresh name"))
+        });
+        let preferences =
+            crate::preferences::Preferences::load(&directory.path().join("preferences.json"))
+                .unwrap();
+        let names = preferences
+            .cached_profile_names(&crate::preferences::ProfileNamesScope {
+                root: Some(second_root),
+                account: Some("One".into()),
+            })
+            .unwrap();
+        assert_eq!(names[0].name, "Fresh name");
+    }
+
+    #[gpui::test]
+    fn an_old_account_reply_cannot_repopulate_an_uncached_account(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("_retail_");
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = fixture(directory.path(), cx);
+            app.preferences.folders[0] = Some(root.clone());
+            app.preferences.local_accounts[0] = Some((root.clone(), "One".into()));
+            app.account.session = Some(session('f'));
+            app.remember_cloud_profiles(Client::Retail, rows("Account one"));
+            app
+        });
+        let (future, finish) = deferred_list();
+        view.update(cx, |app, cx| app.await_profile_list(future, cx));
+        cx.run_until_parked();
+        view.update(cx, |app, cx| {
+            app.preferences.local_accounts[0] = Some((root.clone(), "Two".into()));
+            assert!(app.cloud_picker_profiles().is_none());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        finish(Ok(rows("Late account one")));
+        cx.run_until_parked();
+        view.read_with(cx, |app, _| {
+            assert!(app.cloud_picker_profiles().is_none());
+            assert!(app.account.profiles.rows.is_empty());
+            assert!(app.account.profiles.client.is_none());
+            assert_eq!(
+                app.preferences
+                    .cached_profile_names(&crate::preferences::ProfileNamesScope {
+                        root: Some(root),
+                        account: Some("One".into()),
+                    })
+                    .unwrap()[0]
+                    .name,
+                "Account one"
+            );
+        });
+    }
+
+    #[gpui::test]
     fn profile_reads_do_not_block_the_manager_and_the_latest_reply_wins(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
@@ -389,6 +495,7 @@ pub(super) struct State {
     list_request: Option<uuid::Uuid>,
     error: Option<String>,
     client: Option<crate::Client>,
+    names_context: Option<(crate::Client, crate::preferences::ProfileNamesScope)>,
     rows: Vec<CloudProfile>,
     manage: bool,
     edit: Option<Edit>,
@@ -451,7 +558,34 @@ impl From<&str> for ListError {
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 impl Astral {
+    fn profile_names_scope(&self) -> crate::preferences::ProfileNamesScope {
+        let client = self.preferences.client;
+        let root = self.root(client).cloned();
+        let account = root
+            .as_deref()
+            .and_then(|root| self.selected_local_account(client, root));
+        crate::preferences::ProfileNamesScope { root, account }
+    }
+
+    pub(crate) fn sync_cloud_profile_names(&mut self) {
+        let client = self.preferences.client;
+        let scope = self.profile_names_scope();
+        let state = &mut self.account.profiles;
+        if state.names_context.as_ref() == Some(&(client, scope.clone())) {
+            return;
+        }
+        let cached = self.preferences.cached_profile_names(&scope);
+        state.rows = cached.unwrap_or_default().to_vec();
+        state.client = cached.map(|_| client);
+        state.names_context = Some((client, scope));
+        state.error = None;
+        state.list_request = None;
+        // Root/account changes reload names but preserve the open editor, as
+        // SyncProfiles' effect does. Game-client changes remount the component.
+    }
+
     pub(super) fn begin_profile_list_read(&mut self) -> uuid::Uuid {
+        self.sync_cloud_profile_names();
         let state = &mut self.account.profiles;
         let request = uuid::Uuid::new_v4();
         state.list_request = Some(request);
@@ -535,6 +669,11 @@ impl Astral {
         rows: Vec<CloudProfile>,
     ) {
         if self.preferences.client == client {
+            let scope = self.profile_names_scope();
+            self.preferences
+                .remember_profile_names(scope.clone(), &rows);
+            self.save_preferences();
+            self.account.profiles.names_context = Some((client, scope));
             self.account.profiles.client = Some(client);
             self.account.profiles.rows = rows;
             self.account.profiles.error = None;
@@ -546,9 +685,15 @@ impl Astral {
     }
 
     pub(crate) fn cloud_picker_profiles(&self) -> Option<&[CloudProfile]> {
-        (self.account.session.is_some()
-            && self.account.profiles.client == Some(self.preferences.client))
-        .then_some(self.account.profiles.rows.as_slice())
+        let scope = self.profile_names_scope();
+        let state = &self.account.profiles;
+        if state.client == Some(self.preferences.client)
+            && state.names_context.as_ref() == Some(&(self.preferences.client, scope.clone()))
+        {
+            Some(state.rows.as_slice())
+        } else {
+            self.preferences.cached_profile_names(&scope)
+        }
     }
 
     pub(crate) fn review_cloud_picker(
@@ -557,11 +702,19 @@ impl Astral {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.account.session.is_none() {
+            if let Ok(id) = profile.profile() {
+                self.review_cached_profile(id, window, cx);
+            }
+            return;
+        }
         self.profile_review_focus.return_to = window.focused(cx);
         self.cloud_profiles_work(Work::Review(profile), cx);
     }
 
     pub(super) fn seed_cloud_profile_fixture(&mut self) {
+        self.account.profiles.names_context =
+            Some((self.preferences.client, self.profile_names_scope()));
         self.account.profiles.client = Some(self.preferences.client);
         self.account.profiles.rows = [
             ("regular", "Regular"),

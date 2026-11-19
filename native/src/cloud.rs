@@ -143,7 +143,7 @@ pub struct SharedLibrary {
     pub revision: u64,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, serde::Serialize)]
 pub struct CloudProfile {
     pub id: String,
     pub name: String,

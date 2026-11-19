@@ -2427,6 +2427,7 @@ impl Render for Astral {
         } else {
             self.profile_review_focus.leave(window, &self.root_focus);
         }
+        self.sync_cloud_profile_names();
         self.update_cloud_manager_focus(window, cx);
         self.update_sync_dialog_focus(window, cx);
         self.update_addon_restore_focus(window, cx);

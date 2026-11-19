@@ -6,6 +6,49 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ProfileNamesScope {
+    pub root: Option<PathBuf>,
+    pub account: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ProfileNames {
+    pub scope: ProfileNamesScope,
+    pub rows: Vec<crate::cloud::CloudProfile>,
+}
+
+// localStorage's cached names are optional UI data. A damaged entry must not
+// discard unrelated paths, update preferences, or otherwise valid cached rows.
+fn deserialize_profile_names<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<ProfileNames>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let scope = serde_json::from_value(entry.get("scope")?.clone()).ok()?;
+            let rows = entry
+                .get("rows")?
+                .as_array()?
+                .iter()
+                .filter_map(|value| {
+                    serde_json::from_value::<crate::cloud::CloudProfile>(value.clone()).ok()
+                })
+                .filter(valid_profile_name)
+                .take(8)
+                .collect();
+            Some(ProfileNames { scope, rows })
+        })
+        .collect())
+}
+
+fn valid_profile_name(row: &crate::cloud::CloudProfile) -> bool {
+    row.profile().is_ok() && row.name.encode_utf16().count() <= 40
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -20,6 +63,8 @@ pub struct Preferences {
     pub start_at_login: bool,
     pub daily_runs: [Option<crate::daily::Run>; 2],
     pub projects: Vec<crate::library::Definition>,
+    #[serde(deserialize_with = "deserialize_profile_names")]
+    pub profile_names: Vec<ProfileNames>,
 }
 
 impl Default for Preferences {
@@ -36,6 +81,7 @@ impl Default for Preferences {
             start_at_login: false,
             daily_runs: Default::default(),
             projects: Vec::new(),
+            profile_names: Vec::new(),
         }
     }
 }
@@ -74,6 +120,34 @@ impl Preferences {
             .map(|(_, account)| account.as_str())
     }
 
+    pub fn cached_profile_names(
+        &self,
+        scope: &ProfileNamesScope,
+    ) -> Option<&[crate::cloud::CloudProfile]> {
+        self.profile_names
+            .iter()
+            .rev()
+            .find(|entry| &entry.scope == scope)
+            .map(|entry| entry.rows.as_slice())
+    }
+
+    pub fn remember_profile_names(
+        &mut self,
+        scope: ProfileNamesScope,
+        rows: &[crate::cloud::CloudProfile],
+    ) {
+        self.profile_names.retain(|entry| entry.scope != scope);
+        self.profile_names.push(ProfileNames {
+            scope,
+            rows: rows
+                .iter()
+                .filter(|row| valid_profile_name(row))
+                .take(8)
+                .cloned()
+                .collect(),
+        });
+    }
+
     pub fn load(path: &Path) -> io::Result<Self> {
         match fs::read(path) {
             Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
@@ -101,6 +175,87 @@ pub fn save_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_names_persist_by_exact_folder_and_account_without_session_data() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("preferences.json");
+        let scope = |root: &str, account: &str| ProfileNamesScope {
+            root: Some(root.into()),
+            account: Some(account.into()),
+        };
+        let retail = scope("/fixture/_retail_", "One");
+        let other_account = scope("/fixture/_retail_", "Two");
+        let forever = scope("/fixture/_forever_", "One");
+        let mut preferences = Preferences::default();
+        for (key, name) in [
+            (retail.clone(), "Raid"),
+            (other_account.clone(), "Second account"),
+            (forever.clone(), "Forever"),
+        ] {
+            preferences.remember_profile_names(
+                key,
+                &[crate::cloud::CloudProfile {
+                    id: "regular".into(),
+                    name: name.into(),
+                }],
+            );
+        }
+        preferences.save(&path)?;
+        let restored = Preferences::load(&path)?;
+        assert_eq!(
+            restored.cached_profile_names(&retail).unwrap()[0].name,
+            "Raid"
+        );
+        assert_eq!(
+            restored.cached_profile_names(&other_account).unwrap()[0].name,
+            "Second account"
+        );
+        assert_eq!(
+            restored.cached_profile_names(&forever).unwrap()[0].name,
+            "Forever"
+        );
+        assert!(
+            restored
+                .cached_profile_names(&scope("/elsewhere/_retail_", "One"))
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn damaged_profile_name_cache_preserves_preferences_and_uses_browser_validation()
+    -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("preferences.json");
+        let good = |name: String| serde_json::json!({"id": "regular", "name": name});
+        let mut rows = vec![
+            serde_json::json!({"id": "invalid", "name": "No"}),
+            good("🌙".repeat(21)),
+            serde_json::json!({"id": "regular", "name": 123}),
+        ];
+        rows.extend((0..10).map(|i| good(format!("Name {i}"))));
+        let scope = ProfileNamesScope {
+            root: None,
+            account: None,
+        };
+        let value = serde_json::json!({"light_theme": true, "daily_updates": true, "profile_names": [
+            {"scope": {"root": 4}, "rows": []},
+            {"scope": scope, "rows": rows}
+        ]});
+        fs::write(&path, serde_json::to_vec(&value)?)?;
+        let preferences = Preferences::load(&path)?;
+        assert!(preferences.light_theme && preferences.daily_updates);
+        let names = preferences.cached_profile_names(&scope).unwrap();
+        assert_eq!(names.len(), 8);
+        assert_eq!(names[0].name, "Name 0");
+        assert_eq!(names[7].name, "Name 7");
+        fs::write(&path, br#"{"light_theme":true,"profile_names":"damaged"}"#)?;
+        let preferences = Preferences::load(&path)?;
+        assert!(preferences.light_theme);
+        assert!(preferences.profile_names.is_empty());
+        Ok(())
+    }
 
     #[test]
     fn older_preview_sync_preferences_do_not_remove_client_paths_or_daily_choices() -> io::Result<()>

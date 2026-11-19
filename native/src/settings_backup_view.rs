@@ -27,6 +27,63 @@ mod ui_tests {
     }
 
     #[gpui::test]
+    fn signed_out_cached_cloud_only_profile_requests_sign_in_instead_of_creating_a_local_profile(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("_retail_");
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = Astral::new(
+                [None, None],
+                Some(directory.path()),
+                Some(Client::Retail),
+                false,
+                cx,
+            );
+            app.page = Page::Account;
+            app.preferences.folders[0] = Some(root.clone());
+            app.settings_backups.account_context = Some((Client::Retail, root.clone()));
+            app.settings_backups.account = Some("Fixture".into());
+            app.preferences.remember_profile_names(
+                crate::preferences::ProfileNamesScope {
+                    root: Some(root.clone()),
+                    account: Some("Fixture".into()),
+                },
+                &[
+                    crate::cloud::CloudProfile {
+                        id: "regular".into(),
+                        name: "Keyboard".into(),
+                    },
+                    crate::cloud::CloudProfile {
+                        id: "0123456789abcdef0123456789abcdef".into(),
+                        name: "Raid".into(),
+                    },
+                ],
+            );
+            app
+        });
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, _| {
+            app.profile_review_focus.picker.focus(window)
+        });
+        press(cx, "enter");
+        assert!(view.read_with(cx, |app, _| app.settings_backups.choosing_profile));
+        view.update_in(cx, |app, window, _| {
+            app.profile_review_focus.picker_options[1].focus(window)
+        });
+        press(cx, "enter");
+        assert!(cx.debug_bounds("notification").is_some());
+        view.read_with(cx, |app, _| {
+            assert!(!app.settings_backups.choosing_profile);
+            assert!(!app.settings_backups.reviewing);
+            assert!(app.settings_backups.review.is_none());
+            assert_eq!(app.settings_backups.profile.profiles().count(), 2);
+        });
+        assert!(!root.exists());
+    }
+
+    #[gpui::test]
     fn profile_review_focus_runs_once_and_captures_header_tab_and_escape(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
@@ -670,6 +727,24 @@ impl Astral {
                     }),
             ),
         )
+    }
+
+    pub(crate) fn review_cached_profile(
+        &mut self,
+        target: Profile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .settings_backups
+            .profile
+            .profiles()
+            .any(|profile| profile == target)
+        {
+            self.show_notification("Sign in with Battle.net first.", true, cx);
+            return;
+        }
+        self.review_local_profile(target, target == Profile::Handheld, window, cx);
     }
 
     fn review_local_profile(
