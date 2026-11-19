@@ -190,3 +190,34 @@ fn quick_find_preserves_the_addon_drawer_when_opened_and_when_a_page_is_chosen(
         Some("FixtureAddon")
     );
 }
+
+#[gpui::test]
+fn client_selector_cannot_change_installation_during_release_checks(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut app = Astral::new(
+            [None, None],
+            Some(directory.path()),
+            Some(Client::Retail),
+            false,
+            cx,
+        );
+        app.checking = true;
+        app
+    });
+    cx.simulate_resize(size(px(1000.), px(700.)));
+    cx.run_until_parked();
+    let trigger = cx.debug_bounds("client-selector").unwrap();
+    cx.simulate_click(trigger.center(), Modifiers::default());
+    assert!(view.read_with(cx, |app, _| app.menu.is_none()));
+    // A stale callback must observe the same guard as the disabled control.
+    view.update(cx, |app, cx| app.change_client(Client::Forever, cx));
+    assert!(view.read_with(cx, |app, _| app.preferences.client == Client::Retail));
+    view.update_in(cx, |app, window, _| app.brand_focus.focus(window));
+    for _ in 0..3 {
+        press(cx, "tab");
+    }
+    press(cx, "enter");
+    // Disabled selects are skipped by Tab, so Quick find is the next action.
+    assert!(view.read_with(cx, |app, _| app.quick_find.is_some()));
+}

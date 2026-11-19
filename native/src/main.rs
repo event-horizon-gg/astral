@@ -563,7 +563,7 @@ impl Astral {
     }
 
     fn choose_root(&mut self, client: Client, cx: &mut Context<Self>) {
-        if self.addon_batch_running() {
+        if self.addon_controls_busy() {
             return;
         }
         if self.fixture {
@@ -589,7 +589,7 @@ impl Astral {
             let _ = this.update(cx, |app, cx| {
                 match folder {
                     Ok(Some((target, path))) => {
-                        if app.addon_batch_running() || app.settings_write_in_progress() {
+                        if app.addon_controls_busy() {
                             return;
                         }
                         app.folder_error = None;
@@ -609,7 +609,7 @@ impl Astral {
     }
 
     fn change_client(&mut self, target: Client, cx: &mut Context<Self>) {
-        if self.addon_batch_running() {
+        if self.addon_controls_busy() {
             return;
         }
         self.close_cloud_profile_manager();
@@ -1464,9 +1464,7 @@ impl Astral {
     }
 
     fn toggle_menu(&mut self, menu: ToolbarMenu, window: &mut Window, cx: &mut Context<Self>) {
-        if menu == ToolbarMenu::Client
-            && (self.addon_batch_running() || self.settings_write_in_progress())
-        {
+        if menu == ToolbarMenu::Client && self.addon_controls_busy() {
             return;
         }
         if self.menu == Some(menu) {
@@ -2468,6 +2466,9 @@ impl Render for Astral {
                                 app.toggle_menu(ToolbarMenu::Client, window, cx);
                             }),
                         )
+                        .debug_selector(|| "client-selector".into())
+                        .tab_stop(!self.addon_controls_busy())
+                        .when(self.addon_controls_busy(), |button| button.cursor_default())
                         .on_key_down(cx.listener(
                             |app, event: &gpui::KeyDownEvent, window, cx| {
                                 if matches!(event.keystroke.key.as_str(), "up" | "down")
@@ -2650,10 +2651,7 @@ impl Render for Astral {
                             palette,
                             cx.listener(move |app, _: &(), window, cx| {
                                 app.close_toolbar_menu(window, cx);
-                                if !app.addon_batch_running()
-                                    && !app.settings_write_in_progress()
-                                    && app.preferences.client != target
-                                {
+                                if !app.addon_controls_busy() && app.preferences.client != target {
                                     app.change_client(target, cx);
                                 }
                                 cx.notify();
