@@ -46,3 +46,9 @@ jobs:
           $env:ASTRAL_TEST_WINDOWS_ARCHIVE = $archive
           cargo test --locked --manifest-path native/Cargo.toml -- --include-ignored
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify click and keyboard routes without native windows
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test --locked --manifest-path native/Cargo.toml --features headless-ui-tests ui_tests::
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

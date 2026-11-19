@@ -103,4 +103,12 @@ node --test tests/cloud.test.mjs tests/ui-fixture.test.mjs
 
 The HTTP check binds an ephemeral port on `127.0.0.1`, uses fake sessions and an in-memory SQLite database, and kills the server on completion. It covers both game clients, independent profiles, shared libraries, revision conflicts, backup restore/retention and session revocation. It does not access WoW, Battle.net or Cloudflare. Without `ASTRAL_TEST_ELECTRON_CODEC`, the native HTTP check does not run. This validates HTTP/JSON compatibility with the service code in Node; it does not validate the deployed Cloudflare runtime or live cross-device sync.
 
+For logical interface checks without opening an operating-system window:
+
+```sh
+cargo test --locked --manifest-path native/Cargo.toml --features headless-ui-tests ui_tests::
+```
+
+These checks instantiate the actual Astral view on GPUI's `TestPlatform`, using `TestWindow`, `NoopTextSystem` and a temporary fixture directory. They exercise click routing, focus traversal and complete key-down/key-up events. They do not launch installed apps, use live credentials or access a game installation. GPUI's test-support feature adds optional test dependencies; normal builds leave it disabled. These are not screenshot, font-rendering or real-platform dialog tests. Windows verification runs them after the ordinary package checks.
+
 The Cloudflare API and in-game Lua addons are shared compatibility contracts for this migration. See [remaining parity work](PARITY.md).

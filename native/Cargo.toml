@@ -5,6 +5,9 @@ edition = "2024"
 license = "MIT"
 publish = false
 
+[features]
+headless-ui-tests = ["gpui/test-support"]
+
 [dependencies]
 async_zip = { version = "0.0.17", features = ["deflate"] }
 base64 = "0.22"

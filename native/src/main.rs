@@ -46,6 +46,8 @@ mod tray;
 mod type_ahead;
 mod typography;
 mod ui_icons;
+#[cfg(all(test, feature = "headless-ui-tests"))]
+mod ui_tests;
 
 use gpui::{
     App, Application, Bounds, Context, KeyBinding, PathPromptOptions, SharedString,
@@ -141,6 +143,8 @@ struct Astral {
     tools_first_focus: gpui::FocusHandle,
     account_first_focus: gpui::FocusHandle,
     root_focus: gpui::FocusHandle,
+    brand_focus: gpui::FocusHandle,
+    header_focus: gpui::FocusHandle,
     main_scroll: gpui::ScrollHandle,
     main_overflows: bool,
     scrollbar_drag: Option<(f32, f32)>,
@@ -267,6 +271,8 @@ impl Astral {
             tools_first_focus: cx.focus_handle().tab_stop(true),
             account_first_focus: cx.focus_handle().tab_stop(true),
             root_focus: cx.focus_handle().tab_index(-2),
+            brand_focus: cx.focus_handle().tab_stop(true),
+            header_focus: cx.focus_handle().tab_index(-1),
             main_scroll: gpui::ScrollHandle::new(),
             main_overflows: false,
             scrollbar_drag: None,
@@ -1051,6 +1057,11 @@ impl Astral {
     }
 
     fn navigate(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        let header_focus = self
+            .header_focus
+            .contains_focused(window, cx)
+            .then(|| window.focused(cx))
+            .flatten();
         if self.page != page {
             if self.page == Page::Account {
                 self.close_account_overlays();
@@ -1081,9 +1092,10 @@ impl Astral {
         self.menu = None;
         self.menu_return_focus = None;
         self.selected = None;
-        self.quick_find = None;
-        self.quick_find_return = None;
-        self.root_focus.focus(window);
+        header_focus
+            .as_ref()
+            .unwrap_or(&self.root_focus)
+            .focus(window);
         if page == Page::Discover {
             self.poll_profile_game_status(cx);
         }
@@ -1431,6 +1443,8 @@ impl Astral {
                                         .child(icon("arrow-right", 15., palette.text)),
                                     palette,
                                     cx.listener(move |app, _: &(), window, cx| {
+                                        app.quick_find = None;
+                                        app.quick_find_return = None;
                                         app.navigate(page, window, cx)
                                     }),
                                 )
@@ -1450,7 +1464,6 @@ impl Astral {
         } else {
             self.menu = Some(menu);
             self.menu_return_focus = window.focused(cx);
-            self.selected = None;
             if menu == ToolbarMenu::Client {
                 self.client_menu_focus[self.preferences.client.index()].focus(window);
             }
@@ -2323,6 +2336,7 @@ impl Render for Astral {
             .count();
         let top = div()
             .id("app-header")
+            .track_focus(&self.header_focus)
             .tab_group()
             .tab_index(-1)
             .tab_stop(false)
@@ -2342,21 +2356,15 @@ impl Render for Astral {
                     .flex()
                     .items_center()
                     .gap_7()
-                    .child(
+                    .child(keyboard_button(
                         div()
                             .id("astral-brand")
+                            .track_focus(&self.brand_focus)
                             .flex()
                             .items_center()
                             .gap(px(11.))
                             .mr(px(if compact { 0. } else { 14. }))
                             .cursor_pointer()
-                            .on_click(cx.listener(|app, _, _, cx| {
-                                app.page = Page::Library;
-                                app.menu = None;
-                                app.selected = None;
-                                app.set_query("", cx);
-                                cx.notify();
-                            }))
                             .child(
                                 div()
                                     .relative()
@@ -2395,7 +2403,11 @@ impl Render for Astral {
                                     .font_weight(gpui::FontWeight(760.))
                                     .child(typography::tracked("Astral", 27., 1.2, -1.5)),
                             ),
-                    )
+                        palette,
+                        cx.listener(|app, _: &(), window, cx| {
+                            app.navigate(Page::Library, window, cx)
+                        }),
+                    ))
                     .children(
                         [
                             (Page::Library, "library", "Library"),
