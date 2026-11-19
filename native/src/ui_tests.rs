@@ -221,3 +221,26 @@ fn client_selector_cannot_change_installation_during_release_checks(cx: &mut Tes
     // Disabled selects are skipped by Tab, so Quick find is the next action.
     assert!(view.read_with(cx, |app, _| app.quick_find.is_some()));
 }
+
+#[gpui::test]
+fn focusing_the_brand_does_not_change_its_layout(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        Astral::new(
+            [None, None],
+            Some(directory.path()),
+            Some(Client::Retail),
+            false,
+            cx,
+        )
+    });
+    cx.simulate_resize(size(px(1000.), px(700.)));
+    view.update_in(cx, |app, window, _| app.root_focus.focus(window));
+    cx.run_until_parked();
+    let before = cx.debug_bounds("astral-brand").unwrap();
+    press(cx, "tab");
+    view.update_in(cx, |app, window, _| {
+        assert!(app.brand_focus.is_focused(window));
+    });
+    assert_eq!(cx.debug_bounds("astral-brand").unwrap(), before);
+}

@@ -657,6 +657,26 @@ fn keyboard_button(
         .on_click(move |_, window, cx| activate(&(), window, cx))
 }
 
+fn focus_outline(focus: gpui::FocusHandle, color: u32) -> impl IntoElement {
+    gpui::canvas(
+        |_, _, _| (),
+        move |bounds, (), window, _| {
+            if focus.is_focused(window) {
+                // editorial.css: 2px outline, 4px offset, 4px button radius.
+                // Paint a transparent-center ring so surrounding surfaces show
+                // through the offset, without adding to the button's layout.
+                window.paint_quad(
+                    gpui::outline(bounds.dilate(px(6.)), rgb(color), Default::default())
+                        .border_widths(px(2.))
+                        .corner_radii(px(10.)),
+                );
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
 #[derive(Clone, Copy)]
 struct Palette {
     background: u32,
@@ -2364,58 +2384,64 @@ impl Render for Astral {
                     .flex()
                     .items_center()
                     .gap_7()
-                    .child(keyboard_button(
-                        div()
-                            .id("astral-brand")
-                            .track_focus(&self.brand_focus)
-                            .flex()
-                            .items_center()
-                            .gap(px(11.))
-                            .mr(px(if compact { 0. } else { 14. }))
-                            .cursor_pointer()
-                            .child(
-                                div()
-                                    .relative()
-                                    .size(px(35.))
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .right_0()
-                                            .top_0()
-                                            .size(px(35.))
-                                            .rounded_full()
-                                            .bg(rgb(palette.accent)),
-                                    )
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .left(px(-4.))
-                                            .top(px(2.))
-                                            .size(px(30.))
-                                            .rounded_full()
-                                            .bg(rgb(palette.background)),
-                                    )
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .left(px(-8.))
-                                            .top(px(2.))
-                                            .size(px(30.))
-                                            .rounded_full()
-                                            .bg(rgb(palette.text)),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(27.))
-                                    .font_weight(gpui::FontWeight(760.))
-                                    .child(typography::tracked("Astral", 27., 1.2, -1.5)),
-                            ),
-                        palette,
-                        cx.listener(|app, _: &(), window, cx| {
-                            app.navigate(Page::Library, window, cx)
-                        }),
-                    ))
+                    .child(
+                        keyboard_button(
+                            div()
+                                .id("astral-brand")
+                                .debug_selector(|| "astral-brand".into())
+                                .track_focus(&self.brand_focus)
+                                .relative()
+                                .flex()
+                                .items_center()
+                                .gap(px(11.))
+                                .mr(px(if compact { 0. } else { 14. }))
+                                .cursor_pointer()
+                                .child(
+                                    div()
+                                        .relative()
+                                        .size(px(35.))
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .right_0()
+                                                .top_0()
+                                                .size(px(35.))
+                                                .rounded_full()
+                                                .bg(rgb(palette.accent)),
+                                        )
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .left(px(-4.))
+                                                .top(px(2.))
+                                                .size(px(30.))
+                                                .rounded_full()
+                                                .bg(rgb(palette.background)),
+                                        )
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .left(px(-8.))
+                                                .top(px(2.))
+                                                .size(px(30.))
+                                                .rounded_full()
+                                                .bg(rgb(palette.text)),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(27.))
+                                        .font_weight(gpui::FontWeight(760.))
+                                        .child(typography::tracked("Astral", 27., 1.2, -1.5)),
+                                )
+                                .child(focus_outline(self.brand_focus.clone(), palette.accent)),
+                            palette,
+                            cx.listener(|app, _: &(), window, cx| {
+                                app.navigate(Page::Library, window, cx)
+                            }),
+                        )
+                        .focus(|style| style),
+                    )
                     .children(
                         [
                             (Page::Library, "library", "Library"),
