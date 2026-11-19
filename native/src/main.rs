@@ -578,7 +578,7 @@ impl Astral {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Select your WoW game folder".into()),
+            prompt: Some("Select folder".into()),
         });
         self.await_root_choice(
             client,
