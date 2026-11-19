@@ -31,14 +31,14 @@ struct Outcome {
     changed: bool,
 }
 
-fn install_if_newer(
+fn install_if_newer<I: Into<packages::Input>>(
     root: &Path,
     client: Client,
     source: &Definition,
     catalog: &[Definition],
     tag: String,
     notes: String,
-    download: impl FnOnce(&mut dyn FnMut(u8)) -> Result<Vec<u8>, String>,
+    download: impl FnOnce(&mut dyn FnMut(u8)) -> Result<I, String>,
     mut progress: impl FnMut(u8),
 ) -> Result<Outcome, String> {
     let installed = library::scan(root, client, catalog)
@@ -572,7 +572,9 @@ mod tests {
                 &catalog,
                 tag.clone(),
                 String::new(),
-                |_| panic!("An already-current addon must not download a ZIP"),
+                |_| -> Result<Vec<u8>, String> {
+                    panic!("An already-current addon must not download a ZIP")
+                },
                 |_| {},
             )
             .unwrap();

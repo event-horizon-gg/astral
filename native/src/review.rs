@@ -161,7 +161,7 @@ impl Astral {
         let task = cx.background_executor().spawn(async move {
             let bytes = match input {
                 PackageInput::Download(release) => releases::download(&release.package)?,
-                PackageInput::Bundled => bundled::package(&catalog[source].folder)?,
+                PackageInput::Bundled => bundled::package(&catalog[source].folder)?.into(),
             };
             packages::inspect(bytes, &root, client, &catalog[source], &catalog).map(Arc::new)
         });

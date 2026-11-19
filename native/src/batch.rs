@@ -75,11 +75,11 @@ fn apply_update(
 fn fetch_package(
     update: &Update,
     source: &Definition,
-) -> Result<(String, String, Vec<u8>), String> {
+) -> Result<(String, String, packages::Input), String> {
     if source.bundled == Some(true) {
         let tag = bundled::version(&source.folder).ok_or("Bundled addon unavailable.")?;
         check_release(update, &tag)?;
-        Ok((tag, String::new(), bundled::package(&source.folder)?))
+        Ok((tag, String::new(), bundled::package(&source.folder)?.into()))
     } else {
         let release = releases::latest(&releases::client(), source)?;
         check_release(update, &release.tag)?;
@@ -128,7 +128,7 @@ pub(crate) fn install_missing(
 }
 
 fn install_package(
-    bytes: Vec<u8>,
+    bytes: impl Into<packages::Input>,
     (tag, notes): (&str, &str),
     update: &Update,
     root: &Path,
@@ -301,7 +301,7 @@ pub fn daily_updates(
                     .unwrap_or_default();
                 let bytes = match release {
                     Some(release) => releases::download(&release.package)?,
-                    None => bundled::package(&source.folder)?,
+                    None => bundled::package(&source.folder)?.into(),
                 };
                 let update = Update {
                     source: index,

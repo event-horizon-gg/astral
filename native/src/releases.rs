@@ -109,7 +109,7 @@ fn project_release(repo: &str, release: GitHubRelease) -> ProjectRelease {
         .filter(|asset| {
             asset.state == "uploaded"
                 && asset.name.to_ascii_lowercase().ends_with(".zip")
-                && (1..=crate::packages::MAX_ZIP).contains(&asset.size)
+                && (1..=crate::packages::MAX_DOWNLOAD).contains(&asset.size)
                 && asset.browser_download_url.starts_with(&prefix)
         })
         .map(|asset| Package {
@@ -173,20 +173,20 @@ fn select_release(
     })
 }
 
-pub fn download(package: &Package) -> Result<Vec<u8>, String> {
+pub fn download(package: &Package) -> Result<crate::packages::Input, String> {
     download_with_progress(package, |_| {})
 }
 
 pub fn download_with_progress(
     package: &Package,
     progress: impl FnMut(u8),
-) -> Result<Vec<u8>, String> {
-    if package.size > crate::packages::MAX_ZIP {
-        return Err("The ZIP exceeds the 128 MB download limit.".into());
+) -> Result<crate::packages::Input, String> {
+    if package.size > crate::packages::MAX_DOWNLOAD {
+        return Err("The ZIP exceeds the 512 MB download limit.".into());
     }
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .https_only(true)
-        .timeout_global(Some(Duration::from_secs(120)))
+        .timeout_global(Some(Duration::from_secs(180)))
         .build()
         .into();
     let mut response = agent
@@ -209,12 +209,15 @@ fn read_download(
     mut reader: impl std::io::Read,
     package: &Package,
     mut progress: impl FnMut(u8),
-) -> Result<Vec<u8>, String> {
+) -> Result<crate::packages::Input, String> {
     use sha2::{Digest, Sha256};
-    if package.size > crate::packages::MAX_ZIP {
-        return Err("The ZIP exceeds the 128 MB download limit.".into());
+    if package.size > crate::packages::MAX_DOWNLOAD {
+        return Err("The ZIP exceeds the 512 MB download limit.".into());
     }
-    let mut bytes = Vec::with_capacity(package.size.min(65536) as usize);
+    let mut output = tempfile::NamedTempFile::new()
+        .map_err(|error| format!("Couldn't save the downloaded package. {error}"))?;
+    let mut bytes = 0u64;
+    let mut hash = Sha256::new();
     let mut buffer = [0u8; 32768];
     let mut last = 0;
     loop {
@@ -224,31 +227,32 @@ fn read_download(
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(format!("Couldn't read the downloaded package. {error}")),
         };
-        if bytes.len() as u64 + count as u64 > package.size {
+        if bytes + count as u64 > package.size {
             return Err("The download is incomplete.".into());
         }
-        bytes.extend_from_slice(&buffer[..count]);
+        std::io::Write::write_all(&mut output, &buffer[..count])
+            .map_err(|error| format!("Couldn't save the downloaded package. {error}"))?;
+        hash.update(&buffer[..count]);
+        bytes += count as u64;
         if package.size > 0 {
             // Electron reserves 0–85 for actual downloaded bytes, then 90 for
             // a validated package and 100 only after the install commits.
-            let percent =
-                ((bytes.len() as u64 * 85 + package.size / 2) / package.size).min(85) as u8;
+            let percent = ((bytes * 85 + package.size / 2) / package.size).min(85) as u8;
             if percent != last {
                 progress(percent);
                 last = percent;
             }
         }
     }
-    if bytes.len() as u64 != package.size {
+    if bytes != package.size {
         return Err("The download is incomplete.".into());
     }
     if let Some(digest) = &package.digest {
-        if digest.strip_prefix("sha256:") != Some(format!("{:x}", Sha256::digest(&bytes)).as_str())
-        {
+        if digest.strip_prefix("sha256:") != Some(format!("{:x}", hash.finalize()).as_str()) {
             return Err("The download checksum doesn't match GitHub.".into());
         }
     }
-    Ok(bytes)
+    Ok(crate::packages::Input::File(output))
 }
 
 pub fn check(agent: &ureq::Agent, source: &Definition, installed: &str) -> Result<Check, String> {
@@ -357,17 +361,26 @@ mod tests {
         }
     }
 
+    fn content(input: crate::packages::Input) -> Vec<u8> {
+        match input {
+            crate::packages::Input::Bytes(bytes) => bytes,
+            crate::packages::Input::File(file) => std::fs::read(file.path()).unwrap(),
+        }
+    }
+
     #[test]
     fn download_progress_tracks_bytes_and_reserves_install_completion() {
         let mut progress = vec![];
         let data = vec![7u8; 100];
         assert_eq!(
-            read_download(
-                Chunks(std::io::Cursor::new(data.clone())),
-                &download_fixture(100),
-                |percent| progress.push(percent)
-            )
-            .unwrap(),
+            content(
+                read_download(
+                    Chunks(std::io::Cursor::new(data.clone())),
+                    &download_fixture(100),
+                    |percent| progress.push(percent)
+                )
+                .unwrap()
+            ),
             data
         );
         assert_eq!(progress, [21, 43, 64, 85]);
@@ -395,18 +408,46 @@ mod tests {
         package.digest =
             Some("sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into());
         assert_eq!(
-            read_download(std::io::Cursor::new(b"hello"), &package, |_| {}).unwrap(),
+            content(read_download(std::io::Cursor::new(b"hello"), &package, |_| {}).unwrap()),
             b"hello"
         );
         assert!(
             read_download(
                 std::io::empty(),
-                &download_fixture(crate::packages::MAX_ZIP + 1),
+                &download_fixture(crate::packages::MAX_DOWNLOAD + 1),
                 |_| {}
             )
             .unwrap_err()
             .contains("limit")
         );
+    }
+
+    #[test]
+    fn a_download_over_the_previous_limit_is_spooled_to_disk_with_bounded_reads() {
+        use std::io::Read;
+        let size = 129 * 1024 * 1024;
+        struct Reader {
+            remaining: u64,
+        }
+        impl std::io::Read for Reader {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                assert!(output.len() <= 32 * 1024);
+                let count = (output.len() as u64).min(self.remaining) as usize;
+                output[..count].fill(7);
+                self.remaining -= count as u64;
+                Ok(count)
+            }
+        }
+        let input =
+            read_download(Reader { remaining: size }, &download_fixture(size), |_| {}).unwrap();
+        let crate::packages::Input::File(file) = input else {
+            panic!("Downloaded archives must remain on disk")
+        };
+        assert_eq!(file.as_file().metadata().unwrap().len(), size);
+        let mut check = file.reopen().unwrap();
+        let mut sample = [0; 32];
+        check.read_exact(&mut sample).unwrap();
+        assert_eq!(sample, [7; 32]);
     }
 
     #[test]

@@ -115,4 +115,6 @@ Folder-selection tests inject the pending result future and use temporary game f
 
 Release-package popup tests inject the selection result. Native menus require real-window testing; the fake platform has no native handles. The popup uses the existing tray/menu dependency and shared event fan-out, without adding another global menu handler.
 
+Addon ZIP downloads stream into private temporary files (512 MiB maximum). Local imports keep a private file snapshot (1 GiB maximum), so replacing the original ZIP cannot change an open review. Inspection and staging seek through those files with bounded buffers; directory metadata and capped TOC contents remain in memory. Extraction retains the path, dependency, CRC and declared-size checks and a 1 GiB expanded-size limit. Temporary archives are removed when their review or operation ends.
+
 The Cloudflare API and in-game Lua addons are shared compatibility contracts for this migration. See [remaining parity work](PARITY.md).
