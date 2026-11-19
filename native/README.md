@@ -111,4 +111,6 @@ cargo test --locked --manifest-path native/Cargo.toml --features headless-ui-tes
 
 These checks instantiate the actual Astral view on GPUI's `TestPlatform`, using `TestWindow`, `NoopTextSystem` and a temporary fixture directory. They exercise click routing, focus traversal and complete key-down/key-up events. They do not launch installed apps, use live credentials or access a game installation. GPUI's test-support feature adds optional test dependencies; normal builds leave it disabled. These are not screenshot, font-rendering or real-platform dialog tests. Windows verification runs them after the ordinary package checks.
 
+Folder-selection tests inject the pending result future and use temporary game folders. They verify operation ownership and completion, not the native chooser: `TestPlatform::prompt_for_paths` is unimplemented and must not be called by these tests.
+
 The Cloudflare API and in-game Lua addons are shared compatibility contracts for this migration. See [remaining parity work](PARITY.md).
