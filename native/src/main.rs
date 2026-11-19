@@ -845,20 +845,8 @@ impl Palette {
         name: impl Into<SharedString>,
         primary: bool,
     ) -> gpui::Stateful<gpui::Div> {
-        div()
-            .id(id)
-            .cursor_pointer()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap_2()
-            .h(px(39.))
-            .px(px(15.))
-            .rounded(px(5.))
-            .border_1()
+        self.button_base(id, name)
             .border_color(if primary { rgb(self.accent) } else { self.line })
-            .text_size(px(12.))
-            .font_weight(gpui::FontWeight(550.))
             .when(primary, |button| {
                 button
                     .bg(rgb(self.accent))
@@ -874,6 +862,38 @@ impl Palette {
             .when(!primary, |button| {
                 button.hover(move |style| style.bg(self.hover))
             })
+    }
+
+    fn danger_button(
+        self,
+        id: &'static str,
+        name: impl Into<SharedString>,
+    ) -> gpui::Stateful<gpui::Div> {
+        self.button_base(id, name)
+            .bg(rgb(0x692e40))
+            .text_color(rgb(0xffffff))
+            .border_color(rgb(0xa96072))
+    }
+
+    fn button_base(
+        self,
+        id: impl Into<gpui::ElementId>,
+        name: impl Into<SharedString>,
+    ) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(id)
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .h(px(39.))
+            .px(px(15.))
+            .rounded(px(5.))
+            .border_1()
+            .border_color(self.line)
+            .text_size(px(12.))
+            .font_weight(gpui::FontWeight(550.))
             .child(name.into())
     }
 
@@ -3477,12 +3497,16 @@ impl Render for Astral {
             .capture_key_down(cx.listener(|app, event: &gpui::KeyDownEvent, window, cx| {
                 if app.profile_review_key(event, window)
                     || app.project_review_key(event, window, cx)
+                    || app.cloud_confirmation_key(event, window, cx)
                 {
                     cx.stop_propagation();
                 }
             }))
             .capture_action(cx.listener(|app, _: &DismissOverlay, window, cx| {
-                if app.dismiss_active_profile_review(cx) || app.dismiss_project_review(window, cx) {
+                if app.dismiss_active_profile_review(cx)
+                    || app.dismiss_project_review(window, cx)
+                    || app.dismiss_cloud_confirmation(cx)
+                {
                     cx.stop_propagation();
                 }
             }))

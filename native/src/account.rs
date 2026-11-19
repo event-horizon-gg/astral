@@ -146,6 +146,127 @@ impl Metadata {
     }
 }
 
+#[cfg(all(test, feature = "headless-ui-tests"))]
+mod ui_tests {
+    use super::*;
+    use crate::{Client, Page, ToolbarMenu, ui_tests::press};
+    use gpui::{KeyBinding, Modifiers, TestAppContext, size};
+
+    fn fixture(directory: &std::path::Path, cx: &mut Context<Astral>) -> Astral {
+        cx.bind_keys([KeyBinding::new("escape", crate::DismissOverlay, None)]);
+        let mut app = Astral::new(
+            [None, None],
+            Some(directory),
+            Some(Client::Retail),
+            false,
+            cx,
+        );
+        app.page = Page::Account;
+        app.start_cloud_deletion(cx);
+        app
+    }
+
+    #[gpui::test]
+    fn cloud_confirmation_preserves_header_focus_and_captures_dialog_keys(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, _| {
+            assert!(
+                app.account
+                    .sync_dialog_focus
+                    .as_ref()
+                    .unwrap()
+                    .close
+                    .is_focused(window)
+            )
+        });
+        let appearance = cx.debug_bounds("appearance-trigger").unwrap().center();
+        cx.simulate_click(appearance, Modifiers::default());
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            assert!(app.header_focus.contains_focused(window, cx))
+        });
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(
+                app.account
+                    .sync_dialog_focus
+                    .as_ref()
+                    .unwrap()
+                    .close
+                    .is_focused(window)
+            )
+        });
+        press(cx, "shift-tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(
+                app.account
+                    .sync_dialog_focus
+                    .as_ref()
+                    .unwrap()
+                    .cloud
+                    .is_focused(window)
+            )
+        });
+        let tools = cx.debug_bounds("tools-trigger").unwrap().center();
+        cx.simulate_click(tools, Modifiers::default());
+        press(cx, "escape");
+        assert!(view.read_with(cx, |app, _| app.account.delete_confirmation.is_none()));
+        assert!(view.read_with(cx, |app, _| app.menu == Some(ToolbarMenu::Tools)));
+    }
+
+    #[gpui::test]
+    fn busy_cloud_deletion_still_traps_tab_in_its_editable_confirmation_input(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| fixture(directory.path(), cx));
+        cx.simulate_resize(size(px(1250.), px(700.)));
+        cx.run_until_parked();
+        view.update(cx, |app, cx| {
+            app.account.busy = Some("Fixture operation");
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let appearance = cx.debug_bounds("appearance-trigger").unwrap().center();
+        cx.simulate_click(appearance, Modifiers::default());
+        press(cx, "tab");
+        view.update_in(cx, |app, window, cx| {
+            assert!(
+                app.account
+                    .delete_input
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .focus
+                    .is_focused(window)
+            )
+        });
+        cx.simulate_input("DELETE");
+        assert!(
+            view.read_with(cx, |app, _| app.account.delete_confirmation.as_deref()
+                == Some("DELETE"))
+        );
+        press(cx, "shift-tab");
+        view.update_in(cx, |app, window, cx| {
+            assert!(
+                app.account
+                    .delete_input
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .focus
+                    .is_focused(window)
+            )
+        });
+        press(cx, "escape");
+        assert!(view.read_with(cx, |app, _| app.account.delete_confirmation.is_some()));
+        // Never activate a destructive button, load credentials or call a service.
+    }
+}
+
 struct SyncDialogFocus {
     close: FocusHandle,
     cloud: FocusHandle,
@@ -600,6 +721,7 @@ impl Astral {
     }
     pub(crate) fn update_sync_dialog_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.sync_dialog_open() {
+            let opening = self.account.sync_dialog_focus.is_none();
             let focus = self
                 .account
                 .sync_dialog_focus
@@ -613,7 +735,8 @@ impl Astral {
                 && (self.account.history_restore.is_some()
                     || self.account.revoke.is_some()
                     || self.account.delete_confirmation.is_some());
-            if !focus.cloud.is_focused(window)
+            if (opening || !cloud_confirmation)
+                && !focus.cloud.is_focused(window)
                 && !focus.local.is_focused(window)
                 && !(cloud_confirmation && focus.close.is_focused(window))
                 && !self
@@ -664,6 +787,30 @@ impl Astral {
         self.account.sync_missing.clear();
         cx.notify();
         true
+    }
+
+    fn cloud_confirmation_open(&self) -> bool {
+        self.page == crate::Page::Account
+            && (self.account.history_restore.is_some()
+                || self.account.revoke.is_some()
+                || self.account.delete_confirmation.is_some())
+    }
+
+    pub(crate) fn cloud_confirmation_key(
+        &self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &Context<Self>,
+    ) -> bool {
+        if !self.cloud_confirmation_open() || event.keystroke.key != "tab" {
+            return false;
+        }
+        self.cycle_cloud_confirmation_focus(event.keystroke.modifiers.shift, window, cx);
+        true
+    }
+
+    pub(crate) fn dismiss_cloud_confirmation(&mut self, cx: &mut Context<Self>) -> bool {
+        self.cloud_confirmation_open() && self.dismiss_sync_dialog(cx)
     }
 
     pub(crate) fn sync_dialog_open(&self) -> bool {
@@ -2144,25 +2291,33 @@ impl Astral {
         window: &mut Window,
         cx: &Context<Self>,
     ) {
-        if self.account.busy.is_some() {
-            return;
-        }
         let Some(focus) = &self.account.sync_dialog_focus else {
             return;
         };
-        let mut controls = vec![focus.close.clone()];
-        if let Some(input) = &self.account.delete_input {
-            controls.push(input.read(cx).focus.clone());
+        let busy = self.account.busy.is_some();
+        let mut controls = Vec::new();
+        if !busy {
+            controls.push(focus.close.clone());
         }
-        controls.push(focus.cloud.clone());
+        if self.account.delete_confirmation.is_some() {
+            if let Some(input) = &self.account.delete_input {
+                controls.push(input.read(cx).focus.clone());
+            }
+        }
+        if !busy {
+            controls.push(focus.cloud.clone());
+        }
         let enabled = if let Some(value) = &self.account.delete_confirmation {
             value == "DELETE"
         } else {
             self.account.revoke.is_some()
                 || (!self.profile_game_running() && !self.addon_batch_running())
         };
-        if enabled {
+        if enabled && !busy {
             controls.push(focus.local.clone());
+        }
+        if controls.is_empty() {
+            return;
         }
         let current = controls.iter().position(|focus| focus.is_focused(window));
         let index = match (current, backwards) {
@@ -2253,9 +2408,7 @@ impl Astral {
                         .when(busy, |button| button.opacity(0.45).cursor_default())
                         .when(!busy, |button| crate::keyboard_button(button.track_focus(&focus.cloud), palette,
                             cx.listener(|app, _: &(), _, cx| { app.dismiss_sync_dialog(cx); }))))
-                    .child(palette.primary_button("confirm-cloud-deletion", "Delete cloud data")
-                        .bg(rgb(0x692e40)).border_color(rgb(0xa96072))
-                        .hover(|style| style.bg(rgb(0x692e40)).border_color(rgb(0xa96072)))
+                    .child(palette.danger_button("confirm-cloud-deletion", "Delete cloud data")
                         .when(!enabled, |button| button.opacity(0.45).cursor_default())
                         .when(enabled, |button| crate::keyboard_button(button.track_focus(&focus.local), palette,
                             cx.listener(|app, _: &(), _, cx| app.delete_cloud_data(cx))))))))
