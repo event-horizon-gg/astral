@@ -955,7 +955,7 @@ impl Astral {
     }
 
     fn write_settings_backup(&mut self, action: Action, cx: &mut Context<Self>) {
-        if self.addon_batch_running() {
+        if self.root_choice_pending || self.addon_batch_running() {
             return;
         }
         let state = &self.settings_backups;

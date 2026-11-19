@@ -122,6 +122,7 @@ struct Astral {
     preferences_path: Option<PathBuf>,
     preferences_error: Option<String>,
     folder_error: Option<(Client, String)>,
+    root_choice_pending: bool,
     detected_roots: [Option<PathBuf>; 2],
     page: Page,
     filter: Filter,
@@ -251,6 +252,7 @@ impl Astral {
             preferences_path,
             preferences_error,
             folder_error: None,
+            root_choice_pending: false,
             detected_roots,
             page: Page::Library,
             filter: Filter::All,
@@ -420,7 +422,8 @@ impl Astral {
     }
 
     pub(crate) fn addon_controls_busy(&self) -> bool {
-        self.scanning
+        self.root_choice_pending
+            || self.scanning
             || self.checking
             || self.discovery_search_busy()
             || self.addon_batch_running()
@@ -577,18 +580,43 @@ impl Astral {
             multiple: false,
             prompt: Some("Select your WoW game folder".into()),
         });
+        self.await_root_choice(
+            client,
+            async move {
+                picker
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .map(|paths| paths.and_then(|paths| paths.into_iter().next()))
+                    .map_err(|error| error.to_string())
+            },
+            cx,
+        );
+    }
+
+    fn await_root_choice(
+        &mut self,
+        client: Client,
+        picker: impl std::future::Future<Output = Result<Option<PathBuf>, String>> + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.addon_controls_busy() {
+            return;
+        }
+        self.root_choice_pending = true;
+        cx.notify();
         cx.spawn(async move |this, cx| {
-            let Ok(result) = picker.await else {
-                return;
-            };
-            let folder = result
-                .map(|paths| paths.and_then(|paths| paths.into_iter().next()))
-                .and_then(|folder| {
-                    Ok(folder
-                        .map(|path| library::client_for_root(&path).map(|target| (target, path)))
-                        .transpose()?)
-                });
+            let folder = picker.await.and_then(|folder| {
+                folder
+                    .map(|path| {
+                        library::client_for_root(&path)
+                            .map(|target| (target, path))
+                            .map_err(|error| error.to_string())
+                    })
+                    .transpose()
+            });
             let _ = this.update(cx, |app, cx| {
+                app.root_choice_pending = false;
+                cx.notify();
                 match folder {
                     Ok(Some((target, path))) => {
                         if app.addon_controls_busy() {
@@ -596,12 +624,15 @@ impl Astral {
                         }
                         app.folder_error = None;
                         app.preferences.folders[target.index()] = Some(path);
-                        app.detected_roots = app
-                            .preferences
-                            .detected_folders(&Client::ALL.map(Client::detect));
+                        let defaults = if app.fixture {
+                            [None, None]
+                        } else {
+                            Client::ALL.map(Client::detect)
+                        };
+                        app.detected_roots = app.preferences.detected_folders(&defaults);
                         app.change_client(target, cx);
                     }
-                    Err(error) => app.folder_error = Some((client, error.to_string())),
+                    Err(error) => app.folder_error = Some((client, error)),
                     Ok(None) => return,
                 }
                 cx.notify();

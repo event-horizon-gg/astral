@@ -279,3 +279,86 @@ fn clicking_outside_tools_dismisses_it_and_activates_the_clicked_control(cx: &mu
     cx.simulate_click(point(px(630.), px(10.)), Modifiers::default());
     assert!(view.read_with(cx, |app, _| app.menu.is_none()));
 }
+
+#[gpui::test]
+fn folder_choice_owns_the_operation_until_cancel_error_or_selection(cx: &mut TestAppContext) {
+    use std::{cell::RefCell, rc::Rc, task::Poll};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("_forever_");
+    std::fs::create_dir_all(root.join("Interface/AddOns")).unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        Astral::new(
+            [None, None],
+            Some(directory.path()),
+            Some(Client::Retail),
+            false,
+            cx,
+        )
+    });
+    cx.simulate_resize(size(px(1000.), px(700.)));
+    let response = Rc::new(RefCell::new(None));
+    let wake = Rc::new(RefCell::new(None));
+    let picker = std::future::poll_fn({
+        let response = response.clone();
+        let wake = wake.clone();
+        move |cx| {
+            *wake.borrow_mut() = Some(cx.waker().clone());
+            response
+                .borrow_mut()
+                .take()
+                .map_or(Poll::Pending, Poll::Ready)
+        }
+    });
+    view.update(cx, |app, cx| {
+        app.await_root_choice(Client::Retail, picker, cx)
+    });
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |app, _| app.root_choice_pending));
+    let trigger = cx.debug_bounds("client-selector").unwrap().center();
+    cx.simulate_click(trigger, Modifiers::default());
+    assert!(view.read_with(cx, |app, _| app.menu.is_none()));
+    view.update(cx, |app, cx| {
+        app.change_client(Client::Forever, cx);
+        // A second request cannot replace the first picker's result.
+        app.await_root_choice(
+            Client::Retail,
+            std::future::ready(Ok(Some(root.clone()))),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |app, _| app.preferences.client == Client::Retail));
+    *response.borrow_mut() = Some(Ok(None));
+    wake.borrow_mut().take().unwrap().wake();
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |app, _| !app.root_choice_pending
+        && app.folder_error.is_none()));
+    assert!(view.read_with(cx, |app, _| {
+        app.preferences.folders.iter().all(Option::is_none)
+    }));
+    view.update(cx, |app, cx| {
+        app.await_root_choice(
+            Client::Retail,
+            std::future::ready(Err("Fixture picker failed".into())),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |app, _| !app.root_choice_pending
+        && app.folder_error.is_some()));
+    view.update(cx, |app, cx| {
+        app.await_root_choice(
+            Client::Retail,
+            std::future::ready(Ok(Some(root.clone()))),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |app, _| {
+        assert!(!app.root_choice_pending);
+        assert!(app.folder_error.is_none());
+        assert!(app.preferences.client == Client::Forever);
+        assert_eq!(app.root(Client::Forever), Some(&root));
+        assert!(app.root(Client::Retail).is_none());
+    });
+}

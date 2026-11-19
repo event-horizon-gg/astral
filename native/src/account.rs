@@ -819,6 +819,7 @@ impl Astral {
 
     fn auto_sync_ready(&self) -> bool {
         !self.fixture
+            && !self.root_choice_pending
             && !self.local_profile_sync_pending()
             && !self.app_updates.installing()
             && self.account.busy.is_none()

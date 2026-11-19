@@ -582,6 +582,7 @@ impl Astral {
 
     fn can_run_daily_checks(&self) -> bool {
         !self.fixture
+            && !self.root_choice_pending
             && self.preferences_path.is_some()
             && !self.daily_running
             && !self.app_updates.installing()

@@ -511,7 +511,8 @@ impl Astral {
     }
 
     pub(crate) fn can_start_update_batch(&self) -> bool {
-        !self.checking
+        !self.root_choice_pending
+            && !self.checking
             && !self.discovery_search_busy()
             && self.single_update.is_none()
             && !self.scanning
