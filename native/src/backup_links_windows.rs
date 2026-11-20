@@ -4,7 +4,7 @@ use ::windows::{
             CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
             CoUninitialize, IPersistFile, STGM_READ,
         },
-        UI::Shell::{CLSID_FolderShortcut, IShellLinkW, SLGP_RAWPATH},
+        UI::Shell::{IShellLinkW, SLGP_RAWPATH, ShellLink},
     },
     core::{Interface, PCWSTR},
 };
@@ -60,8 +60,9 @@ fn wide(path: &Path) -> Vec<u16> {
 
 pub(super) fn create(target: &Path, destination: &Path) -> io::Result<()> {
     unsafe {
-        let link: IShellLinkW = CoCreateInstance(&CLSID_FolderShortcut, None, CLSCTX_INPROC_SERVER)
-            .map_err(io::Error::other)?;
+        // Persist a regular .lnk file even when its target is a directory.
+        let link: IShellLinkW =
+            CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(io::Error::other)?;
         link.SetPath(PCWSTR(wide(&normalize(target)).as_ptr()))
             .map_err(io::Error::other)?;
         let persist: IPersistFile = link.cast().map_err(io::Error::other)?;
@@ -83,8 +84,8 @@ pub(super) fn create(target: &Path, destination: &Path) -> io::Result<()> {
 
 pub(super) fn read(path: &Path) -> io::Result<PathBuf> {
     unsafe {
-        let link: IShellLinkW = CoCreateInstance(&CLSID_FolderShortcut, None, CLSCTX_INPROC_SERVER)
-            .map_err(io::Error::other)?;
+        let link: IShellLinkW =
+            CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(io::Error::other)?;
         let persist: IPersistFile = link.cast().map_err(io::Error::other)?;
         persist
             .Load(PCWSTR(wide(&normalize(path)).as_ptr()), STGM_READ)
