@@ -22,6 +22,46 @@ pub struct State {
     archive_error: Option<String>,
     recent: Vec<Action>,
     recent_error: Option<String>,
+    button_focus: std::cell::RefCell<std::collections::HashMap<ButtonKey, FocusHandle>>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum ButtonKey {
+    OpenFolder,
+    OpenLibrary,
+    Archive(PathBuf),
+    ShowFiles(PathBuf),
+    Restore(PathBuf),
+    Retry(String, usize),
+}
+
+fn retry_keys(entries: &[Action]) -> Vec<ButtonKey> {
+    let mut counts = std::collections::HashMap::new();
+    entries
+        .iter()
+        .map(|entry| {
+            // Older activity records have no ID. Preserve content identity across
+            // reordering, with an occurrence counter for otherwise identical rows.
+            let identity = format!(
+                "{:?}",
+                (
+                    &entry.root,
+                    entry.client.index(),
+                    entry.time,
+                    &entry.name,
+                    &entry.retry_source,
+                    &entry.from,
+                    &entry.to,
+                    &entry.verb,
+                    &entry.error
+                )
+            );
+            let count = counts.entry(identity.clone()).or_insert(0);
+            let key = ButtonKey::Retry(identity, *count);
+            *count += 1;
+            key
+        })
+        .collect()
 }
 
 struct RestoreFocus {
@@ -213,43 +253,96 @@ fn activity_button(
     crate::keyboard_button(button, palette, activate)
 }
 
+fn activity_text_base(
+    palette: Palette,
+    id: impl Into<ElementId>,
+    label: &str,
+) -> Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(px(7.))
+        .py(px(5.))
+        .flex_shrink_0()
+        .rounded(px(4.))
+        .border_1()
+        .border_color(gpui::transparent_black())
+        .cursor_pointer()
+        .text_size(px(11.))
+        .text_color(rgb(palette.muted))
+        .hover(move |style| style.text_color(rgb(palette.accent)))
+        .child(label.to_owned())
+}
+
 fn activity_text_button(
     palette: Palette,
     id: impl Into<ElementId>,
     label: &str,
     activate: impl Fn(&(), &mut Window, &mut App) + 'static,
 ) -> Stateful<gpui::Div> {
-    activity_button(
-        div()
-            .id(id)
-            .flex()
-            .items_center()
-            .gap(px(7.))
-            .py(px(5.))
-            .flex_shrink_0()
-            .rounded(px(4.))
-            .border_1()
-            .border_color(gpui::transparent_black())
-            .cursor_pointer()
-            .text_size(px(11.))
-            .text_color(rgb(palette.muted))
-            .hover(move |style| style.text_color(rgb(palette.accent)))
-            .child(label.to_owned()),
-        palette,
-        activate,
-    )
+    activity_button(activity_text_base(palette, id, label), palette, activate)
+}
+
+fn outlined_activity_text_button(
+    palette: Palette,
+    id: impl Into<ElementId>,
+    label: &str,
+    focus: &FocusHandle,
+    enabled: bool,
+    activate: impl Fn(&(), &mut Window, &mut App) + 'static,
+) -> Stateful<gpui::Div> {
+    let button = activity_text_base(palette, id, label);
+    if enabled {
+        crate::outlined_button(button, palette, focus, activate)
+    } else {
+        button.opacity(0.45).cursor_default()
+    }
 }
 
 fn activity_link(
     palette: Palette,
     id: impl Into<ElementId>,
     label: &str,
+    focus: &FocusHandle,
     activate: impl Fn(&mut App) + 'static,
 ) -> Stateful<gpui::Div> {
-    activity_text_button(palette, id, label, move |_, _, cx| activate(cx))
+    crate::button_outline(
+        activity_text_button(palette, id, label, move |_, _, cx| activate(cx)),
+        palette,
+        focus,
+    )
 }
 
 impl State {
+    fn control_focus(&self, key: ButtonKey, cx: &App) -> FocusHandle {
+        self.button_focus
+            .borrow_mut()
+            .entry(key)
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone()
+    }
+
+    fn retain_control_focus(&self, archives: &[(&str, PathBuf)]) {
+        let mut keys =
+            std::collections::HashSet::from([ButtonKey::OpenFolder, ButtonKey::OpenLibrary]);
+        if let Some(Ok(entries)) = &self.entries {
+            for backup in entries {
+                keys.insert(ButtonKey::ShowFiles(backup.path.clone()));
+                keys.insert(ButtonKey::Restore(backup.path.clone()));
+            }
+        }
+        keys.extend(
+            archives
+                .iter()
+                .map(|(_, path)| ButtonKey::Archive(path.clone())),
+        );
+        keys.extend(retry_keys(&self.recent));
+        self.button_focus
+            .borrow_mut()
+            .retain(|key, _| keys.contains(key));
+    }
+
     pub(crate) fn addon_backup(&self, addon: &crate::Addon) -> Option<&installer::Backup> {
         self.entries.as_ref()?.as_ref().ok()?.iter().find(|backup| {
             !backup.interrupted
@@ -510,6 +603,8 @@ impl Astral {
     }
 
     pub fn backups_page(&self, palette: Palette, cx: &Context<Self>) -> impl IntoElement {
+        let archives = self.activity_archives();
+        self.activity.retain_control_focus(&archives);
         let client = self.preferences.client;
         let mut page = div().flex().flex_col();
         if let Some(Ok(message)) = &self.activity.outcome {
@@ -534,8 +629,7 @@ impl Astral {
         }
         // Electron backups are part of the normal list; only the separate
         // Raider.IO archive gets a navigation row in the reference interface.
-        for (index, (label, path)) in self
-            .activity_archives()
+        for (index, (label, path)) in archives
             .into_iter()
             .filter(|(label, _)| *label == "Earlier Raider.IO backups")
             .enumerate()
@@ -561,6 +655,9 @@ impl Astral {
                             palette,
                             ("earlier-archive", index),
                             "Open archive",
+                            &self
+                                .activity
+                                .control_focus(ButtonKey::Archive(path.clone()), cx),
                             move |cx| {
                                 cx.open_with_system(&path);
                             },
@@ -593,9 +690,10 @@ impl Astral {
                 )
                 .when_some(self.root(client).cloned(), |row, root| {
                     row.child(
-                        activity_button(
+                        crate::outlined_button(
                             palette.button("open-backup-folder", ""),
                             palette,
+                            &self.activity.control_focus(ButtonKey::OpenFolder, cx),
                             cx.listener(move |app, _: &(), _, cx| {
                                 match installer::open_backup_folder(&root, client) {
                                     Ok(path) => cx.open_with_system(&path),
@@ -639,9 +737,12 @@ impl Astral {
                                 .child("No backups yet"),
                         )
                         .child(
-                            activity_button(
-                                palette.button("open-library", "Open library"),
+                            crate::outlined_button(
+                                palette
+                                    .button("open-library", "Open library")
+                                    .debug_selector(|| "activity-open-library".into()),
                                 palette,
+                                &self.activity.control_focus(ButtonKey::OpenLibrary, cx),
                                 cx.listener(|app, _: &(), window, cx| {
                                     app.navigate(crate::Page::Library, window, cx);
                                 }),
@@ -804,6 +905,10 @@ impl Astral {
                                         palette,
                                         ("show-backup", index),
                                         "Show files",
+                                        &self.activity.control_focus(
+                                            ButtonKey::ShowFiles(backup.path.clone()),
+                                            cx,
+                                        ),
                                         move |cx| cx.reveal_path(&show),
                                     ))
                                 })
@@ -813,19 +918,44 @@ impl Astral {
                                         || (!backup.recovered
                                             && (!record.previous.is_empty() || backup.electron)),
                                     |actions| {
-                                        actions.child(activity_text_button(
-                                            palette,
-                                            ("restore-backup", index),
-                                            if backup.interrupted {
-                                                "Recover…"
-                                            } else {
-                                                "Restore previous"
-                                            },
-                                            cx.listener(move |app, _: &(), _, cx| {
-                                                app.activity.confirm_addon_restore(path.clone());
-                                                cx.notify();
+                                        actions.child(
+                                            outlined_activity_text_button(
+                                                palette,
+                                                ("restore-backup", index),
+                                                if backup.interrupted {
+                                                    "Recover…"
+                                                } else {
+                                                    "Restore previous"
+                                                },
+                                                &self.activity.control_focus(
+                                                    ButtonKey::Restore(backup.path.clone()),
+                                                    cx,
+                                                ),
+                                                !self.addon_controls_busy()
+                                                    && !self.profile_game_running(),
+                                                cx.listener(move |app, _: &(), _, cx| {
+                                                    if app.addon_controls_busy()
+                                                        || app.profile_game_running()
+                                                    {
+                                                        return;
+                                                    }
+                                                    app.activity
+                                                        .confirm_addon_restore(path.clone());
+                                                    cx.notify();
+                                                }),
+                                            )
+                                            .debug_selector({
+                                                let path = backup.path.clone();
+                                                move || {
+                                                    format!(
+                                                        "restore-backup:{}",
+                                                        path.file_name()
+                                                            .unwrap_or_default()
+                                                            .to_string_lossy()
+                                                    )
+                                                }
                                             }),
-                                        ))
+                                        )
                                     },
                                 ),
                         ),
@@ -859,6 +989,7 @@ impl Astral {
             .flex_col()
             .border_t_1()
             .border_color(rgb(palette.text));
+        let keys = retry_keys(&self.activity.recent);
         for (index, entry) in self.activity.recent.iter().enumerate() {
             let failed = entry.error.is_some();
             let detail = match (&entry.error, &entry.to) {
@@ -938,9 +1069,10 @@ impl Astral {
                             .flex_shrink_0()
                             .rounded(px(4.));
                         row.child(if self.can_start_update_batch() {
-                            crate::keyboard_button(
+                            crate::outlined_button(
                                 button,
                                 palette,
+                                &self.activity.control_focus(keys[index].clone(), cx),
                                 cx.listener(move |app, _: &(), _, cx| {
                                     app.update_one_addon(&source, cx)
                                 }),
@@ -1128,11 +1260,13 @@ impl Astral {
         }
         let mut actions = div().mt(px(25.)).flex().justify_end().gap(px(9.));
         if !self.activity.restoring {
-            actions = actions.child(activity_button(
+            actions = actions.child(crate::outlined_button(
                 palette
                     .button("cancel-restore", "Cancel")
+                    .debug_selector(|| "cancel-addon-restore".into())
                     .track_focus(&focus.cancel),
                 palette,
+                &focus.cancel,
                 cx.listener(|app, _: &(), _, cx| {
                     app.activity.dismiss_confirmation();
                     cx.notify();
@@ -1153,7 +1287,7 @@ impl Astral {
                 .opacity(0.6)
                 .track_focus(&focus.restore)
         } else {
-            activity_button(
+            crate::outlined_button(
                 palette
                     .primary_button(
                         "confirm-restore",
@@ -1165,6 +1299,7 @@ impl Astral {
                     )
                     .track_focus(&focus.restore),
                 palette,
+                &focus.restore,
                 cx.listener(|app, _: &(), _, cx| app.restore_backup(cx)),
             )
         };
@@ -1361,5 +1496,239 @@ mod tests {
         assert_eq!(entries[0].retry_source.as_deref(), Some("bigwigs"));
         assert_eq!(entries[99].name, "Addon 1");
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "headless-ui-tests"))]
+mod ui_tests {
+    use super::*;
+    use crate::{Page, ui_tests::press};
+    use gpui::{Modifiers, TestAppContext, size};
+
+    fn backup(path: PathBuf, name: &str) -> installer::Backup {
+        installer::Backup {
+            path,
+            transaction: installer::Transaction {
+                addon: name.into(),
+                release: "2".into(),
+                previous_version: Some("1".into()),
+                notes: String::new(),
+                created: 1_700_000_000,
+                created_ms: None,
+                folders: vec![name.into()],
+                previous: vec![name.into()],
+                restored: false,
+                removed: false,
+                profile_switch: None,
+            },
+            interrupted: false,
+            recovered: false,
+            electron: false,
+        }
+    }
+
+    #[gpui::test]
+    fn activity_restore_focus_tracks_backup_and_busy_links_do_not_open_confirmation(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let first = directory.path().join("FirstFixture");
+            let second = directory.path().join("SecondFixture");
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                let mut app = Astral::new(
+                    [None, None],
+                    Some(directory.path()),
+                    Some(Client::Retail),
+                    light,
+                    cx,
+                );
+                app.detected_roots[0] = Some(directory.path().to_owned());
+                app.page = Page::Backups;
+                app.activity.entries = Some(Ok(vec![
+                    backup(first.clone(), "First"),
+                    backup(second.clone(), "Second"),
+                ]));
+                app
+            });
+            cx.simulate_resize(size(px(1250.), px(1000.)));
+            cx.run_until_parked();
+            let before = cx.debug_bounds("restore-backup:SecondFixture").unwrap();
+            view.update_in(cx, |app, window, cx| {
+                app.activity
+                    .control_focus(ButtonKey::Restore(second.clone()), cx)
+                    .focus(window)
+            });
+            cx.run_until_parked();
+            assert_eq!(
+                before,
+                cx.debug_bounds("restore-backup:SecondFixture").unwrap()
+            );
+            view.update_in(cx, |app, _, cx| {
+                app.activity
+                    .entries
+                    .as_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .reverse();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, cx| {
+                assert!(
+                    app.activity
+                        .control_focus(ButtonKey::Restore(second.clone()), cx)
+                        .is_focused(window)
+                )
+            });
+            press(cx, "enter");
+            assert_eq!(
+                view.read_with(cx, |app, _| app.activity.confirmation.clone()),
+                Some(second.clone())
+            );
+            // Cancel the confirmation through its real keyboard action; never restore files.
+            press(cx, "enter");
+            assert!(view.read_with(cx, |app, _| app.activity.confirmation.is_none()));
+            view.update_in(cx, |app, window, cx| {
+                assert!(
+                    app.activity
+                        .control_focus(ButtonKey::Restore(second.clone()), cx)
+                        .is_focused(window)
+                );
+                app.checking = true;
+                app.brand_focus.focus(window);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let blocked = cx.debug_bounds("restore-backup:SecondFixture").unwrap();
+            cx.simulate_click(blocked.center(), Modifiers::default());
+            cx.run_until_parked();
+            assert!(view.read_with(cx, |app, _| app.activity.confirmation.is_none()));
+            view.update_in(cx, |app, _, cx| {
+                app.checking = false;
+                app.activity
+                    .entries
+                    .as_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .retain(|backup| backup.path != second);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert!(view.read_with(cx, |app, _| {
+                !app.activity
+                    .button_focus
+                    .borrow()
+                    .contains_key(&ButtonKey::Restore(second.clone()))
+            }));
+        }
+    }
+}
+
+#[cfg(all(test, feature = "headless-ui-tests"))]
+mod navigation_ui_tests {
+    use super::*;
+    use crate::{Page, ui_tests::press};
+    use gpui::{TestAppContext, size};
+
+    #[gpui::test]
+    fn empty_activity_tab_reaches_library_and_retries_keep_distinct_focus(cx: &mut TestAppContext) {
+        for light in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                let mut app = Astral::new(
+                    [None, None],
+                    Some(directory.path()),
+                    Some(Client::Retail),
+                    light,
+                    cx,
+                );
+                app.detected_roots[0] = Some(directory.path().to_owned());
+                app.page = Page::Backups;
+                app.activity.entries = Some(Ok(vec![]));
+                app
+            });
+            cx.simulate_resize(size(px(1250.), px(1000.)));
+            cx.run_until_parked();
+            let empty = cx.debug_bounds("activity-open-library").unwrap();
+            view.update_in(cx, |app, window, cx| {
+                app.activity
+                    .control_focus(ButtonKey::OpenFolder, cx)
+                    .focus(window)
+            });
+            press(cx, "tab");
+            view.update_in(cx, |app, window, cx| {
+                assert!(
+                    app.activity
+                        .control_focus(ButtonKey::OpenLibrary, cx)
+                        .is_focused(window)
+                )
+            });
+            assert_eq!(empty, cx.debug_bounds("activity-open-library").unwrap());
+            press(cx, "enter");
+            assert!(view.read_with(cx, |app, _| app.page == Page::Library));
+            view.update_in(cx, |app, _, cx| {
+                app.page = Page::Backups;
+                let source = app
+                    .catalog
+                    .iter()
+                    .find(|source| {
+                        source.supports(Client::Retail)
+                            && source.repo.is_some()
+                            && source.asset.is_some()
+                    })
+                    .unwrap()
+                    .id
+                    .clone();
+                app.activity.recent = [1, 2]
+                    .into_iter()
+                    .map(|time| Action {
+                        root: directory.path().to_owned(),
+                        client: Client::Retail,
+                        name: "Fixture addon".into(),
+                        retry_source: Some(source.clone()),
+                        from: Some("1".into()),
+                        to: Some("2".into()),
+                        verb: "Updated".into(),
+                        error: Some("Fixture update failed".into()),
+                        time,
+                    })
+                    .collect();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let keys = view.read_with(cx, |app, _| retry_keys(&app.activity.recent));
+            view.update_in(cx, |app, window, cx| {
+                app.activity
+                    .control_focus(keys[0].clone(), cx)
+                    .focus(window)
+            });
+            press(cx, "tab");
+            view.update_in(cx, |app, window, cx| {
+                assert!(
+                    app.activity
+                        .control_focus(keys[1].clone(), cx)
+                        .is_focused(window)
+                );
+                assert!(
+                    !app.activity
+                        .control_focus(keys[0].clone(), cx)
+                        .is_focused(window)
+                );
+                app.activity.recent.reverse();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, cx| {
+                assert!(
+                    app.activity
+                        .control_focus(keys[1].clone(), cx)
+                        .is_focused(window)
+                )
+            });
+            // Never activate Retry: it would start an addon operation.
+        }
     }
 }
