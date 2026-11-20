@@ -680,3 +680,126 @@ fn popup_open_errors_are_visible_and_release_the_waiting_result(cx: &mut TestApp
     assert_eq!(*result.borrow(), Some(None));
     assert!(cx.debug_bounds("notification").is_some());
 }
+
+#[gpui::test]
+fn library_filters_empty_action_and_drawer_keep_bounds_and_input_origin(cx: &mut TestAppContext) {
+    for light in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = Astral::new(
+                [None, None],
+                Some(directory.path()),
+                Some(Client::Retail),
+                light,
+                cx,
+            );
+            app.addons = vec![addon()];
+            app
+        });
+        cx.simulate_resize(size(px(1250.), px(900.)));
+        cx.run_until_parked();
+        for (index, selector, expected) in [
+            (1, "filter-updates", Filter::Updates),
+            (2, "manual", Filter::Manual),
+            (0, "all", Filter::All),
+        ] {
+            let before = cx.debug_bounds(selector).unwrap();
+            view.update_in(cx, |app, window, _| {
+                app.library_focus.filters[index].focus(window)
+            });
+            cx.run_until_parked();
+            assert_eq!(before, cx.debug_bounds(selector).unwrap());
+            press(cx, "enter");
+            assert!(view.read_with(cx, |app, _| app.filter == expected));
+            assert_eq!(before, cx.debug_bounds(selector).unwrap());
+            view.update_in(cx, |app, window, _| app.brand_focus.focus(window));
+            cx.simulate_click(before.center(), Modifiers::default());
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, cx| {
+                assert!(!focus_visible::indicated(
+                    &app.library_focus.filters[index],
+                    window,
+                    cx
+                ));
+            });
+            press(cx, "space");
+            view.update_in(cx, |app, window, cx| {
+                assert!(app.filter == expected);
+                assert!(focus_visible::indicated(
+                    &app.library_focus.filters[index],
+                    window,
+                    cx
+                ));
+            });
+            assert_eq!(before, cx.debug_bounds(selector).unwrap());
+        }
+        view.update_in(cx, |app, _, cx| {
+            app.filter = Filter::Updates;
+            app.set_query("missing addon", cx);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let empty = cx.debug_bounds("library-empty-action").unwrap();
+        view.update_in(cx, |app, window, _| app.library_focus.empty.focus(window));
+        cx.run_until_parked();
+        assert_eq!(empty, cx.debug_bounds("library-empty-action").unwrap());
+        press(cx, "enter");
+        assert!(view.read_with(cx, |app, _| app.filter == Filter::All
+            && app.query.is_empty()));
+        // The source header sits above the drawer's top-right close control.
+        // Exercise that control through the keyboard; do not change stacking here.
+        for key in ["enter", "space"] {
+            view.update_in(cx, |app, window, cx| {
+                app.selected = Some("FixtureAddon".into());
+                app.library_focus.close.focus(window);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let close = cx.debug_bounds("close-details").unwrap();
+            press(cx, key);
+            assert!(view.read_with(cx, |app, _| app.selected.is_none()));
+            view.update_in(cx, |app, _, cx| {
+                app.selected = Some("FixtureAddon".into());
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert_eq!(close, cx.debug_bounds("close-details").unwrap());
+        }
+        view.update_in(cx, |app, window, cx| {
+            let source = app
+                .catalog
+                .iter()
+                .find(|source| source.supports(Client::Retail) && source.repo.is_some())
+                .unwrap();
+            let mut managed = addon();
+            managed.folder = source.folder.clone();
+            app.selected = Some(managed.folder.clone());
+            app.addons = vec![managed];
+            app.brand_focus.focus(window);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let toggle = cx.debug_bounds("addon-auto-update").unwrap();
+        cx.simulate_click(toggle.center(), Modifiers::default());
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            assert!(app.excluded_from_daily(app.selected.as_deref().unwrap()));
+            assert!(!focus_visible::indicated(
+                &app.library_focus.daily,
+                window,
+                cx
+            ));
+        });
+        assert_eq!(toggle, cx.debug_bounds("addon-auto-update").unwrap());
+        press(cx, "space");
+        view.update_in(cx, |app, window, cx| {
+            assert!(!app.excluded_from_daily(app.selected.as_deref().unwrap()));
+            assert!(focus_visible::indicated(
+                &app.library_focus.daily,
+                window,
+                cx
+            ));
+        });
+        assert_eq!(toggle, cx.debug_bounds("addon-auto-update").unwrap());
+    }
+}

@@ -118,6 +118,36 @@ const HEADER_LAYER: usize = 50;
 const TOOLBAR_LAYER: usize = 80;
 const TOAST_LAYER: usize = 1000;
 
+struct LibraryFocus {
+    check: gpui::FocusHandle,
+    update_all: gpui::FocusHandle,
+    empty: gpui::FocusHandle,
+    close: gpui::FocusHandle,
+    daily: gpui::FocusHandle,
+    release: gpui::FocusHandle,
+    zip: gpui::FocusHandle,
+    restore: gpui::FocusHandle,
+    source: gpui::FocusHandle,
+    filters: [gpui::FocusHandle; 3],
+}
+
+impl LibraryFocus {
+    fn new(cx: &App) -> Self {
+        Self {
+            check: cx.focus_handle(),
+            update_all: cx.focus_handle(),
+            empty: cx.focus_handle(),
+            close: cx.focus_handle(),
+            daily: cx.focus_handle(),
+            release: cx.focus_handle(),
+            zip: cx.focus_handle(),
+            restore: cx.focus_handle(),
+            source: cx.focus_handle(),
+            filters: std::array::from_fn(|_| cx.focus_handle()),
+        }
+    }
+}
+
 struct SettingsFocus {
     folder: gpui::FocusHandle,
     daily: gpui::FocusHandle,
@@ -178,6 +208,7 @@ struct Astral {
     header_button_focus: [gpui::FocusHandle; 7],
     header_focus: gpui::FocusHandle,
     settings_focus: SettingsFocus,
+    library_focus: LibraryFocus,
     main_scroll: gpui::ScrollHandle,
     main_overflows: bool,
     scrollbar_drag: Option<(f32, f32)>,
@@ -315,6 +346,7 @@ impl Astral {
             header_button_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             header_focus: cx.focus_handle().tab_index(-1),
             settings_focus: SettingsFocus::new(cx),
+            library_focus: LibraryFocus::new(cx),
             main_scroll: gpui::ScrollHandle::new(),
             main_overflows: false,
             scrollbar_drag: None,
@@ -2204,13 +2236,15 @@ impl Astral {
             }])
             .overflow_y_scroll()
             .occlude()
-            .child(keyboard_button(
+            .child(outlined_button(
                 palette
                     .icon_button_sized("close-details", "close", 20.)
+                    .debug_selector(|| "close-details".into())
                     .absolute()
                     .right(px(19.))
                     .top(px(19.)),
                 palette,
+                &self.library_focus.close,
                 cx.listener(|app, _: &(), _, cx| {
                     app.selected = None;
                     cx.notify();
@@ -2268,6 +2302,7 @@ impl Astral {
                 let included = !self.excluded_from_daily(&folder);
                 let toggle = div()
                     .id("addon-auto-update")
+                    .debug_selector(|| "addon-auto-update".into())
                     .flex()
                     .items_center()
                     .justify_between()
@@ -2279,9 +2314,10 @@ impl Astral {
                 let drawer = drawer.child(if busy {
                     toggle.opacity(0.55)
                 } else {
-                    keyboard_button(
+                    outlined_button(
                         toggle.cursor_pointer(),
                         palette,
+                        &self.library_focus.daily,
                         cx.listener(move |app, _: &(), _, cx| {
                             app.toggle_daily_exclusion(&toggle_folder, cx);
                         }),
@@ -2303,9 +2339,10 @@ impl Astral {
                 drawer.child(if busy || (running && update) {
                     action.opacity(0.45).cursor_default()
                 } else {
-                    keyboard_button(
+                    outlined_button(
                         action,
                         palette,
+                        &self.library_focus.release,
                         cx.listener(move |app, _: &(), _, cx| {
                             if update && let Some(id) = &id {
                                 app.update_one_addon(id, cx);
@@ -2326,9 +2363,10 @@ impl Astral {
                 drawer.child(if busy || running {
                     action.opacity(0.45).cursor_default()
                 } else {
-                    keyboard_button(
+                    outlined_button(
                         action,
                         palette,
+                        &self.library_focus.zip,
                         cx.listener(move |app, _: &(), window, cx| {
                             app.choose_addon_zip(&id, window, cx);
                         }),
@@ -2353,9 +2391,10 @@ impl Astral {
                 drawer.child(if busy || running {
                     action.opacity(0.45).cursor_default()
                 } else {
-                    keyboard_button(
+                    outlined_button(
                         action,
                         palette,
+                        &self.library_focus.restore,
                         cx.listener(move |app, _: &(), _, cx| {
                             app.activity.confirm_addon_restore(path.clone());
                             cx.notify();
@@ -2383,13 +2422,14 @@ impl Astral {
                         ))
                     }),
                 |drawer, (url, label)| {
-                    drawer.child(keyboard_button(
+                    drawer.child(outlined_button(
                         palette
                             .button("addon-source", label)
                             .w_full()
                             .mb(px(10.))
                             .child(icon("external", 14., palette.muted)),
                         palette,
+                        &self.library_focus.source,
                         move |_, _, cx| cx.open_url(&url),
                     ))
                 },
@@ -3040,9 +3080,10 @@ impl Render for Astral {
                                         button.opacity(0.45).cursor_default()
                                     })
                                     .when(can_check, |button| {
-                                        keyboard_button(
+                                        outlined_button(
                                             button,
                                             palette,
+                                            &self.library_focus.check,
                                             cx.listener(|app, _: &(), _, cx| {
                                                 app.check_updates(None, cx)
                                             }),
@@ -3062,9 +3103,10 @@ impl Render for Astral {
                                 actions.child(if blocked {
                                     button.opacity(0.45).cursor_default()
                                 } else {
-                                    keyboard_button(
+                                    outlined_button(
                                         button,
                                         palette,
+                                        &self.library_focus.update_all,
                                         cx.listener(|app, _: &(), _, cx| app.update_all(cx)),
                                     )
                                 })
@@ -3154,8 +3196,10 @@ impl Render for Astral {
                                 (Filter::Updates, "filter-updates", "Updates"),
                                 (Filter::Manual, "manual", "Manual"),
                             ]
-                            .map(|(filter, id, name)| {
-                                keyboard_button(
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, (filter, id, name))| {
+                                outlined_button(
                                     palette
                                         .tab(id, name, self.filter == filter)
                                         .debug_selector(|| id.into())
@@ -3175,6 +3219,7 @@ impl Render for Astral {
                                             },
                                         ),
                                     palette,
+                                    &self.library_focus.filters[index],
                                     cx.listener(move |app, _: &(), _, cx| {
                                         app.filter = filter;
                                         app.selected = None;
@@ -3206,7 +3251,10 @@ impl Render for Astral {
                 } else {
                     "Find World of Warcraft"
                 };
-                let action = palette.button("library-empty-action", label).mt(px(20.));
+                let action = palette
+                    .button("library-empty-action", label)
+                    .debug_selector(|| "library-empty-action".into())
+                    .mt(px(20.));
                 list = list.child(
                     div()
                         .flex()
@@ -3232,9 +3280,10 @@ impl Render for Astral {
                         .child(if !has_addons && !failed && self.fixture {
                             action.opacity(0.45).cursor_default()
                         } else {
-                            keyboard_button(
+                            outlined_button(
                                 action,
                                 palette,
+                                &self.library_focus.empty,
                                 cx.listener(move |app, _: &(), window, cx| {
                                     if failed {
                                         app.refresh(cx);
