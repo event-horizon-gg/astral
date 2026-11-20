@@ -20,6 +20,18 @@ pub(crate) fn closed_key(
     search: &mut crate::type_ahead::TypeAhead,
     now: std::time::Instant,
 ) -> KeyResult {
+    closed_key_with_disabled(key, mac, labels, current, search, now, &[])
+}
+
+pub(crate) fn closed_key_with_disabled(
+    key: &gpui::Keystroke,
+    mac: bool,
+    labels: &[&str],
+    current: usize,
+    search: &mut crate::type_ahead::TypeAhead,
+    now: std::time::Instant,
+    disabled: &[usize],
+) -> KeyResult {
     let m = key.modifiers;
     let name = key.key.as_str();
     if ((mac || m.alt) && matches!(name, "up" | "down")) || (name == "f4" && !m.alt && !m.control) {
@@ -38,19 +50,32 @@ pub(crate) fn closed_key(
         }
     }
     if !mac && !m.modified() && !labels.is_empty() {
-        let end = labels.len() - 1;
-        let current = current.min(end);
-        let next = match name {
-            "down" | "right" => Some((current + 1).min(end)),
-            "up" | "left" => Some(current.saturating_sub(1)),
-            "pagedown" => Some(current.saturating_add(3).min(end)),
-            "pageup" => Some(current.saturating_sub(3)),
-            "home" => Some(0),
-            "end" => Some(end),
+        let current = current.min(labels.len() - 1);
+        let movement = match name {
+            "down" | "right" => Some((current as isize, 1, 1)),
+            "up" | "left" => Some((current as isize, -1, 1)),
+            "pagedown" => Some((current as isize, 1, 3)),
+            "pageup" => Some((current as isize, -1, 3)),
+            "home" => Some((-1, 1, 1)),
+            "end" => Some((labels.len() as isize, -1, 1)),
             _ => None,
         };
-        if let Some(next) = next {
-            return KeyResult::Select(next);
+        if let Some((mut index, direction, mut steps)) = movement {
+            let mut next = (!disabled.contains(&current)).then_some(current);
+            loop {
+                index += direction;
+                if index < 0 || index >= labels.len() as isize {
+                    break;
+                }
+                steps -= 1;
+                if !disabled.contains(&(index as usize)) {
+                    next = Some(index as usize);
+                    if steps <= 0 {
+                        break;
+                    }
+                }
+            }
+            return next.map_or(KeyResult::Handled, KeyResult::Select);
         }
     }
     // Space extends a live prefix instead of reopening the popup.
@@ -60,8 +85,19 @@ pub(crate) fn closed_key(
         crate::type_ahead::printable(key)
     };
     if let Some(text) = text {
+        let searchable: Vec<_> = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                if disabled.contains(&index) {
+                    ""
+                } else {
+                    *label
+                }
+            })
+            .collect();
         return search
-            .find(text, labels, current, now)
+            .find(text, &searchable, current, now)
             .map_or(KeyResult::Handled, KeyResult::Select);
     }
     KeyResult::Ignore
@@ -83,6 +119,18 @@ pub(crate) fn choose(
     selected: usize,
     position: Point<Pixels>,
 ) -> Result<Task<Option<usize>>, String> {
+    choose_with_disabled(window, cx, labels, selected, position, Vec::new())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn choose_with_disabled(
+    window: &Window,
+    cx: &App,
+    labels: Vec<String>,
+    selected: usize,
+    position: Point<Pixels>,
+    disabled: Vec<usize>,
+) -> Result<Task<Option<usize>>, String> {
     use tray_icon::menu::{CheckMenuItem, Menu};
     let target = Target::new(window)?;
     let menu = Menu::new();
@@ -93,7 +141,7 @@ pub(crate) fn choose(
         let item = CheckMenuItem::with_id(
             format!("{prefix}{index}"),
             label,
-            true,
+            !disabled.contains(&index),
             selected == index,
             None,
         );
@@ -110,7 +158,7 @@ pub(crate) fn choose(
                 .strip_prefix(&prefix)
                 .and_then(|index| index.parse::<usize>().ok())
             {
-                if index < count {
+                if index < count && !disabled.contains(&index) {
                     return Some(index);
                 }
             }
@@ -214,6 +262,18 @@ pub(crate) fn choose(
     Err("The package picker is unavailable on this platform.".into())
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub(crate) fn choose_with_disabled(
+    _: &Window,
+    _: &App,
+    _: Vec<String>,
+    _: usize,
+    _: Point<Pixels>,
+    _: Vec<usize>,
+) -> Result<Task<Option<usize>>, String> {
+    Err("The picker is unavailable on this platform.".into())
+}
+
 #[cfg(test)]
 mod keyboard_tests {
     use super::*;
@@ -315,6 +375,50 @@ mod keyboard_tests {
             ),
             KeyResult::Ignore
         );
+    }
+
+    #[test]
+    fn disabled_options_are_skipped_by_navigation_and_prefix_search() {
+        let labels = ["Select account", "Alpha", "Beta", "Gamma"];
+        let mut search = crate::type_ahead::TypeAhead::default();
+        let now = Instant::now();
+        for (key, current, expected) in [
+            ("down", 0, KeyResult::Select(1)),
+            ("up", 1, KeyResult::Select(1)),
+            ("home", 3, KeyResult::Select(1)),
+            ("pagedown", 0, KeyResult::Select(3)),
+            ("pageup", 3, KeyResult::Select(1)),
+            ("b", 1, KeyResult::Handled),
+        ] {
+            search.reset();
+            assert_eq!(
+                closed_key_with_disabled(
+                    &gpui::Keystroke::parse(key).unwrap(),
+                    false,
+                    &labels,
+                    current,
+                    &mut search,
+                    now,
+                    &[0, 2]
+                ),
+                expected
+            );
+        }
+        for key in ["down", "home", "end", "s"] {
+            search.reset();
+            assert_eq!(
+                closed_key_with_disabled(
+                    &gpui::Keystroke::parse(key).unwrap(),
+                    false,
+                    &labels[..1],
+                    0,
+                    &mut search,
+                    now,
+                    &[0]
+                ),
+                KeyResult::Handled
+            );
+        }
     }
 
     #[test]

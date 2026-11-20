@@ -26,6 +26,90 @@ mod ui_tests {
         app
     }
 
+    fn account_fixture(
+        directory: &std::path::Path,
+        light: bool,
+        cx: &mut Context<Astral>,
+    ) -> Astral {
+        let root = directory.join("_retail_");
+        for name in ["ALPHA", "ALPINE", "BETA"] {
+            std::fs::create_dir_all(root.join("WTF/Account").join(name).join("SavedVariables"))
+                .unwrap();
+        }
+        let mut app = Astral::new(
+            [None, None],
+            Some(directory),
+            Some(Client::Retail),
+            light,
+            cx,
+        );
+        app.page = Page::Settings;
+        app.preferences.folders[0] = Some(root);
+        app.load_settings_backups(None, cx);
+        app
+    }
+
+    #[gpui::test]
+    fn local_account_prefix_survives_refresh_and_placeholder_cannot_be_selected(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (view, cx) =
+                cx.add_window_view(|_, cx| account_fixture(directory.path(), light, cx));
+            cx.simulate_resize(size(px(1250.), px(900.)));
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, _| app.local_account_focus.focus(window));
+            press(cx, "a");
+            assert_eq!(
+                view.read_with(cx, |app, _| app.settings_backups.account.clone())
+                    .as_deref(),
+                Some("ALPHA")
+            );
+            press(cx, "l");
+            press(cx, "p");
+            press(cx, "i");
+            view.update_in(cx, |app, window, _| {
+                assert_eq!(app.settings_backups.account.as_deref(), Some("ALPINE"));
+                assert_eq!(app.settings_backups.accounts.len(), 3);
+                assert!(app.local_account_focus.is_focused(window));
+            });
+            for choice in [Some(0), None, Some(usize::MAX)] {
+                view.update_in(cx, |app, window, cx| {
+                    app.await_local_account(std::future::ready(choice), window, cx)
+                });
+                cx.run_until_parked();
+                view.update_in(cx, |app, window, _| {
+                    assert_eq!(app.settings_backups.account.as_deref(), Some("ALPINE"));
+                    assert!(app.local_account_focus.is_focused(window));
+                });
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn account_popup_cannot_restore_a_selection_after_the_settings_context_changes(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| account_fixture(directory.path(), false, cx));
+        cx.run_until_parked();
+        let (choice, finish) = crate::ui_tests::deferred();
+        view.update_in(cx, |app, window, cx| {
+            app.await_local_account(choice, window, cx);
+            app.load_settings_backups(Some("BETA".into()), cx);
+            app.brand_focus.focus(window);
+        });
+        cx.run_until_parked();
+        finish(Some(1));
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, _| {
+            assert_eq!(app.settings_backups.account.as_deref(), Some("BETA"));
+            assert!(app.settings_backups.account_choice.is_none());
+            assert!(app.brand_focus.is_focused(window));
+        });
+    }
+
     #[gpui::test]
     fn signed_out_cached_cloud_only_profile_requests_sign_in_instead_of_creating_a_local_profile(
         cx: &mut TestAppContext,
@@ -303,7 +387,8 @@ impl ProfileReviewFocus {
 pub struct State {
     request: u64,
     accounts: Vec<String>,
-    choosing_account: bool,
+    account_choice: Option<uuid::Uuid>,
+    account_type_ahead: crate::type_ahead::TypeAhead,
     choosing_profile: bool,
     profile_type_ahead: crate::type_ahead::TypeAhead,
     game_running: bool,
@@ -410,92 +495,187 @@ impl Astral {
     }
 
     pub(crate) fn local_account_picker(&self, palette: Palette, cx: &Context<Self>) -> gpui::Div {
-        let state = &self.settings_backups;
-        let enabled = !state.accounts.is_empty()
-            && !self.settings_write_in_progress()
-            && !self.account_work_in_progress();
-        let toggle = |app: &mut Self, cx: &mut Context<Self>| {
-            app.settings_backups.choosing_account = !app.settings_backups.choosing_account;
-            cx.notify();
-        };
         let trigger = palette
-            .button(
+            .button_base(
                 "local-wow-account",
-                state
+                self.settings_backups
                     .account
-                    .as_deref()
-                    .unwrap_or(if state.loading {
-                        "Loading accounts…"
-                    } else {
-                        "Select account"
-                    })
-                    .to_owned(),
+                    .clone()
+                    .unwrap_or_else(|| "Select account".into()),
             )
-            .h(px(35.))
+            .debug_selector(|| "local-wow-account-trigger".into())
+            .relative()
+            .h_auto()
+            .p(px(8.))
+            .cursor_default()
+            .font_weight(gpui::FontWeight::NORMAL)
             .bg(rgb(palette.surface))
-            .child(crate::icon("chevron", 13., palette.muted))
-            .when(!enabled, |button| button.opacity(0.6).cursor_default())
-            .when(enabled, |button| {
-                button
-                    .focusable()
-                    .tab_stop(true)
-                    .focus(move |style| style.border_color(rgb(palette.accent)))
-                    .on_click(cx.listener(move |app, _, _, cx| toggle(app, cx)))
-                    .on_key_down(cx.listener(move |app, event: &gpui::KeyDownEvent, _, cx| {
-                        if event.keystroke.key == "down" {
-                            cx.stop_propagation();
-                            toggle(app, cx);
-                        }
-                    }))
-            });
+            .text_color(rgb(palette.text))
+            .child(crate::remember_bounds(self.local_account_bounds.clone()))
+            .child(crate::icon("chevron", 13., palette.muted));
         div()
             .flex()
-            .flex_col()
-            .gap_2()
+            .items_center()
+            .justify_between()
+            .gap(px(25.))
+            .text_size(px(12.))
+            .py(px(17.))
             .border_b_1()
             .border_color(palette.line)
-            .mt(px(18.))
-            .pt(px(9.))
-            .pb(px(12.))
+            .child("Local WoW account")
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_4()
-                    .text_size(px(12.))
-                    .child("Local WoW account")
-                    .child(trigger),
+                crate::outlined_button(
+                    trigger,
+                    palette,
+                    &self.local_account_focus,
+                    cx.listener(|app, _: &(), window, cx| app.choose_local_account(window, cx)),
+                )
+                .capture_key_up(crate::native_select::suppress_button_keys),
             )
-            .when(state.choosing_account && enabled, |picker| {
-                picker.child(div().flex().flex_col().items_end().gap_1().children(
-                    state.accounts.iter().enumerate().map(|(index, name)| {
-                        let selected = state.account.as_ref() == Some(name);
-                        let name = name.clone();
-                        palette
-                            .button(("local-wow-account-option", index), name.clone())
-                            .focusable()
-                            .tab_stop(true)
-                            .h(px(32.))
-                            .when(selected, |row| {
-                                row.child(crate::icon("check", 13., palette.accent))
-                            })
-                            .focus(move |style| style.border_color(rgb(palette.accent)))
-                            .on_click(cx.listener(move |app, _, _, cx| {
-                                app.load_settings_backups(Some(name.clone()), cx)
-                            }))
-                    }),
-                ))
-            })
     }
 
-    pub(crate) fn dismiss_local_account_picker(&mut self, cx: &mut Context<Self>) -> bool {
-        if std::mem::take(&mut self.settings_backups.choosing_account) {
-            cx.notify();
-            return true;
+    fn choose_local_account(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.fixture
+            || self.page != crate::Page::Settings
+            || self.settings_backups.account_choice.is_some()
+        {
+            return;
         }
-        false
+        let Some(bounds) = self.local_account_bounds.get() else {
+            return;
+        };
+        let labels = std::iter::once("Select account".to_owned())
+            .chain(self.settings_backups.accounts.iter().cloned())
+            .collect();
+        let selected = self
+            .settings_backups
+            .account
+            .as_ref()
+            .and_then(|name| {
+                self.settings_backups
+                    .accounts
+                    .iter()
+                    .position(|item| item == name)
+            })
+            .map_or(0, |index| index + 1);
+        match crate::native_select::choose_with_disabled(
+            window,
+            cx,
+            labels,
+            selected,
+            gpui::point(bounds.left(), bounds.bottom()),
+            vec![0],
+        ) {
+            Ok(choice) => self.await_local_account(choice, window, cx),
+            Err(error) => self.show_notification(error, true, cx),
+        }
     }
+
+    fn await_local_account(
+        &mut self,
+        choice: impl std::future::Future<Output = Option<usize>> + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.page != crate::Page::Settings || self.settings_backups.account_choice.is_some() {
+            return;
+        }
+        let request = self.settings_backups.request;
+        let token = uuid::Uuid::new_v4();
+        let client = self.preferences.client;
+        let root = self.root(client).cloned();
+        let accounts = self.settings_backups.accounts.clone();
+        self.settings_backups.account_choice = Some(token);
+        cx.spawn_in(window, async move |this, cx| {
+            let choice = choice.await;
+            let _ = this.update_in(cx, |app, window, cx| {
+                if app.settings_backups.account_choice != Some(token) {
+                    return;
+                }
+                app.settings_backups.account_choice = None;
+                if app.settings_backups.request == request
+                    && app.page == crate::Page::Settings
+                    && app.preferences.client == client
+                    && app.root(client) == root.as_ref()
+                {
+                    if let Some(name) = choice
+                        .and_then(|index| index.checked_sub(1))
+                        .and_then(|index| accounts.get(index))
+                    {
+                        app.select_local_account(name, cx);
+                    }
+                    app.local_account_focus.focus(window);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(crate) fn invalidate_local_account_picker(&mut self) {
+        self.settings_backups.account_choice = None;
+        self.settings_backups.account_type_ahead.reset();
+    }
+
+    fn select_local_account(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self
+            .settings_backups
+            .accounts
+            .iter()
+            .any(|item| item == name)
+            && self.settings_backups.account.as_deref() != Some(name)
+        {
+            self.load_settings_backups(Some(name.to_owned()), cx);
+        }
+    }
+
+    pub(crate) fn local_account_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.page != crate::Page::Settings
+            || !self.local_account_focus.is_focused(window)
+            || self.settings_backups.account_choice.is_some()
+        {
+            return false;
+        }
+        let state = &mut self.settings_backups;
+        let labels: Vec<_> = std::iter::once("Select account")
+            .chain(state.accounts.iter().map(String::as_str))
+            .collect();
+        let selected = state
+            .account
+            .as_ref()
+            .and_then(|name| state.accounts.iter().position(|item| item == name))
+            .map_or(0, |index| index + 1);
+        match crate::native_select::closed_key_with_disabled(
+            &event.keystroke,
+            cfg!(target_os = "macos"),
+            &labels,
+            selected,
+            &mut state.account_type_ahead,
+            std::time::Instant::now(),
+            &[0],
+        ) {
+            crate::native_select::KeyResult::Open => self.choose_local_account(window, cx),
+            crate::native_select::KeyResult::Select(index) => {
+                if let Some(name) = index
+                    .checked_sub(1)
+                    .and_then(|index| state.accounts.get(index))
+                    .cloned()
+                {
+                    self.select_local_account(&name, cx);
+                }
+            }
+            crate::native_select::KeyResult::Handled => {}
+            crate::native_select::KeyResult::Ignore => return false,
+        }
+        true
+    }
+
     pub(crate) fn inspect_local_settings(&mut self, cx: &mut Context<Self>) {
         let state = &self.settings_backups;
         if state.inspecting
@@ -1116,6 +1296,13 @@ impl Astral {
     }
 
     pub fn load_settings_backups(&mut self, account: Option<String>, cx: &mut Context<Self>) {
+        let same_scope =
+            self.settings_backups
+                .account_context
+                .as_ref()
+                .is_some_and(|(client, root)| {
+                    *client == self.preferences.client && self.root(*client) == Some(root)
+                });
         self.settings_backups.request += 1;
         let request = self.settings_backups.request;
         self.settings_backups.confirmation = None;
@@ -1129,11 +1316,14 @@ impl Astral {
         self.settings_backups.profile_edit = None;
         self.settings_backups.profile = ProfileState::default();
         self.settings_backups.backups.clear();
-        self.settings_backups.accounts.clear();
-        self.settings_backups.choosing_account = false;
+        self.settings_backups.account_choice = None;
+        if !same_scope {
+            self.settings_backups.accounts.clear();
+            self.settings_backups.account_type_ahead.reset();
+            self.settings_backups.account = None;
+            self.settings_backups.account_context = None;
+        }
         self.settings_backups.choosing_profile = false;
-        self.settings_backups.account = None;
-        self.settings_backups.account_context = None;
         self.settings_backups.loading = false;
         self.settings_backups.status = None;
         let client = self.preferences.client;

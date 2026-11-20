@@ -139,6 +139,8 @@ struct Astral {
     library_query: String,
     search: gpui::Entity<search_input::SearchInput>,
     search_focus: gpui::FocusHandle,
+    local_account_focus: gpui::FocusHandle,
+    local_account_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui::Pixels>>>>,
     profile_name_focus: gpui::FocusHandle,
     profile_review_focus: settings_backup_view::ProfileReviewFocus,
     menu: Option<ToolbarMenu>,
@@ -273,6 +275,8 @@ impl Astral {
             library_query: String::new(),
             search,
             search_focus,
+            local_account_focus: cx.focus_handle().tab_stop(true),
+            local_account_bounds: Default::default(),
             profile_name_focus: cx.focus_handle().tab_stop(true),
             profile_review_focus: settings_backup_view::ProfileReviewFocus::new(cx),
             menu: None,
@@ -1174,6 +1178,7 @@ impl Astral {
             .then(|| window.focused(cx))
             .flatten();
         if self.page != page {
+            self.invalidate_local_account_picker();
             if self.page == Page::Account {
                 self.close_account_overlays();
             }
@@ -3522,6 +3527,7 @@ impl Render for Astral {
                     || app.cloud_confirmation_key(event, window, cx)
                     || app.cloud_manager_key(event, window, cx)
                     || app.discovery_source_key(event, window, cx)
+                    || app.local_account_key(event, window, cx)
                 {
                     cx.stop_propagation();
                 }
@@ -3567,9 +3573,6 @@ impl Render for Astral {
                 }
                 if app.menu.is_some() {
                     app.close_toolbar_menu(window, cx);
-                    return;
-                }
-                if app.dismiss_local_account_picker(cx) {
                     return;
                 }
                 if app.dismiss_account_profile_picker(cx) {
