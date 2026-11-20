@@ -635,6 +635,11 @@ impl Astral {
             crate::native_select::Anchor {
                 bounds,
                 font_size: px(12.),
+                appearance: crate::native_select::Appearance {
+                    background: Palette::new(self.preferences.light_theme).surface,
+                    text: Palette::new(self.preferences.light_theme).text,
+                    padding_start: px(8.),
+                },
             },
             vec![0],
         ) {
@@ -1710,6 +1715,11 @@ impl Astral {
             crate::native_select::Anchor {
                 bounds,
                 font_size: px(14.),
+                appearance: crate::native_select::Appearance {
+                    background: Palette::new(self.preferences.light_theme).panel,
+                    text: Palette::new(self.preferences.light_theme).text,
+                    padding_start: px(9.),
+                },
             },
             menu.disabled,
         ) {

@@ -61,6 +61,11 @@ impl Astral {
             crate::native_select::Anchor {
                 bounds,
                 font_size: gpui::px(12.),
+                appearance: crate::native_select::Appearance {
+                    background: 0x141b2d,
+                    text: 0xdce3fb,
+                    padding_start: gpui::px(9.),
+                },
             },
         ) {
             Ok(task) => self.await_discovery_source(task, window, cx),

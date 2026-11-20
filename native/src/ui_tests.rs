@@ -649,3 +649,34 @@ fn edit_menu_delete_is_selection_only_and_undoable(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(view.read_with(cx, |app, _| app.query.clone()), "Moon 🌙");
 }
+
+#[gpui::test]
+fn popup_open_errors_are_visible_and_release_the_waiting_result(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (_, cx) = cx.add_window_view(|_, cx| {
+        Astral::new(
+            [None, None],
+            Some(directory.path()),
+            Some(Client::Retail),
+            false,
+            cx,
+        )
+    });
+    let result = std::rc::Rc::new(std::cell::RefCell::new(Some(Some(123))));
+    let saved = result.clone();
+    cx.update(|window, cx| {
+        let task = native_select::report_errors(
+            std::future::ready(Err("fixture popup failure".into())),
+            window,
+            cx,
+        );
+        cx.foreground_executor()
+            .spawn(async move {
+                *saved.borrow_mut() = Some(task.await);
+            })
+            .detach();
+    });
+    cx.run_until_parked();
+    assert_eq!(*result.borrow(), Some(None));
+    assert!(cx.debug_bounds("notification").is_some());
+}

@@ -74,6 +74,11 @@ impl Astral {
                 } else {
                     12.
                 }),
+                appearance: native_select::Appearance {
+                    background: crate::Palette::new(self.preferences.light_theme).panel,
+                    text: crate::Palette::new(self.preferences.light_theme).text,
+                    padding_start: gpui::px(0.),
+                },
             },
         ) {
             Ok(choice) => self.await_client_choice(choice, window, cx),

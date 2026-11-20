@@ -36,6 +36,8 @@ mod review;
 mod schedule;
 mod scrollbar;
 mod search_input;
+#[cfg(any(target_os = "windows", all(test, feature = "headless-ui-tests")))]
+mod select_list;
 mod settings_backup;
 mod settings_backup_view;
 mod shared_library;

@@ -6,6 +6,18 @@ use gpui::{App, Bounds, Pixels, Task, Window};
 pub(crate) struct Anchor {
     pub bounds: Bounds<Pixels>,
     pub font_size: Pixels,
+    // Cocoa supplies its menu appearance; Chromium's Windows list carries
+    // the computed field/option styles instead.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub appearance: Appearance,
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) struct Appearance {
+    pub background: u32,
+    pub text: u32,
+    pub padding_start: Pixels,
 }
 
 /// Closed HTML-select keyboard behavior. The OS popup owns its own events
@@ -128,7 +140,7 @@ pub(crate) fn choose(
     choose_with_disabled(window, cx, labels, selected, anchor, Vec::new())
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn choose_with_disabled(
     window: &Window,
     cx: &App,
@@ -286,40 +298,143 @@ fn cocoa_frame(
 }
 
 #[cfg(target_os = "windows")]
-struct Target(isize);
+#[path = "select_window_windows.rs"]
+mod windows_platform;
 
 #[cfg(target_os = "windows")]
-impl Target {
-    fn new(window: &Window) -> Result<Self, String> {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let raw = HasWindowHandle::window_handle(window).map_err(|error| error.to_string())?;
-        let RawWindowHandle::Win32(raw) = raw.as_raw() else {
-            return Err("The package picker has no Windows window.".into());
-        };
-        Ok(Self(raw.hwnd.get()))
+pub(crate) fn choose_with_disabled(
+    window: &Window,
+    cx: &App,
+    labels: Vec<String>,
+    selected: usize,
+    anchor: Anchor,
+    disabled: Vec<usize>,
+) -> Result<Task<Option<usize>>, String> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let raw = HasWindowHandle::window_handle(window).map_err(|error| error.to_string())?;
+    let RawWindowHandle::Win32(raw) = raw.as_raw() else {
+        return Err("The selection popup has no Windows window.".into());
+    };
+    let owner = raw.hwnd.get();
+    let geometry = windows_platform::geometry(owner, window.scale_factor())?;
+    let mut font = window.text_style().font();
+    font.weight = gpui::FontWeight::NORMAL;
+    let font_id = window.text_system().resolve_font(&font);
+    let row_height = (window.text_system().ascent(font_id, anchor.font_size)
+        + window.text_system().descent(font_id, anchor.font_size))
+    .ceil()
+    .max(anchor.font_size);
+    let mut desired_width = anchor.bounds.size.width;
+    for label in &labels {
+        let line = window.text_system().shape_line(
+            label.clone().into(),
+            anchor.font_size,
+            &[gpui::TextRun {
+                len: label.len(),
+                font: font.clone(),
+                color: gpui::rgb(anchor.appearance.text).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        );
+        desired_width =
+            desired_width.max(line.width + anchor.appearance.padding_start + gpui::px(4.));
     }
+    let screen_anchor = Bounds::new(
+        gpui::point(
+            gpui::px(geometry.origin.0) + anchor.bounds.left(),
+            gpui::px(geometry.origin.1) + anchor.bounds.top(),
+        ),
+        anchor.bounds.size,
+    );
+    let work = Bounds::new(
+        gpui::point(gpui::px(geometry.work.0), gpui::px(geometry.work.1)),
+        gpui::size(gpui::px(geometry.work.2), gpui::px(geometry.work.3)),
+    );
+    let desired_height = if labels.is_empty() {
+        gpui::px(8.)
+    } else {
+        row_height * labels.len().min(20) as f32 + gpui::px(2.)
+    };
+    let mut bounds = crate::select_list::placement(
+        screen_anchor,
+        gpui::size(desired_width, desired_height),
+        work,
+    );
+    if row_height * labels.len() as f32 + gpui::px(2.) > bounds.size.height {
+        bounds = crate::select_list::placement(
+            screen_anchor,
+            gpui::size(desired_width + gpui::px(9.), desired_height),
+            work,
+        );
+    }
+    let style = crate::select_list::Style {
+        font,
+        font_size: anchor.font_size,
+        row_height,
+        padding_start: anchor.appearance.padding_start,
+        background: anchor.appearance.background,
+        text: anchor.appearance.text,
+        border: geometry.border,
+        highlight: geometry.highlight,
+        highlight_text: geometry.highlight_text,
+        disabled_text: geometry.disabled_text,
+    };
+    let options = gpui::WindowOptions {
+        window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+        titlebar: None,
+        kind: gpui::WindowKind::PopUp,
+        is_movable: false,
+        is_resizable: false,
+        is_minimizable: false,
+        focus: true,
+        display_id: window.display(cx).map(|display| display.id()),
+        ..Default::default()
+    };
+    let task = crate::select_list::open(
+        labels,
+        disabled,
+        selected,
+        style,
+        options,
+        window.window_handle(),
+        move |popup| {
+            let raw = HasWindowHandle::window_handle(popup).map_err(|error| error.to_string())?;
+            let RawWindowHandle::Win32(raw) = raw.as_raw() else {
+                return Err("The selection popup has no Windows handle.".into());
+            };
+            windows_platform::attach(raw.hwnd.get(), owner)
+        },
+        cx,
+    );
+    Ok(report_errors(task, window, cx))
+}
 
-    fn show(&self, menu: &tray_icon::menu::Menu, _: usize, anchor: Anchor) {
-        use tray_icon::menu::{ContextMenu, dpi::LogicalPosition};
-        use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindow, IsWindowVisible};
-        let hwnd = self.0 as *mut std::ffi::c_void;
-        // A close/hide may have occurred before this foreground task ran.
-        unsafe {
-            if IsWindow(hwnd) == 0 || IsWindowVisible(hwnd) == 0 {
-                return;
+// Popup-window creation is asynchronous. Report a real failure in the owning
+// app before returning an empty result to release its pending operation.
+#[cfg(any(target_os = "windows", all(test, feature = "headless-ui-tests")))]
+pub(crate) fn report_errors(
+    result: impl std::future::Future<Output = Result<Option<usize>, String>> + 'static,
+    window: &Window,
+    cx: &App,
+) -> Task<Option<usize>> {
+    let owner = window.window_handle();
+    let mut app = cx.to_async();
+    cx.foreground_executor().spawn(async move {
+        match result.await {
+            Ok(choice) => choice,
+            Err(error) => {
+                let _ = owner.update(&mut app, |root, _, cx| {
+                    if let Ok(view) = root.downcast::<crate::Astral>() {
+                        view.update(cx, |view, cx| view.show_notification(error, true, cx));
+                    }
+                });
+                None
             }
-            menu.show_context_menu_for_hwnd(
-                self.0,
-                Some(
-                    LogicalPosition::new(
-                        f64::from(f32::from(anchor.bounds.left())),
-                        f64::from(f32::from(anchor.bounds.bottom())),
-                    )
-                    .into(),
-                ),
-            );
         }
-    }
+    })
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

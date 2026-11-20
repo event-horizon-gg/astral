@@ -459,6 +459,11 @@ impl Astral {
             crate::native_select::Anchor {
                 bounds,
                 font_size: px(12.),
+                appearance: crate::native_select::Appearance {
+                    background: crate::Palette::new(self.preferences.light_theme).surface,
+                    text: crate::Palette::new(self.preferences.light_theme).text,
+                    padding_start: px(9.),
+                },
             },
         ) {
             Ok(task) => self.await_project_package(task, window, cx),
