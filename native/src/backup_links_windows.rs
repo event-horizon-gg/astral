@@ -70,8 +70,10 @@ pub(super) fn create(target: &Path, destination: &Path) -> io::Result<()> {
             .suffix(".lnk")
             .tempfile_in(destination.parent().ok_or(io::ErrorKind::InvalidInput)?)?;
         persist
-            .Save(PCWSTR(wide(staged.path()).as_ptr()), true)
-            .map_err(io::Error::other)?;
+            .Save(PCWSTR(wide(&normalize(staged.path())).as_ptr()), true)
+            .map_err(|error| {
+                io::Error::other(format!("Couldn't save the backup shortcut. {error}"))
+            })?;
         staged
             .persist_noclobber(destination)
             .map_err(|error| error.error)?;
@@ -85,8 +87,10 @@ pub(super) fn read(path: &Path) -> io::Result<PathBuf> {
             .map_err(io::Error::other)?;
         let persist: IPersistFile = link.cast().map_err(io::Error::other)?;
         persist
-            .Load(PCWSTR(wide(path).as_ptr()), STGM_READ)
-            .map_err(io::Error::other)?;
+            .Load(PCWSTR(wide(&normalize(path)).as_ptr()), STGM_READ)
+            .map_err(|error| {
+                io::Error::other(format!("Couldn't read the backup shortcut. {error}"))
+            })?;
         let mut buffer = vec![0; 32768];
         link.GetPath(&mut buffer, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32)
             .map_err(io::Error::other)?;
