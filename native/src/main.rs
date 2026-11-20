@@ -118,6 +118,24 @@ const HEADER_LAYER: usize = 50;
 const TOOLBAR_LAYER: usize = 80;
 const TOAST_LAYER: usize = 1000;
 
+struct UtilityFocus {
+    clear_search: gpui::FocusHandle,
+    search: gpui::FocusHandle,
+    sources: [gpui::FocusHandle; 3],
+    notification: gpui::FocusHandle,
+}
+
+impl UtilityFocus {
+    fn new(cx: &App) -> Self {
+        Self {
+            clear_search: cx.focus_handle().tab_stop(true),
+            search: cx.focus_handle().tab_stop(true),
+            sources: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            notification: cx.focus_handle().tab_stop(true),
+        }
+    }
+}
+
 struct LibraryFocus {
     check: gpui::FocusHandle,
     update_all: gpui::FocusHandle,
@@ -129,6 +147,10 @@ struct LibraryFocus {
     restore: gpui::FocusHandle,
     source: gpui::FocusHandle,
     filters: [gpui::FocusHandle; 3],
+    suite_install: gpui::FocusHandle,
+    suite_dismiss: gpui::FocusHandle,
+    result_dismiss: gpui::FocusHandle,
+    result_retry: gpui::FocusHandle,
 }
 
 impl LibraryFocus {
@@ -144,6 +166,10 @@ impl LibraryFocus {
             restore: cx.focus_handle().tab_stop(true),
             source: cx.focus_handle().tab_stop(true),
             filters: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            suite_install: cx.focus_handle().tab_stop(true),
+            suite_dismiss: cx.focus_handle().tab_stop(true),
+            result_dismiss: cx.focus_handle().tab_stop(true),
+            result_retry: cx.focus_handle().tab_stop(true),
         }
     }
 }
@@ -210,6 +236,7 @@ struct Astral {
     header_focus: gpui::FocusHandle,
     settings_focus: SettingsFocus,
     library_focus: LibraryFocus,
+    utility_focus: UtilityFocus,
     addon_row_focus: std::cell::RefCell<HashMap<String, [gpui::FocusHandle; 2]>>,
     discovery_card_focus: std::cell::RefCell<HashMap<String, [gpui::FocusHandle; 4]>>,
     main_scroll: gpui::ScrollHandle,
@@ -351,6 +378,7 @@ impl Astral {
             header_focus: cx.focus_handle().tab_index(-1),
             settings_focus: SettingsFocus::new(cx),
             library_focus: LibraryFocus::new(cx),
+            utility_focus: UtilityFocus::new(cx),
             addon_row_focus: Default::default(),
             discovery_card_focus: Default::default(),
             main_scroll: gpui::ScrollHandle::new(),
@@ -1333,7 +1361,7 @@ impl Astral {
                 ("GitHub", "github", "https://github.com", true),
                 ("Wago", "wago", "https://addons.wago.io", false),
                 ("CurseForge", "curseforge", "https://www.curseforge.com/wow", false),
-            ].map(|(name, glyph, url, available)| {
+            ].into_iter().enumerate().map(|(index, (name, glyph, url, available))| {
                 div()
                     .flex()
                     .items_center()
@@ -1370,22 +1398,16 @@ impl Astral {
                                     .mt(px(8.)).text_size(px(11.)).line_height(px(13.2)),
                             ))
                             .child(
-                                div().id(glyph).mt(px(17.)).flex().items_center().gap(px(7.))
+                                button_outline(div().id(glyph).debug_selector(move || format!("source-link-{index}")).mt(px(17.)).flex().items_center().gap(px(7.))
                                     .group(glyph)
-                                    .focusable().tab_stop(true)
                                     .rounded(px(4.))
-                                    .focus(move |style| style.shadow(vec![gpui::BoxShadow {
-                                        color: rgb(palette.accent).into(),
-                                        offset: gpui::point(px(0.), px(0.)),
-                                        blur_radius: px(0.),
-                                        spread_radius: px(2.),
-                                    }]))
                                     .cursor_pointer().text_size(px(11.)).line_height(px(13.2)).text_color(rgb(palette.muted))
                                     .hover(move |style| style.text_color(rgb(palette.accent)))
                                     .child(format!("Visit {name}"))
                                     .child(icon("arrow-up-right", 14., palette.muted)
                                         .group_hover(glyph, move |style| style.text_color(rgb(palette.accent))))
                                     .on_click(move |_, _, cx| cx.open_url(url)),
+                                    palette, &self.utility_focus.sources[index]),
                             ),
                     )
                     .child(
@@ -1731,13 +1753,15 @@ impl Astral {
             .child(icon("search", 15., palette.muted))
             .child(input)
             .when(!discover && !self.query.is_empty(), |field| {
-                field.child(keyboard_button(
-                    div().id("clear-search").cursor_pointer().px_1().child(icon(
-                        "close",
-                        13.,
-                        palette.muted,
-                    )),
+                field.child(outlined_button(
+                    div()
+                        .id("clear-search")
+                        .debug_selector(|| "clear-search".into())
+                        .cursor_pointer()
+                        .px_1()
+                        .child(icon("close", 13., palette.muted)),
                     palette,
+                    &self.utility_focus.clear_search,
                     cx.listener(|app, _: &(), window, cx| {
                         app.set_query("", cx);
                         app.search_focus.focus(window);
@@ -3460,13 +3484,14 @@ impl Render for Astral {
                                     .opacity(0.45)
                                     .cursor_default()
                             } else {
-                                keyboard_button(
+                                outlined_button(
                                     palette
                                         .primary_button("search-catalog", "Search")
                                         .h(px(41.))
                                         .flex_row_reverse()
                                         .child(icon("search", 15., 0xffffff)),
                                     palette,
+                                    &self.utility_focus.search,
                                     cx.listener(|app, _: &(), _, cx| app.search_github(cx)),
                                 )
                             }),

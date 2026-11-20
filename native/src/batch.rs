@@ -635,9 +635,10 @@ impl Astral {
                 format!("Install missing ({})", missing.len()),
             );
             let button = if self.can_start_update_batch() {
-                crate::keyboard_button(
+                crate::outlined_button(
                     button,
                     palette,
+                    &self.library_focus.suite_install,
                     cx.listener(|app, _: &(), _, cx| app.install_suite(cx)),
                 )
             } else {
@@ -720,9 +721,12 @@ impl Astral {
                                 label.text_color(rgb(palette.error))
                             }),
                     )
-                    .child(crate::keyboard_button(
-                        palette.text_button("dismiss-suite-result", "Dismiss"),
+                    .child(crate::outlined_button(
+                        palette
+                            .text_button("dismiss-suite-result", "Dismiss")
+                            .debug_selector(|| "dismiss-suite-result".into()),
                         palette,
+                        &self.library_focus.suite_dismiss,
                         cx.listener(|app, _: &(), _, cx| {
                             app.batch_result = None;
                             cx.notify();
@@ -896,9 +900,12 @@ impl Astral {
                         .text_size(px(13.))
                         .child(summary),
                 )
-                .child(crate::keyboard_button(
-                    palette.text_button("dismiss-update-results", "Dismiss"),
+                .child(crate::outlined_button(
+                    palette
+                        .text_button("dismiss-update-results", "Dismiss")
+                        .debug_selector(|| "dismiss-update-results".into()),
                     palette,
+                    &self.library_focus.result_dismiss,
                     cx.listener(|app, _: &(), _, cx| {
                         app.batch_result = None;
                         cx.notify();
@@ -932,13 +939,100 @@ impl Astral {
             panel = panel.child(div().child(if !self.can_start_update_batch() {
                 button.opacity(0.45).cursor_default()
             } else {
-                crate::keyboard_button(
+                crate::outlined_button(
                     button,
                     palette,
+                    &self.library_focus.result_retry,
                     cx.listener(|app, _: &(), _, cx| app.retry_update_batch(cx)),
                 )
             }));
         }
         Some(panel)
+    }
+}
+
+#[cfg(all(test, feature = "headless-ui-tests"))]
+mod ui_tests {
+    use super::*;
+    use crate::{Page, ui_tests::press};
+    use gpui::{Modifiers, TestAppContext, size};
+
+    #[gpui::test]
+    fn update_and_suite_results_dismiss_from_keyboard_and_pointer_without_layout_changes(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            for suite in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let client = if suite {
+                    Client::Forever
+                } else {
+                    Client::Retail
+                };
+                let (view, cx) = cx.add_window_view(|_, cx| {
+                    let mut app = Astral::new(
+                        [None, None],
+                        Some(directory.path()),
+                        Some(client),
+                        light,
+                        cx,
+                    );
+                    app.detected_roots[client.index()] = Some(directory.path().to_owned());
+                    app.page = if suite { Page::Discover } else { Page::Library };
+                    app.batch_result = Some(Batch {
+                        root: directory.path().to_owned(),
+                        client,
+                        updates: vec![Update {
+                            source: 0,
+                            versions: None,
+                        }],
+                        suite,
+                        results: vec![Ok("updated")],
+                        running: false,
+                    });
+                    app
+                });
+                cx.simulate_resize(size(px(1250.), px(1000.)));
+                cx.run_until_parked();
+                let selector = if suite {
+                    "dismiss-suite-result"
+                } else {
+                    "dismiss-update-results"
+                };
+                let before = cx.debug_bounds(selector).unwrap();
+                view.update_in(cx, |app, window, _| {
+                    if suite {
+                        &app.library_focus.suite_dismiss
+                    } else {
+                        &app.library_focus.result_dismiss
+                    }
+                    .focus(window);
+                });
+                cx.run_until_parked();
+                assert_eq!(before, cx.debug_bounds(selector).unwrap());
+                press(cx, "enter");
+                assert!(view.read_with(cx, |app, _| app.batch_result.is_none()));
+                view.update_in(cx, |app, window, cx| {
+                    app.batch_result = Some(Batch {
+                        root: directory.path().to_owned(),
+                        client,
+                        updates: vec![Update {
+                            source: 0,
+                            versions: None,
+                        }],
+                        suite,
+                        results: vec![Ok("updated")],
+                        running: false,
+                    });
+                    app.brand_focus.focus(window);
+                    cx.notify();
+                });
+                cx.run_until_parked();
+                let before = cx.debug_bounds(selector).unwrap();
+                cx.simulate_click(before.center(), Modifiers::default());
+                cx.run_until_parked();
+                assert!(view.read_with(cx, |app, _| app.batch_result.is_none()));
+            }
+        }
     }
 }

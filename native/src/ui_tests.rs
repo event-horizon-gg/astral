@@ -1023,3 +1023,59 @@ fn discover_card_focus_is_separate_per_action_and_filters_release_removed_handle
         }));
     }
 }
+
+#[gpui::test]
+fn utility_controls_keep_bounds_and_sources_keep_their_keyboard_destinations(
+    cx: &mut TestAppContext,
+) {
+    for light in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = Astral::new(
+                [None, None],
+                Some(directory.path()),
+                Some(Client::Retail),
+                light,
+                cx,
+            );
+            app.set_query("fixture search", cx);
+            app
+        });
+        cx.simulate_resize(size(px(1250.), px(1000.)));
+        cx.run_until_parked();
+        let clear = cx.debug_bounds("clear-search").unwrap();
+        view.update_in(cx, |app, window, _| app.search_focus.focus(window));
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.utility_focus.clear_search.is_focused(window))
+        });
+        assert_eq!(clear, cx.debug_bounds("clear-search").unwrap());
+        press(cx, "enter");
+        assert!(view.read_with(cx, |app, _| app.query.is_empty()));
+        view.update_in(cx, |app, window, cx| {
+            app.navigate(Page::Sources, window, cx)
+        });
+        cx.run_until_parked();
+        for (index, selector, url) in [
+            (0, "source-link-0", "https://github.com"),
+            (1, "source-link-1", "https://addons.wago.io"),
+            (2, "source-link-2", "https://www.curseforge.com/wow"),
+        ] {
+            let before = cx.debug_bounds(selector).unwrap();
+            view.update_in(cx, |app, window, _| {
+                app.utility_focus.sources[index].focus(window)
+            });
+            cx.run_until_parked();
+            assert_eq!(before, cx.debug_bounds(selector).unwrap());
+            press(cx, "enter");
+            assert_eq!(cx.opened_url().as_deref(), Some(url));
+            assert_eq!(before, cx.debug_bounds(selector).unwrap());
+            if index < 2 {
+                press(cx, "tab");
+                view.update_in(cx, |app, window, _| {
+                    assert!(app.utility_focus.sources[index + 1].is_focused(window))
+                });
+            }
+        }
+    }
+}

@@ -102,7 +102,6 @@ impl Astral {
                         .id("notification")
                         .debug_selector(|| "notification".into())
                         .relative()
-                        .overflow_hidden()
                         .occlude()
                         .flex()
                         .items_center()
@@ -147,9 +146,10 @@ impl Astral {
                                 .line_height(px(20.8))
                                 .child(notice.message.clone()),
                         )
-                        .child(crate::keyboard_button(
+                        .child(crate::outlined_button(
                             div()
                                 .id("dismiss-notification")
+                                .debug_selector(|| "dismiss-notification".into())
                                 .size(px(30.))
                                 .ml(px(7.))
                                 .flex_shrink_0()
@@ -163,6 +163,7 @@ impl Astral {
                                 .hover(move |style| style.bg(palette.hover))
                                 .child(crate::icon("close", 14., palette.muted)),
                             palette,
+                            &self.utility_focus.notification,
                             cx.listener(|app, _: &(), _, cx| {
                                 app.notifications.current = None;
                                 cx.notify();
@@ -194,5 +195,63 @@ mod tests {
         let sequence = state.show("Saved".into(), false);
         state.current = None;
         assert!(!state.expire(sequence));
+    }
+}
+
+#[cfg(all(test, feature = "headless-ui-tests"))]
+mod ui_tests {
+    use super::*;
+    use crate::{Client, focus_visible, ui_tests::press};
+    use gpui::{Modifiers, TestAppContext, size};
+
+    #[gpui::test]
+    fn notice_dismissal_keeps_geometry_and_works_from_pointer_and_keyboard(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                let mut app = Astral::new(
+                    [None, None],
+                    Some(directory.path()),
+                    Some(Client::Retail),
+                    light,
+                    cx,
+                );
+                app.open_notification_fixture(true);
+                app
+            });
+            cx.simulate_resize(size(px(1250.), px(900.)));
+            cx.run_until_parked();
+            let bounds = cx.debug_bounds("dismiss-notification").unwrap();
+            view.update_in(cx, |app, window, _| {
+                app.utility_focus.notification.focus(window)
+            });
+            cx.run_until_parked();
+            assert_eq!(bounds, cx.debug_bounds("dismiss-notification").unwrap());
+            press(cx, "space");
+            assert!(view.read_with(cx, |app, _| app.notifications.current.is_none()));
+            view.update_in(cx, |app, window, cx| {
+                app.open_notification_fixture(false);
+                app.brand_focus.focus(window);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let bounds = cx.debug_bounds("dismiss-notification").unwrap();
+            cx.simulate_click(bounds.center(), Modifiers::default());
+            cx.run_until_parked();
+            assert!(view.read_with(cx, |app, _| app.notifications.current.is_none()));
+            view.update_in(cx, |app, window, cx| {
+                app.open_notification_fixture(false);
+                cx.notify();
+                assert!(!focus_visible::indicated(
+                    &app.utility_focus.notification,
+                    window,
+                    cx
+                ));
+            });
+            cx.run_until_parked();
+            assert_eq!(bounds, cx.debug_bounds("dismiss-notification").unwrap());
+        }
     }
 }
