@@ -803,3 +803,75 @@ fn library_filters_empty_action_and_drawer_keep_bounds_and_input_origin(cx: &mut
         assert_eq!(toggle, cx.debug_bounds("addon-auto-update").unwrap());
     }
 }
+
+#[gpui::test]
+fn navigation_menu_focus_keeps_geometry_and_routes_keyboard_and_pointer(cx: &mut TestAppContext) {
+    for light in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            Astral::new(
+                [None, None],
+                Some(directory.path()),
+                Some(Client::Retail),
+                light,
+                cx,
+            )
+        });
+        cx.simulate_resize(size(px(1250.), px(900.)));
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            app.header_button_focus[5].focus(window);
+            app.toggle_menu(ToolbarMenu::Tools, window, cx);
+        });
+        cx.run_until_parked();
+        // Menu opening keeps focus at its trigger; Tab enters the first row.
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.tools_focus[0].is_focused(window))
+        });
+        let first = cx.debug_bounds("tools-row-0").unwrap();
+        press(cx, "shift-tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.header_button_focus[5].is_focused(window))
+        });
+        assert_eq!(first, cx.debug_bounds("tools-row-0").unwrap());
+        for (index, expected) in [(0, Page::Backups), (1, Page::Sources), (2, Page::Settings)] {
+            view.update_in(cx, |app, window, cx| {
+                app.menu = Some(ToolbarMenu::Tools);
+                app.tools_focus[index].focus(window);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let selector = ["tools-row-0", "tools-row-1", "tools-row-2"][index];
+            let before = cx.debug_bounds(selector).unwrap();
+            press(cx, "tab");
+            press(cx, "shift-tab");
+            assert_eq!(before, cx.debug_bounds(selector).unwrap());
+            press(cx, "space");
+            assert!(view.read_with(cx, |app, _| app.page == expected && app.menu.is_none()));
+        }
+        view.update_in(cx, |app, window, cx| {
+            app.menu = Some(ToolbarMenu::Account);
+            app.brand_focus.focus(window);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let profile = cx.debug_bounds("profiles-and-sync").unwrap();
+        cx.simulate_click(profile.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |app, _| app.page == Page::Account && app.menu.is_none()));
+        view.update_in(cx, |app, window, cx| {
+            app.quick_find = Some(0);
+            app.brand_focus.focus(window);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let quick = cx.debug_bounds("quick-page-1").unwrap();
+        view.update_in(cx, |app, window, _| app.quick_find_rows[1].focus(window));
+        cx.run_until_parked();
+        assert_eq!(quick, cx.debug_bounds("quick-page-1").unwrap());
+        press(cx, "enter");
+        assert!(view.read_with(cx, |app, _| app.page == QUICK_PAGES[1].0
+            && app.quick_find.is_none()));
+    }
+}

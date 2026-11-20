@@ -201,7 +201,8 @@ struct Astral {
     menu_return_focus: Option<gpui::FocusHandle>,
     menu_trigger_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui::Pixels>>>>,
     client_picker: client_picker::State,
-    tools_first_focus: gpui::FocusHandle,
+    tools_focus: [gpui::FocusHandle; 4],
+    account_signout_focus: gpui::FocusHandle,
     account_first_focus: gpui::FocusHandle,
     root_focus: gpui::FocusHandle,
     brand_focus: gpui::FocusHandle,
@@ -339,7 +340,8 @@ impl Astral {
             menu_return_focus: None,
             menu_trigger_bounds: Default::default(),
             client_picker: Default::default(),
-            tools_first_focus: cx.focus_handle().tab_stop(true),
+            tools_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            account_signout_focus: cx.focus_handle(),
             account_first_focus: cx.focus_handle().tab_stop(true),
             root_focus: cx.focus_handle().tab_index(-2),
             brand_focus: cx.focus_handle().tab_stop(true),
@@ -1516,7 +1518,7 @@ impl Astral {
         &self,
         _selected: usize,
         palette: Palette,
-        window: &Window,
+        _window: &Window,
         cx: &Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         div()
@@ -1596,9 +1598,10 @@ impl Astral {
                             .into_iter()
                             .enumerate()
                             .map(|(index, (page, glyph))| {
-                                keyboard_button(
+                                outlined_button(
                                     div()
                                         .id(page.title())
+                                        .debug_selector(move || format!("quick-page-{index}"))
                                         .flex()
                                         .items_center()
                                         .cursor_pointer()
@@ -1609,16 +1612,12 @@ impl Astral {
                                         .px(px(14.))
                                         .gap(px(13.))
                                         .hover(move |style| style.bg(palette.hover))
-                                        .track_focus(&self.quick_find_rows[index])
-                                        .when(
-                                            self.quick_find_rows[index].is_focused(window),
-                                            |row| row.bg(palette.hover),
-                                        )
                                         .child(icon(glyph, 18., palette.text))
                                         .child(page.title())
                                         .child(div().flex_1())
                                         .child(icon("arrow-right", 15., palette.text)),
                                     palette,
+                                    &self.quick_find_rows[index],
                                     cx.listener(move |app, _: &(), window, cx| {
                                         app.quick_find = None;
                                         app.quick_find_return = None;
@@ -2744,7 +2743,7 @@ impl Render for Astral {
                                     && event.keystroke.key == "tab"
                                     && !event.keystroke.modifiers.shift
                                 {
-                                    app.tools_first_focus.focus(window);
+                                    app.tools_focus[0].focus(window);
                                     cx.stop_propagation();
                                 }
                             },
@@ -2832,19 +2831,21 @@ impl Render for Astral {
                 .occlude();
             match kind {
                 ToolbarMenu::Tools => {
-                    for (id, glyph, label, page) in [
+                    for (index, (id, glyph, label, page)) in [
                         ("backups", "history", "Activity & backups", Page::Backups),
                         ("sources-page", "globe", "Sources", Page::Sources),
                         ("settings", "gear", "Settings", Page::Settings),
-                    ] {
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
                         panel = panel.child(
-                            keyboard_button(
+                            outlined_button(
                                 palette
                                     .menu_row(id, glyph, label)
-                                    .when(page == Page::Backups, |row| {
-                                        row.track_focus(&self.tools_first_focus)
-                                    }),
+                                    .debug_selector(move || format!("tools-row-{index}")),
                                 palette,
+                                &self.tools_focus[index],
                                 cx.listener(move |app, _: &(), window, cx| {
                                     app.navigate(page, window, cx)
                                 }),
@@ -2858,9 +2859,12 @@ impl Render for Astral {
                             }),
                         );
                     }
-                    panel = panel.child(keyboard_button(
-                        palette.menu_row("choose", "folder", "Choose WoW folder"),
+                    panel = panel.child(outlined_button(
+                        palette
+                            .menu_row("choose", "folder", "Choose WoW folder")
+                            .debug_selector(|| "tools-folder".into()),
                         palette,
+                        &self.tools_focus[3],
                         cx.listener(move |app, _: &(), window, cx| {
                             app.close_toolbar_menu(window, cx);
                             app.choose_root(client, window, cx);
@@ -2917,17 +2921,18 @@ impl Render for Astral {
                                 ),
                         )
                         .child(
-                            keyboard_button(
+                            outlined_button(
                                 palette
                                     .menu_row("profiles-and-sync", "cloud", "Profiles & sync")
                                     .h(px(43.))
-                                    .track_focus(&self.account_first_focus)
+                                    .debug_selector(|| "profiles-and-sync".into())
                                     .child(div().ml_auto().child(icon(
                                         "chevron-right",
                                         14.,
                                         palette.text,
                                     ))),
                                 palette,
+                                &self.account_first_focus,
                                 cx.listener(|app, _: &(), window, cx| {
                                     app.navigate(Page::Account, window, cx)
                                 }),
@@ -2997,9 +3002,10 @@ impl Render for Astral {
                             panel.child(if self.account_work_in_progress() {
                                 signout.opacity(0.45).cursor_default()
                             } else {
-                                keyboard_button(
+                                outlined_button(
                                     signout,
                                     palette,
+                                    &self.account_signout_focus,
                                     cx.listener(|app, _: &(), window, cx| {
                                         app.close_toolbar_menu(window, cx);
                                         app.sign_out(cx);
