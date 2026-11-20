@@ -7,6 +7,7 @@ mod application_menu;
 mod artwork;
 mod batch;
 mod bundled;
+mod client_picker;
 mod cloud;
 mod credentials;
 mod daily;
@@ -106,7 +107,6 @@ enum Filter {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ToolbarMenu {
-    Client,
     Tools,
     Account,
 }
@@ -146,7 +146,7 @@ struct Astral {
     menu: Option<ToolbarMenu>,
     menu_return_focus: Option<gpui::FocusHandle>,
     menu_trigger_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui::Pixels>>>>,
-    client_menu_focus: [gpui::FocusHandle; 2],
+    client_picker: client_picker::State,
     tools_first_focus: gpui::FocusHandle,
     account_first_focus: gpui::FocusHandle,
     root_focus: gpui::FocusHandle,
@@ -282,7 +282,7 @@ impl Astral {
             menu: None,
             menu_return_focus: None,
             menu_trigger_bounds: Default::default(),
-            client_menu_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            client_picker: Default::default(),
             tools_first_focus: cx.focus_handle().tab_stop(true),
             account_first_focus: cx.focus_handle().tab_stop(true),
             root_focus: cx.focus_handle().tab_index(-2),
@@ -379,6 +379,7 @@ impl Astral {
     }
 
     fn scan_library(&mut self, keep_checks: bool, cx: &mut Context<Self>) {
+        self.client_picker.invalidate();
         let mut previous = HashMap::new();
         if keep_checks {
             for addon in &self.addons {
@@ -403,16 +404,20 @@ impl Astral {
             let catalog = self.catalog.clone();
             let scan_id = self.scan_id;
             self.scanning = true;
-            let task = cx
-                .background_executor()
-                .spawn(async move { library::scan_library(&root, client, &catalog) });
+            let task = cx.background_executor().spawn(async move {
+                (
+                    client_picker::choices(&root),
+                    library::scan_library(&root, client, &catalog),
+                )
+            });
             cx.spawn(async move |this, cx| {
-                let result = task.await;
+                let (choices, result) = task.await;
                 let _ = this.update(cx, |app, cx| {
                     if app.scan_id != scan_id {
                         return;
                     }
                     app.scanning = false;
+                    app.client_picker.choices = choices;
                     match result {
                         Ok(addons) => {
                             for addon in &addons {
@@ -430,6 +435,8 @@ impl Astral {
                 });
             })
             .detach();
+        } else {
+            self.client_picker.choices = vec![Client::Retail];
         }
         cx.notify();
     }
@@ -1583,17 +1590,11 @@ impl Astral {
     }
 
     fn toggle_menu(&mut self, menu: ToolbarMenu, window: &mut Window, cx: &mut Context<Self>) {
-        if menu == ToolbarMenu::Client && self.addon_controls_busy() {
-            return;
-        }
         if self.menu == Some(menu) {
             self.close_toolbar_menu(window, cx);
         } else {
             self.menu = Some(menu);
             self.menu_return_focus = window.focused(cx);
-            if menu == ToolbarMenu::Client {
-                self.client_menu_focus[self.preferences.client.index()].focus(window);
-            }
             cx.notify();
         }
     }
@@ -2575,45 +2576,68 @@ impl Render for Astral {
                     .items_center()
                     .gap(px(action_gap))
                     .child(
-                        outlined_button(
-                            palette
-                                .button("client-menu", "")
-                                .relative()
-                                .when(self.menu == Some(ToolbarMenu::Client), |button| {
-                                    button.child(remember_bounds(self.menu_trigger_bounds.clone()))
-                                })
-                                .px(px(10.))
-                                .font_weight(gpui::FontWeight::NORMAL)
-                                .h(px(40.))
-                                .w(px(136.))
-                                .justify_between()
-                                .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(7.))
+                            .px(px(if width <= px(520.) {
+                                0.
+                            } else if width <= px(780.) {
+                                6.
+                            } else {
+                                10.
+                            }))
+                            .py(px(if width <= px(520.) {
+                                0.
+                            } else if width <= px(780.) {
+                                6.
+                            } else {
+                                7.
+                            }))
+                            .border(px(if width <= px(520.) { 0. } else { 1. }))
+                            .border_color(palette.line)
+                            .rounded(px(5.))
+                            .when(width > px(780.), |game| {
+                                game.child(
                                     gpui::img(self.client_icons[client.index()].clone())
                                         .size(px(24.)),
                                 )
-                                .child(client.label())
-                                .child(icon("chevron", 14., palette.muted)),
-                            palette,
-                            &self.header_button_focus[2]
-                                .clone()
-                                .tab_stop(!self.addon_controls_busy()),
-                            cx.listener(|app, _: &(), window, cx| {
-                                app.toggle_menu(ToolbarMenu::Client, window, cx);
-                            }),
-                        )
-                        .debug_selector(|| "client-selector".into())
-                        .tab_stop(!self.addon_controls_busy())
-                        .when(self.addon_controls_busy(), |button| button.cursor_default())
-                        .on_key_down(cx.listener(
-                            |app, event: &gpui::KeyDownEvent, window, cx| {
-                                if matches!(event.keystroke.key.as_str(), "up" | "down")
-                                    && app.menu != Some(ToolbarMenu::Client)
-                                {
-                                    app.toggle_menu(ToolbarMenu::Client, window, cx);
-                                    cx.stop_propagation();
-                                }
-                            },
-                        )),
+                            })
+                            .child(
+                                outlined_button(
+                                    palette
+                                        .button_base(
+                                            "client-menu",
+                                            self.client_picker.choices
+                                                [self.client_picker.index(client)]
+                                            .label(),
+                                        )
+                                        .relative()
+                                        .w(px(if width <= px(780.) { 60. } else { 70. }))
+                                        .h(px(18.))
+                                        .px_0()
+                                        .gap_0()
+                                        .border_0()
+                                        .rounded_none()
+                                        .cursor_default()
+                                        .justify_between()
+                                        .font_weight(gpui::FontWeight::NORMAL)
+                                        .text_size(px(if width <= px(780.) { 11. } else { 12. }))
+                                        .text_color(rgb(palette.text))
+                                        .child(remember_bounds(self.client_picker.bounds.clone()))
+                                        .child(icon("chevron", 14., palette.muted)),
+                                    palette,
+                                    &self.header_button_focus[2]
+                                        .clone()
+                                        .tab_stop(!self.addon_controls_busy()),
+                                    cx.listener(|app, _: &(), window, cx| {
+                                        app.choose_client(window, cx)
+                                    }),
+                                )
+                                .debug_selector(|| "client-selector".into())
+                                .tab_stop(!self.addon_controls_busy())
+                                .capture_key_up(crate::native_select::suppress_button_keys),
+                            ),
                     )
                     .child(outlined_button(
                         palette
@@ -2732,12 +2756,6 @@ impl Render for Astral {
                     cx.notify();
                 }))
                 .absolute()
-                .when(kind == ToolbarMenu::Client, |panel| {
-                    panel
-                        .top(px(76.))
-                        .right(px(inset + 147. + 4. * action_gap))
-                        .w(px(186.))
-                })
                 .when(kind == ToolbarMenu::Tools, |panel| {
                     panel
                         .top(px(72.))
@@ -2762,66 +2780,6 @@ impl Render for Astral {
                 }])
                 .occlude();
             match kind {
-                ToolbarMenu::Client => {
-                    panel = panel.on_key_down(cx.listener(
-                        |app, event: &gpui::KeyDownEvent, window, cx| {
-                            match event.keystroke.key.as_str() {
-                                "up" | "down" => {
-                                    let other = Client::ALL.into_iter().find(|candidate| {
-                                        !app.client_menu_focus[candidate.index()].is_focused(window)
-                                            && (*candidate == app.preferences.client
-                                                || app.root(*candidate).is_some())
-                                    });
-                                    if let Some(other) = other {
-                                        app.client_menu_focus[other.index()].focus(window);
-                                    }
-                                }
-                                "tab" => {
-                                    app.close_toolbar_menu(window, cx);
-                                    if event.keystroke.modifiers.shift {
-                                        window.focus_prev();
-                                    } else {
-                                        window.focus_next();
-                                    }
-                                }
-                                _ => return,
-                            }
-                            cx.stop_propagation();
-                        },
-                    ));
-                    for (index, target) in Client::ALL.into_iter().enumerate() {
-                        if target != client && self.root(target).is_none() {
-                            continue;
-                        }
-                        panel = panel.child(keyboard_button(
-                            div()
-                                .id(("choose-client", index))
-                                .track_focus(&self.client_menu_focus[index])
-                                .h(px(40.))
-                                .flex()
-                                .items_center()
-                                .gap_3()
-                                .px_3()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .text_size(px(13.))
-                                .hover(move |style| style.bg(palette.hover))
-                                .child(gpui::img(self.client_icons[index].clone()).size(px(22.)))
-                                .child(div().flex_1().child(target.label()))
-                                .when(target == client, |row| {
-                                    row.child(icon("check", 16., palette.accent))
-                                }),
-                            palette,
-                            cx.listener(move |app, _: &(), window, cx| {
-                                app.close_toolbar_menu(window, cx);
-                                if !app.addon_controls_busy() && app.preferences.client != target {
-                                    app.change_client(target, cx);
-                                }
-                                cx.notify();
-                            }),
-                        ));
-                    }
-                }
                 ToolbarMenu::Tools => {
                     for (id, glyph, label, page) in [
                         ("backups", "history", "Activity & backups", Page::Backups),
@@ -3528,6 +3486,7 @@ impl Render for Astral {
                     || app.cloud_manager_key(event, window, cx)
                     || app.discovery_source_key(event, window, cx)
                     || app.local_account_key(event, window, cx)
+                    || app.client_picker_key(event, window, cx)
                 {
                     cx.stop_propagation();
                 }
