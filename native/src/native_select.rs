@@ -67,6 +67,14 @@ pub(crate) fn closed_key(
     KeyResult::Ignore
 }
 
+/// Select fields handle activation on key-down, unlike GPUI buttons.
+pub(crate) fn suppress_button_keys(event: &gpui::KeyUpEvent, window: &mut Window, cx: &mut App) {
+    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+        window.prevent_default();
+        cx.stop_propagation();
+    }
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn choose(
     window: &Window,

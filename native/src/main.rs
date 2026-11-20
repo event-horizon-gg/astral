@@ -108,7 +108,6 @@ enum Filter {
 enum ToolbarMenu {
     Client,
     Tools,
-    Sources,
     Account,
 }
 
@@ -130,6 +129,7 @@ struct Astral {
     page: Page,
     filter: Filter,
     discovery_source: Option<&'static str>,
+    discovery_picker: discovery::SourcePicker,
     github_search: Option<discovery::Search>,
     project_review: Option<project::ProjectReview>,
     quick_find: Option<usize>,
@@ -263,6 +263,7 @@ impl Astral {
             page: Page::Library,
             filter: Filter::All,
             discovery_source: None,
+            discovery_picker: discovery::SourcePicker::new(cx),
             github_search: None,
             project_review: None,
             quick_find: None,
@@ -644,6 +645,7 @@ impl Astral {
             return;
         }
         self.close_cloud_profile_manager();
+        self.discovery_picker.invalidate();
         self.batch_result = None;
         self.github_search = None;
         self.project_review = None;
@@ -1186,6 +1188,7 @@ impl Astral {
             if self.page == Page::Discover {
                 self.github_search = None;
                 self.discovery_source = None;
+                self.discovery_picker.invalidate();
                 if let Some(review) = &mut self.project_review {
                     review.leave_discovery();
                 }
@@ -2724,9 +2727,6 @@ impl Render for Astral {
                     cx.notify();
                 }))
                 .absolute()
-                .when(kind == ToolbarMenu::Sources, |panel| {
-                    panel.top(px(350.)).left(px(47.)).w(px(158.))
-                })
                 .when(kind == ToolbarMenu::Client, |panel| {
                     panel
                         .top(px(76.))
@@ -2812,24 +2812,6 @@ impl Render for Astral {
                                 if !app.addon_controls_busy() && app.preferences.client != target {
                                     app.change_client(target, cx);
                                 }
-                                cx.notify();
-                            }),
-                        ));
-                    }
-                }
-                ToolbarMenu::Sources => {
-                    for (value, label, glyph) in [
-                        (None, "All sources", "globe"),
-                        (Some("GitHub"), "GitHub", "github"),
-                        (Some("Astral"), "Astral", "drive"),
-                        (Some("Manual"), "Manual sources", "globe"),
-                    ] {
-                        panel = panel.child(keyboard_button(
-                            palette.menu_row(label, glyph, label),
-                            palette,
-                            cx.listener(move |app, _: &(), window, cx| {
-                                app.discovery_source = value;
-                                app.close_toolbar_menu(window, cx);
                                 cx.notify();
                             }),
                         ));
@@ -3404,32 +3386,40 @@ impl Render for Astral {
                             .items_center()
                             .justify_between()
                             .pl(px(9.))
-                            .child(keyboard_button(
-                                palette
-                                    .button(
-                                        "discover-source",
-                                        match self.discovery_source {
-                                            Some("Manual") => "Manual sources",
-                                            Some(source) => source,
-                                            None => "All sources",
-                                        },
-                                    )
-                                    .h(px(37.))
-                                    .relative()
-                                    .when(self.menu == Some(ToolbarMenu::Sources), |button| {
-                                        button.child(remember_bounds(
-                                            self.menu_trigger_bounds.clone(),
+                            .child(
+                                outlined_button(
+                                    palette
+                                        .button_base(
+                                            "discover-source",
+                                            match self.discovery_source {
+                                                Some("Manual") => "Manual sources",
+                                                Some(source) => source,
+                                                None => "All sources",
+                                            },
+                                        )
+                                        .debug_selector(|| "discover-source-trigger".into())
+                                        .relative()
+                                        .h(px(37.))
+                                        .px(px(9.))
+                                        .min_w(px(129.))
+                                        .font_weight(gpui::FontWeight::NORMAL)
+                                        .cursor_default()
+                                        .justify_between()
+                                        .bg(rgb(0x141b2d))
+                                        .text_color(rgb(0xdce3fb))
+                                        .border_color(gpui::rgba(0xb5c3ff25))
+                                        .child(remember_bounds(
+                                            self.discovery_picker.bounds.clone(),
                                         ))
-                                    })
-                                    .min_w(px(129.))
-                                    .justify_between()
-                                    .bg(rgb(palette.panel))
-                                    .child(icon("chevron", 14., palette.muted)),
-                                palette,
-                                cx.listener(|app, _: &(), window, cx| {
-                                    app.toggle_menu(ToolbarMenu::Sources, window, cx);
-                                }),
-                            ))
+                                        .child(icon("chevron", 14., 0xdce3fb)),
+                                    palette,
+                                    &self.discovery_picker.focus,
+                                    cx.listener(|app, _: &(), window, cx| {
+                                        app.choose_discovery_source(window, cx)
+                                    }),
+                                )
+                                .capture_key_up(crate::native_select::suppress_button_keys),
+                            )
                             .child(
                                 palette
                                     .label(if searching {
@@ -3531,6 +3521,7 @@ impl Render for Astral {
                     || app.project_review_key(event, window, cx)
                     || app.cloud_confirmation_key(event, window, cx)
                     || app.cloud_manager_key(event, window, cx)
+                    || app.discovery_source_key(event, window, cx)
                 {
                     cx.stop_propagation();
                 }

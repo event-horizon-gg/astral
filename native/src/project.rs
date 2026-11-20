@@ -779,14 +779,7 @@ impl Astral {
                                     app.choose_project_package(window, cx)
                                 }),
                             )
-                            .capture_key_up(
-                                |event: &gpui::KeyUpEvent, window, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        window.prevent_default();
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            )
+                            .capture_key_up(crate::native_select::suppress_button_keys)
                         });
                     body = body.child(selector);
                     if release.packages.is_empty() {
