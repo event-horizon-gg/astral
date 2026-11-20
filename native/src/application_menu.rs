@@ -3,6 +3,7 @@ use gpui::{App, Context, KeyBinding, Menu, MenuItem, SystemMenuType, Window, pre
 gpui::actions!(
     astral_window,
     [
+        About,
         Hide,
         HideOthers,
         ShowAll,
@@ -16,9 +17,18 @@ gpui::actions!(
 
 pub fn install(cx: &mut App) {
     crate::search_input::bind_menu_keys(cx);
-    let mut app = vec![MenuItem::action("Quit Astral", crate::Quit)];
+    let mut app = vec![MenuItem::action(
+        if cfg!(target_os = "windows") {
+            "Exit"
+        } else {
+            "Quit Astral"
+        },
+        crate::Quit,
+    )];
     if cfg!(target_os = "macos") {
         app = vec![
+            MenuItem::action("About Astral", About),
+            MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
             MenuItem::action("Hide Astral", Hide),
@@ -27,6 +37,8 @@ pub fn install(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Quit Astral", crate::Quit),
         ];
+        #[cfg(target_os = "macos")]
+        cx.on_action(|_: &About, _| show_about());
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
@@ -81,11 +93,30 @@ pub fn install(cx: &mut App) {
             name: "Window".into(),
             items: vec![
                 MenuItem::action("Minimize", Minimize),
-                MenuItem::action("Close Window", CloseWindow),
+                MenuItem::action("Close", CloseWindow),
             ],
         });
     }
     cx.set_menus(menus);
+}
+
+#[cfg(target_os = "macos")]
+fn show_about() {
+    use objc2::{MainThreadMarker, runtime::AnyObject};
+    use objc2_app_kit::{NSAboutPanelOptionApplicationName, NSApplication};
+    use objc2_foundation::{NSDictionary, NSString};
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let name = NSString::from_str("Astral");
+    let value: &AnyObject = &name;
+    let options =
+        NSDictionary::from_slices(&[unsafe { NSAboutPanelOptionApplicationName }], &[value]);
+    // Keep the installed bundle identity and native version/icon. Only its
+    // displayed product name matches the application menu, as in Electron.
+    unsafe {
+        NSApplication::sharedApplication(mtm).orderFrontStandardAboutPanelWithOptions(&options);
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -197,9 +228,7 @@ mod windows {
 
     fn shortcut_label(action: &dyn Action) -> &'static str {
         let action = action.as_any();
-        if action.is::<crate::Quit>() {
-            "Ctrl+Q"
-        } else if action.is::<crate::search_input::Undo>() {
+        if action.is::<crate::search_input::Undo>() {
             "Ctrl+Z"
         } else if action.is::<crate::search_input::Redo>() {
             "Ctrl+Y"

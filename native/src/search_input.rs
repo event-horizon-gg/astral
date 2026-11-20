@@ -10,23 +10,47 @@ use unicode_segmentation::UnicodeSegmentation;
 
 gpui::actions!(
     astral_text,
-    [Undo, Redo, Cut, Copy, Paste, PasteMatchStyle, SelectAll]
+    [
+        Undo,
+        Redo,
+        Cut,
+        Copy,
+        Paste,
+        PasteMatchStyle,
+        DeleteSelection,
+        SelectAll
+    ]
 );
 
 pub fn edit_menu() -> gpui::Menu {
     use gpui::{Menu, MenuItem, OsAction};
+    let mut items = vec![
+        MenuItem::os_action("Undo", Undo, OsAction::Undo),
+        MenuItem::os_action("Redo", Redo, OsAction::Redo),
+        MenuItem::separator(),
+        MenuItem::os_action("Cut", Cut, OsAction::Cut),
+        MenuItem::os_action("Copy", Copy, OsAction::Copy),
+        MenuItem::os_action("Paste", Paste, OsAction::Paste),
+    ];
+    if cfg!(target_os = "macos") {
+        items.push(MenuItem::os_action(
+            "Paste and Match Style",
+            PasteMatchStyle,
+            OsAction::Paste,
+        ));
+    }
+    items.push(MenuItem::action("Delete", DeleteSelection));
+    if !cfg!(target_os = "macos") {
+        items.push(MenuItem::separator());
+    }
+    items.push(MenuItem::os_action(
+        "Select All",
+        SelectAll,
+        OsAction::SelectAll,
+    ));
     Menu {
         name: "Edit".into(),
-        items: vec![
-            MenuItem::os_action("Undo", Undo, OsAction::Undo),
-            MenuItem::os_action("Redo", Redo, OsAction::Redo),
-            MenuItem::separator(),
-            MenuItem::os_action("Cut", Cut, OsAction::Cut),
-            MenuItem::os_action("Copy", Copy, OsAction::Copy),
-            MenuItem::os_action("Paste", Paste, OsAction::Paste),
-            MenuItem::os_action("Paste and Match Style", PasteMatchStyle, OsAction::Paste),
-            MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
-        ],
+        items,
     }
 }
 
@@ -727,6 +751,11 @@ pub fn field(
                             }))
                             .on_action(cx.listener(|input, _: &Cut, _, cx| {
                                 input.edit(EditAction::Cut, false, cx)
+                            }))
+                            .on_action(cx.listener(|input, _: &DeleteSelection, _, cx| {
+                                // Menu Delete removes the selected range; it
+                                // neither cuts to the clipboard nor backspaces.
+                                input.replace(input.selected(), "", Kind::Separate, cx);
                             }))
                     })
             })

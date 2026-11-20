@@ -3934,15 +3934,17 @@ fn main() {
     });
     application.run(move |cx: &mut App| {
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new(
-            if cfg!(target_os = "macos") {
-                "cmd-q"
-            } else {
-                "ctrl-q"
-            },
-            Quit,
-            None,
-        )]);
+        if !cfg!(target_os = "windows") {
+            cx.bind_keys([KeyBinding::new(
+                if cfg!(target_os = "macos") {
+                    "cmd-q"
+                } else {
+                    "ctrl-q"
+                },
+                Quit,
+                None,
+            )]);
+        }
         cx.bind_keys([
             KeyBinding::new(
                 if cfg!(target_os = "macos") {

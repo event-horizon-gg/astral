@@ -592,3 +592,60 @@ fn folder_choice_still_releases_ownership_if_the_window_closes(cx: &mut TestAppC
     assert!(view.read_with(cx, |app, _| !app.root_choice_pending
         && app.folder_error.is_none()));
 }
+
+#[gpui::test]
+fn edit_menu_delete_is_selection_only_and_undoable(cx: &mut TestAppContext) {
+    use crate::search_input::{DeleteSelection, SelectAll, Undo};
+    let directory = tempfile::tempdir().unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        Astral::new(
+            [None, None],
+            Some(directory.path()),
+            Some(Client::Retail),
+            false,
+            cx,
+        )
+    });
+    view.update_in(cx, |app, window, cx| {
+        app.set_query("Moon 🌙", cx);
+        app.search_focus.focus(window);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+            "untouched clipboard".into(),
+        ));
+    });
+    cx.run_until_parked();
+    cx.dispatch_action(SelectAll);
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| {
+        window
+            .available_actions(cx)
+            .iter()
+            .any(|action| action.as_any().is::<DeleteSelection>())
+    }));
+    cx.dispatch_action(DeleteSelection);
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |app, _| app.query.clone()), "");
+    assert_eq!(
+        cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+        Some("untouched clipboard".into())
+    );
+    assert!(!cx.update(|window, cx| {
+        window
+            .available_actions(cx)
+            .iter()
+            .any(|action| action.as_any().is::<DeleteSelection>())
+    }));
+    cx.dispatch_action(Undo);
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |app, _| app.query.clone()), "Moon 🌙");
+    press(cx, "right");
+    assert!(!cx.update(|window, cx| {
+        window
+            .available_actions(cx)
+            .iter()
+            .any(|action| action.as_any().is::<DeleteSelection>())
+    }));
+    cx.dispatch_action(DeleteSelection);
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |app, _| app.query.clone()), "Moon 🌙");
+}
