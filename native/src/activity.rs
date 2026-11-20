@@ -109,6 +109,13 @@ pub(crate) fn record(path: Option<&Path>, mut action: Action) {
             .unwrap_or_default()
             .as_secs();
         entries.insert(0, action);
+        let roots: Vec<_> = entries
+            .iter()
+            .map(|entry| (entry.client, entry.root.clone()))
+            .collect();
+        if let Err(error) = crate::backup_roots::remember(path, &roots) {
+            eprintln!("Couldn't record backup installations: {error}");
+        }
         entries.truncate(100);
         preferences::save_json(&path.with_file_name("addon-activity.json"), &entries)
     })();
@@ -551,8 +558,14 @@ impl Astral {
                     eprintln!("Couldn't read earlier addon activity. {error}");
                 }
             }
+            let (known_roots, roots_error) = if root.is_none() {
+                crate::backup_roots::discover(preferences.as_deref(), &known_roots)
+            } else {
+                (known_roots, None)
+            };
             let (records, archive_error) =
                 backup_history(root.as_deref(), client, &known_roots, &archives, &catalog);
+            let archive_error = roots_error.or(archive_error);
             (records, archive_error, recent)
         });
         cx.spawn(async move |this, cx| {
@@ -1984,6 +1997,71 @@ mod global_history_tests {
                 fs::read_to_string(root.join("Interface/AddOns/KeyUI/unchanged.lua")).unwrap(),
                 "original"
             );
+        }
+    }
+}
+
+#[cfg(all(test, feature = "headless-ui-tests"))]
+mod registered_history_ui_tests {
+    use super::*;
+    use crate::Page;
+    use gpui::{TestAppContext, size};
+
+    #[gpui::test]
+    fn rootless_activity_loads_native_backups_from_a_previously_registered_installation(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let prefs = temp.path().join("preferences.json");
+            let root = temp.path().join("game/_retail_");
+            fs::create_dir_all(root.join("Interface/AddOns/Fixture")).unwrap();
+            let backup = root.join("Interface/.astral-native-backups/persisted-fixture");
+            fs::create_dir_all(&backup).unwrap();
+            preferences::save_json(
+                &backup.join("manifest.json"),
+                &serde_json::json!({
+                    "addon": "Fixture", "release": "2", "created": 1_700_000_000,
+                    "folders": ["Fixture"], "previous": ["Fixture"]
+                }),
+            )
+            .unwrap();
+            crate::backup_roots::remember(&prefs, &[(Client::Retail, root.clone())]).unwrap();
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                let mut app = Astral::new(
+                    [None, None],
+                    Some(temp.path()),
+                    Some(Client::Retail),
+                    light,
+                    cx,
+                );
+                app.page = Page::Backups;
+                assert!(app.root(Client::Retail).is_none());
+                app.load_backups(cx);
+                app
+            });
+            cx.simulate_resize(size(px(1250.), px(1000.)));
+            cx.run_until_parked();
+            let actual = view.read_with(cx, |app, _| {
+                app.activity.entries.as_ref().map(|entries| {
+                    entries
+                        .as_ref()
+                        .map(|entries| {
+                            entries
+                                .iter()
+                                .map(|backup| backup.path.clone())
+                                .collect::<Vec<_>>()
+                        })
+                        .map_err(Clone::clone)
+                })
+            });
+            assert_eq!(actual, Some(Ok(vec![backup.canonicalize().unwrap()])));
+            assert!(
+                cx.debug_bounds("restore-backup:persisted-fixture")
+                    .is_some()
+            );
+            assert!(backup.join("manifest.json").is_file());
+            assert!(!root.join("Interface/AddOns/Fixture/manifest.json").exists());
         }
     }
 }

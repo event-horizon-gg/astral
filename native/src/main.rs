@@ -5,6 +5,7 @@ mod activity;
 mod app_updates;
 mod application_menu;
 mod artwork;
+mod backup_roots;
 mod batch;
 mod bundled;
 mod client_picker;
@@ -473,6 +474,21 @@ impl Astral {
     }
 
     fn scan_library(&mut self, keep_checks: bool, cx: &mut Context<Self>) {
+        if let Some(path) = self.preferences_path.clone() {
+            let roots: Vec<_> = Client::ALL
+                .into_iter()
+                .filter_map(|client| self.root(client).cloned().map(|root| (client, root)))
+                .collect();
+            if !roots.is_empty() {
+                cx.background_executor()
+                    .spawn(async move {
+                        if let Err(error) = backup_roots::remember(&path, &roots) {
+                            eprintln!("Couldn't record backup installations: {error}");
+                        }
+                    })
+                    .detach();
+            }
+        }
         self.client_picker.invalidate();
         let mut previous = HashMap::new();
         if keep_checks {
