@@ -855,7 +855,7 @@ impl Astral {
             && self.release_review.is_none()
             && self.removal.is_none()
             && self.project_review.is_none()
-            && !self.activity.has_confirmation()
+            && !self.activity.has_pending_operation()
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]

@@ -445,6 +445,14 @@ impl State {
         self.confirmation.is_some()
     }
 
+    pub(crate) fn operation_running(&self) -> bool {
+        self.restoring
+    }
+
+    pub(crate) fn has_pending_operation(&self) -> bool {
+        self.has_confirmation() || self.restoring
+    }
+
     fn selected(&self) -> Option<&installer::Backup> {
         let path = self.confirmation.as_ref()?;
         self.entries
@@ -715,8 +723,6 @@ impl Astral {
         let catalog = self.catalog.clone();
         let prefs = self.preferences_path.clone();
         let name = backup.transaction.addon.clone();
-        self.activity.restoring = true;
-        self.activity.outcome = None;
         let task = cx.background_executor().spawn(async move {
             let result = if let (true, Some(operation)) = (interrupted, profile_switch) {
                 let data = data.ok_or("Couldn't find the Astral settings folder.")?;
@@ -750,6 +756,22 @@ impl Astral {
             );
             result
         });
+        self.await_addon_restore(task, interrupted, cx);
+    }
+
+    fn await_addon_restore(
+        &mut self,
+        task: gpui::Task<Result<(), String>>,
+        interrupted: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.activity.restoring = true;
+        self.activity.outcome = None;
+        if !interrupted {
+            // main.jsx closes the ordinary confirmation before awaiting restore.
+            // Keep the operation guard independently of the removed dialog.
+            self.activity.confirmation = None;
+        }
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |app, cx| {
@@ -757,15 +779,23 @@ impl Astral {
                 if result.is_ok() {
                     app.activity.confirmation = None;
                     app.install_receipt = None;
+                }
+                if result.is_ok() || !interrupted {
+                    // The source refreshes state after ordinary failures too:
+                    // an interrupted swap may have left recovery work to list.
                     app.refresh_after_change(cx);
                 }
-                app.activity.outcome = Some(result.map(|_| {
-                    if interrupted {
-                        "Interrupted operation recovered.".into()
-                    } else {
-                        "Addon files restored.".into()
+                if interrupted {
+                    app.activity.outcome =
+                        Some(result.map(|_| "Interrupted operation recovered.".into()));
+                } else {
+                    match result {
+                        Ok(()) => {
+                            app.show_notification("Previous addon version restored.", false, cx)
+                        }
+                        Err(error) => app.show_notification(error, true, cx),
                     }
-                }));
+                }
                 cx.notify();
             });
         })
@@ -1665,6 +1695,71 @@ mod ui_tests {
             interrupted: false,
             recovered: false,
             electron: false,
+        }
+    }
+
+    #[gpui::test]
+    fn ordinary_restore_closes_before_completion_and_reports_result_in_toast(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            for succeeds in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let path = directory.path().join("Fixture");
+                let (view, cx) = cx.add_window_view(|_, cx| {
+                    let mut app = Astral::new(
+                        [None, None],
+                        Some(directory.path()),
+                        Some(Client::Retail),
+                        light,
+                        cx,
+                    );
+                    app.page = Page::Backups;
+                    app.activity.entries = Some(Ok(vec![backup(path.clone(), "Fixture")]));
+                    app.activity.confirm_addon_restore(path.clone());
+                    app
+                });
+                cx.simulate_resize(size(px(1250.), px(1000.)));
+                cx.run_until_parked();
+                assert!(cx.debug_bounds("cancel-addon-restore").is_some());
+                let (send, receive) = async_channel::bounded(1);
+                view.update(cx, |app, cx| {
+                    let task = cx
+                        .background_executor()
+                        .spawn(async move { receive.recv().await.unwrap() });
+                    app.await_addon_restore(task, false, cx);
+                });
+                cx.run_until_parked();
+                assert!(cx.debug_bounds("notification").is_none());
+                view.update_in(cx, |app, window, cx| {
+                    assert!(app.activity.operation_running());
+                    assert!(app.activity.has_pending_operation());
+                    assert!(!app.activity.has_confirmation());
+                    assert!(app.activity.confirmation_focus.is_none());
+                    assert!(app.addon_controls_busy());
+                    assert!(!app.can_start_update_batch());
+                    // Navigation must not drop ownership while files are changing.
+                    app.page = Page::Library;
+                    app.root_focus.focus(window);
+                    app.activity.confirm_addon_restore(path.clone());
+                    assert!(!app.activity.has_confirmation());
+                    cx.notify();
+                });
+                send.try_send(if succeeds {
+                    Ok(())
+                } else {
+                    Err("Fixture restore failed.".into())
+                })
+                .unwrap();
+                cx.run_until_parked();
+                assert!(cx.debug_bounds("notification").is_some());
+                view.read_with(cx, |app, _| {
+                    assert!(!app.activity.operation_running());
+                    assert!(!app.activity.has_pending_operation());
+                    assert!(app.activity.outcome.is_none());
+                });
+                assert!(!path.exists());
+            }
         }
     }
 

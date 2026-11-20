@@ -592,7 +592,7 @@ impl Astral {
             && self.batch.is_none()
             && self.release_review.is_none()
             && self.removal.is_none()
-            && !self.activity.has_confirmation()
+            && !self.activity.has_pending_operation()
             && !self.talent_refreshing
             && self.project_review.is_none()
             && !self.settings_write_in_progress()

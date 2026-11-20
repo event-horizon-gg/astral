@@ -558,6 +558,7 @@ impl Astral {
             || self.checking
             || self.discovery_search_busy()
             || self.addon_batch_running()
+            || self.activity.operation_running()
             || self.account_work_in_progress()
             || self.settings_write_in_progress()
             || self.daily_running

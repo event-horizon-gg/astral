@@ -1193,7 +1193,7 @@ impl Astral {
             && self.removal.is_none()
             && self.batch.is_none()
             && self.project_review.is_none()
-            && !self.activity.has_confirmation()
+            && !self.activity.has_pending_operation()
             && !self.settings_write_in_progress()
             && !self.talent_refreshing
             && !self.daily_running
