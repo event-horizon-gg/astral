@@ -134,16 +134,16 @@ struct LibraryFocus {
 impl LibraryFocus {
     fn new(cx: &App) -> Self {
         Self {
-            check: cx.focus_handle(),
-            update_all: cx.focus_handle(),
-            empty: cx.focus_handle(),
-            close: cx.focus_handle(),
-            daily: cx.focus_handle(),
-            release: cx.focus_handle(),
-            zip: cx.focus_handle(),
-            restore: cx.focus_handle(),
-            source: cx.focus_handle(),
-            filters: std::array::from_fn(|_| cx.focus_handle()),
+            check: cx.focus_handle().tab_stop(true),
+            update_all: cx.focus_handle().tab_stop(true),
+            empty: cx.focus_handle().tab_stop(true),
+            close: cx.focus_handle().tab_stop(true),
+            daily: cx.focus_handle().tab_stop(true),
+            release: cx.focus_handle().tab_stop(true),
+            zip: cx.focus_handle().tab_stop(true),
+            restore: cx.focus_handle().tab_stop(true),
+            source: cx.focus_handle().tab_stop(true),
+            filters: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
         }
     }
 }
@@ -161,13 +161,13 @@ struct SettingsFocus {
 impl SettingsFocus {
     fn new(cx: &App) -> Self {
         Self {
-            folder: cx.focus_handle(),
-            daily: cx.focus_handle(),
-            update_banner: cx.focus_handle(),
-            update_check: cx.focus_handle(),
-            update_restart: cx.focus_handle(),
-            update_download: cx.focus_handle(),
-            update_notes: cx.focus_handle(),
+            folder: cx.focus_handle().tab_stop(true),
+            daily: cx.focus_handle().tab_stop(true),
+            update_banner: cx.focus_handle().tab_stop(true),
+            update_check: cx.focus_handle().tab_stop(true),
+            update_restart: cx.focus_handle().tab_stop(true),
+            update_download: cx.focus_handle().tab_stop(true),
+            update_notes: cx.focus_handle().tab_stop(true),
         }
     }
 }
@@ -210,6 +210,8 @@ struct Astral {
     header_focus: gpui::FocusHandle,
     settings_focus: SettingsFocus,
     library_focus: LibraryFocus,
+    addon_row_focus: std::cell::RefCell<HashMap<String, [gpui::FocusHandle; 2]>>,
+    discovery_card_focus: std::cell::RefCell<HashMap<String, [gpui::FocusHandle; 4]>>,
     main_scroll: gpui::ScrollHandle,
     main_overflows: bool,
     scrollbar_drag: Option<(f32, f32)>,
@@ -341,7 +343,7 @@ impl Astral {
             menu_trigger_bounds: Default::default(),
             client_picker: Default::default(),
             tools_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
-            account_signout_focus: cx.focus_handle(),
+            account_signout_focus: cx.focus_handle().tab_stop(true),
             account_first_focus: cx.focus_handle().tab_stop(true),
             root_focus: cx.focus_handle().tab_index(-2),
             brand_focus: cx.focus_handle().tab_stop(true),
@@ -349,6 +351,8 @@ impl Astral {
             header_focus: cx.focus_handle().tab_index(-1),
             settings_focus: SettingsFocus::new(cx),
             library_focus: LibraryFocus::new(cx),
+            addon_row_focus: Default::default(),
+            discovery_card_focus: Default::default(),
             main_scroll: gpui::ScrollHandle::new(),
             main_overflows: false,
             scrollbar_drag: None,
@@ -749,6 +753,19 @@ fn icon(path: &'static str, size: f32, color: u32) -> gpui::Svg {
         .text_color(rgb(color))
 }
 
+fn discovery_focus_key(
+    source: Option<&Definition>,
+    project: Option<&discovery::Project>,
+) -> String {
+    if let Some(source) = source {
+        format!("catalog:{}", source.id)
+    } else if let Some(project) = project {
+        format!("github:{}", project.full_name)
+    } else {
+        "empty".into()
+    }
+}
+
 fn keyboard_button(
     button: gpui::Stateful<gpui::Div>,
     palette: Palette,
@@ -775,6 +792,7 @@ fn button_outline(
     palette: Palette,
     focus: &gpui::FocusHandle,
 ) -> gpui::Stateful<gpui::Div> {
+    // Explicit handles carry their own Tab eligibility, including disabled selects.
     button
         .track_focus(focus)
         .child(focus_outline(focus.clone(), palette.accent))
@@ -1809,6 +1827,12 @@ impl Astral {
     }
 
     fn tile(&self, addon: &Addon, compact: bool, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let focus = self
+            .addon_row_focus
+            .borrow_mut()
+            .entry(addon.folder.clone())
+            .or_insert_with(|| std::array::from_fn(|_| cx.focus_handle().tab_stop(true)))
+            .clone();
         let palette = Palette::new(self.preferences.light_theme);
         let folder = addon.folder.clone();
         let row_key = folder.clone();
@@ -1853,14 +1877,19 @@ impl Astral {
         };
         let action = palette
             .icon_button("addon-row-action", if ready { "download" } else { "more" })
+            .debug_selector({
+                let folder = folder.clone();
+                move || format!("addon-action:{folder}")
+            })
             .w(px(if compact { 18. } else { 22. }))
             .flex_shrink_0();
         let action = if self.addon_controls_busy() || (ready && self.profile_game_running()) {
             action.opacity(0.45).cursor_default()
         } else {
-            keyboard_button(
+            outlined_button(
                 action,
                 palette,
+                &focus[1],
                 cx.listener(move |app, _: &(), _, cx| {
                     if let Some(source) = &release {
                         app.update_one_addon(source, cx);
@@ -1885,9 +1914,13 @@ impl Astral {
             .when(self.selected.as_deref() == Some(&folder), |row| {
                 row.bg(palette.hover)
             })
-            .child(keyboard_button(
+            .child(outlined_button(
                 div()
                     .id(SharedString::from(format!("addon-details:{folder}")))
+                    .debug_selector({
+                        let folder = folder.clone();
+                        move || format!("addon-details:{folder}")
+                    })
                     .flex()
                     .items_center()
                     .gap(px(if compact { 13. } else { 17. }))
@@ -1905,6 +1938,7 @@ impl Astral {
                             .child(typography::wrapped(addon.name.clone(), 20., 1.15, -0.7)),
                     ),
                 palette,
+                &focus[0],
                 cx.listener(move |app, _: &(), _, cx| {
                     app.open_addon_details(folder.clone(), cx);
                 }),
@@ -2001,6 +2035,12 @@ impl Astral {
             .map(|source| source.id.as_str())
             .or(repo)
             .unwrap_or(name);
+        let focus = self
+            .discovery_card_focus
+            .borrow_mut()
+            .entry(discovery_focus_key(source, project))
+            .or_insert_with(|| std::array::from_fn(|_| cx.focus_handle().tab_stop(true)))
+            .clone();
         let bundled = source.is_some_and(|source| source.bundled == Some(true));
         let installed = source.and_then(|source| {
             self.addons
@@ -2021,17 +2061,22 @@ impl Astral {
             .gap(px(14.));
         if let Some(addon) = installed {
             let name = addon.name.clone();
-            actions = actions.child(keyboard_button(
+            actions = actions.child(outlined_button(
                 palette
                     .text_button(
                         SharedString::from(format!("discover-installed:{key}")),
                         "In your library",
                     )
+                    .debug_selector({
+                        let key = key.to_owned();
+                        move || format!("discover-installed:{key}")
+                    })
                     .flex()
                     .items_center()
                     .gap_2()
                     .child(icon("check", 13., palette.muted)),
                 palette,
+                &focus[0],
                 cx.listener(move |app, _: &(), window, cx| {
                     app.navigate(Page::Library, window, cx);
                     app.filter = Filter::All;
@@ -2057,9 +2102,10 @@ impl Astral {
             actions = actions.child(if busy {
                 button.opacity(0.45).cursor_default()
             } else {
-                keyboard_button(
+                outlined_button(
                     button,
                     palette,
+                    &focus[1],
                     cx.listener(move |app, _: &(), window, cx| {
                         app.review_project(repo.clone(), window, cx);
                     }),
@@ -2079,9 +2125,10 @@ impl Astral {
                     {
                         button.opacity(0.45).cursor_default()
                     } else {
-                        keyboard_button(
+                        outlined_button(
                             button,
                             palette,
+                            &focus[2],
                             cx.listener(move |app, _: &(), _, cx| {
                                 app.install_missing_catalog_addon(&id, cx);
                             }),
@@ -2101,7 +2148,9 @@ impl Astral {
                 actions = actions.child(if busy {
                     button.opacity(0.45).cursor_default()
                 } else {
-                    keyboard_button(button, palette, move |_, _, cx| cx.open_url(&url))
+                    outlined_button(button, palette, &focus[3], move |_, _, cx| {
+                        cx.open_url(&url)
+                    })
                 });
             }
         }
@@ -2471,6 +2520,12 @@ impl Astral {
 
 impl Render for Astral {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.addon_row_focus
+            .borrow_mut()
+            .retain(|folder, _| self.addons.iter().any(|addon| &addon.folder == folder));
+        if self.page != Page::Discover {
+            self.discovery_card_focus.borrow_mut().clear();
+        }
         self.observe_busy_motion(cx);
         application_menu::refresh_window_menu(window);
         self.validate_account_profile_picker(window);
@@ -3368,6 +3423,13 @@ impl Render for Astral {
                     }
                 })
             });
+            let visible_focus_keys: std::collections::HashSet<_> = results
+                .iter()
+                .map(|(source, project)| discovery_focus_key(*source, *project))
+                .collect();
+            self.discovery_card_focus
+                .borrow_mut()
+                .retain(|key, _| visible_focus_keys.contains(key));
             let searching = self.discovery_search_busy();
             content = content.child(
                 div()

@@ -875,3 +875,151 @@ fn navigation_menu_focus_keeps_geometry_and_routes_keyboard_and_pointer(cx: &mut
             && app.quick_find.is_none()));
     }
 }
+
+#[gpui::test]
+fn addon_row_focus_follows_identity_after_reordering(cx: &mut TestAppContext) {
+    for light in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = Astral::new(
+                [None, None],
+                Some(directory.path()),
+                Some(Client::Retail),
+                light,
+                cx,
+            );
+            let mut second = addon();
+            second.folder = "SecondFixture".into();
+            second.name = "Second addon".into();
+            app.addons = vec![addon(), second];
+            app
+        });
+        cx.simulate_resize(size(px(1250.), px(900.)));
+        cx.run_until_parked();
+        let before = cx.debug_bounds("addon-details:FixtureAddon").unwrap();
+        view.update_in(cx, |app, window, _| {
+            app.addon_row_focus.borrow()["FixtureAddon"][0].focus(window)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            before,
+            cx.debug_bounds("addon-details:FixtureAddon").unwrap()
+        );
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.addon_row_focus.borrow()["FixtureAddon"][1].is_focused(window));
+            assert!(!app.addon_row_focus.borrow()["SecondFixture"][1].is_focused(window));
+            app.addon_row_focus.borrow()["SecondFixture"][1].focus(window);
+        });
+        let action = cx.debug_bounds("addon-action:SecondFixture").unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            action,
+            cx.debug_bounds("addon-action:SecondFixture").unwrap()
+        );
+        view.update_in(cx, |app, _, cx| {
+            app.addons.reverse();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, _| {
+            assert!(app.addon_row_focus.borrow()["SecondFixture"][1].is_focused(window))
+        });
+        press(cx, "enter");
+        assert_eq!(
+            view.read_with(cx, |app, _| app.selected.clone()).as_deref(),
+            Some("SecondFixture")
+        );
+        view.update_in(cx, |app, _, cx| {
+            app.selected = None;
+            app.addons.retain(|addon| addon.folder != "SecondFixture");
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |app, _| {
+            !app.addon_row_focus.borrow().contains_key("SecondFixture")
+        }));
+    }
+}
+
+#[gpui::test]
+fn discover_card_focus_is_separate_per_action_and_filters_release_removed_handles(
+    cx: &mut TestAppContext,
+) {
+    for light in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = Astral::new(
+                [None, None],
+                Some(directory.path()),
+                Some(Client::Retail),
+                light,
+                cx,
+            );
+            app.catalog = ["FirstFixture", "SecondFixture"]
+                .into_iter()
+                .map(|name| {
+                    serde_json::from_value(serde_json::json!({
+                        "id": name, "name": name, "folder": name,
+                        "repo": format!("fixture/{name}")
+                    }))
+                    .unwrap()
+                })
+                .collect::<Vec<_>>()
+                .into();
+            app.addons = ["FirstFixture", "SecondFixture"]
+                .into_iter()
+                .map(|name| {
+                    let mut item = addon();
+                    item.folder = name.into();
+                    item.name = name.into();
+                    item
+                })
+                .collect();
+            app.page = Page::Discover;
+            app
+        });
+        cx.simulate_resize(size(px(1250.), px(900.)));
+        cx.run_until_parked();
+        let first = cx.debug_bounds("discover-installed:FirstFixture").unwrap();
+        view.update_in(cx, |app, window, _| {
+            app.discovery_card_focus.borrow()["catalog:FirstFixture"][0].focus(window)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            first,
+            cx.debug_bounds("discover-installed:FirstFixture").unwrap()
+        );
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(
+                app.discovery_card_focus.borrow()["catalog:FirstFixture"][1].is_focused(window)
+            );
+            assert!(
+                !app.discovery_card_focus.borrow()["catalog:SecondFixture"][1].is_focused(window)
+            );
+        });
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(
+                app.discovery_card_focus.borrow()["catalog:SecondFixture"][0].is_focused(window)
+            )
+        });
+        press(cx, "space");
+        assert!(view.read_with(cx, |app, _| app.page == Page::Library
+            && app.query == "SecondFixture"));
+        view.update_in(cx, |app, _, cx| {
+            app.page = Page::Discover;
+            app.set_query("FirstFixture", cx);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |app, _| app.discovery_card_focus.borrow().len() == 1));
+        assert!(cx.debug_bounds("discover-installed:FirstFixture").is_some());
+        assert!(view.read_with(cx, |app, _| {
+            !app.discovery_card_focus
+                .borrow()
+                .contains_key("catalog:SecondFixture")
+        }));
+    }
+}
