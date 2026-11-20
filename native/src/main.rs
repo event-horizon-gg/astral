@@ -115,8 +115,6 @@ enum ToolbarMenu {
 const HEADER_LAYER: usize = 50;
 const TOOLBAR_LAYER: usize = 80;
 const TOAST_LAYER: usize = 1000;
-const NATIVE_PICKER_BACKDROP_LAYER: usize = 1001;
-const NATIVE_PICKER_LAYER: usize = 1002;
 
 struct Astral {
     fixture: bool,
@@ -767,22 +765,6 @@ struct Palette {
 }
 
 impl Palette {
-    fn focus_ring(self) -> Vec<gpui::BoxShadow> {
-        self.focus_ring_on(self.background)
-    }
-
-    fn focus_ring_on(self, background: u32) -> Vec<gpui::BoxShadow> {
-        [(self.accent, 6.), (background, 4.)]
-            .into_iter()
-            .map(|(color, spread)| gpui::BoxShadow {
-                color: rgb(color).into(),
-                offset: gpui::point(px(0.), px(0.)),
-                blur_radius: px(0.),
-                spread_radius: px(spread),
-            })
-            .collect()
-    }
-
     fn profile_avatar(self, name: Option<&str>, large: bool) -> gpui::Div {
         let size = if large { 44. } else { 35. };
         div()
@@ -3487,6 +3469,7 @@ impl Render for Astral {
                     || app.discovery_source_key(event, window, cx)
                     || app.local_account_key(event, window, cx)
                     || app.client_picker_key(event, window, cx)
+                    || app.account_profile_key(event, window, cx)
                 {
                     cx.stop_propagation();
                 }
@@ -3646,19 +3629,6 @@ impl Render for Astral {
             })
             .when_some(self.notification_view(palette, window, cx), |app, toast| {
                 app.child(gpui::deferred(toast).with_priority(TOAST_LAYER))
-            })
-            .when(self.account_profile_picker_open(), |app| {
-                app.child(
-                    gpui::deferred(div().absolute().inset_0().occlude().on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|app, _, window, cx| {
-                            app.dismiss_account_profile_picker(cx);
-                            app.profile_review_focus.picker.focus(window);
-                            cx.stop_propagation();
-                        }),
-                    ))
-                    .with_priority(NATIVE_PICKER_BACKDROP_LAYER),
-                )
             })
     }
 }

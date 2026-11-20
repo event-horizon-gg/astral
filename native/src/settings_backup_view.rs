@@ -111,6 +111,76 @@ mod ui_tests {
     }
 
     #[gpui::test]
+    fn profile_popup_cancel_preserves_active_and_selection_opens_review_without_applying(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| account_fixture(directory.path(), false, cx));
+        cx.run_until_parked();
+        view.update(cx, |app, cx| {
+            app.load_settings_backups(Some("ALPHA".into()), cx)
+        });
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            app.page = Page::Account;
+            app.profile_review_focus.picker.focus(window);
+            app.await_account_profile(std::future::ready(None), window, cx);
+        });
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            assert!(app.settings_backups.profile_choice.is_none());
+            assert_eq!(app.settings_backups.profile.active, Profile::Regular);
+            assert!(app.settings_backups.review.is_none());
+            assert!(app.profile_review_focus.picker.is_focused(window));
+            app.await_account_profile(std::future::ready(Some(1)), window, cx);
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |app, _| {
+            assert!(
+                app.settings_backups.review.is_some(),
+                "{:?}",
+                app.settings_backups.status
+            );
+            assert_eq!(app.settings_backups.profile.active, Profile::Regular);
+            assert!(!app.settings_backups.writing);
+        });
+        assert!(
+            !directory
+                .path()
+                .join("_retail_/Interface/AddOns/ConsolePort")
+                .exists()
+        );
+    }
+
+    #[gpui::test]
+    fn profile_popup_result_cannot_outlive_an_account_reload(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| account_fixture(directory.path(), false, cx));
+        cx.run_until_parked();
+        view.update(cx, |app, cx| {
+            app.load_settings_backups(Some("ALPHA".into()), cx)
+        });
+        cx.run_until_parked();
+        let (choice, finish) = crate::ui_tests::deferred();
+        view.update_in(cx, |app, window, cx| {
+            app.page = Page::Account;
+            app.await_account_profile(choice, window, cx);
+            app.load_settings_backups(Some("BETA".into()), cx);
+            app.brand_focus.focus(window);
+        });
+        cx.run_until_parked();
+        finish(Some(1));
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, _| {
+            assert!(app.settings_backups.profile_choice.is_none());
+            assert_eq!(app.settings_backups.account.as_deref(), Some("BETA"));
+            assert!(app.settings_backups.review.is_none());
+            assert_eq!(app.settings_backups.profile.active, Profile::Regular);
+            assert!(app.brand_focus.is_focused(window));
+        });
+    }
+
+    #[gpui::test]
     fn signed_out_cached_cloud_only_profile_requests_sign_in_instead_of_creating_a_local_profile(
         cx: &mut TestAppContext,
     ) {
@@ -151,15 +221,13 @@ mod ui_tests {
         view.update_in(cx, |app, window, _| {
             app.profile_review_focus.picker.focus(window)
         });
-        press(cx, "enter");
-        assert!(view.read_with(cx, |app, _| app.settings_backups.choosing_profile));
-        view.update_in(cx, |app, window, _| {
-            app.profile_review_focus.picker_options[1].focus(window)
+        view.update_in(cx, |app, window, cx| {
+            app.await_account_profile(std::future::ready(Some(1)), window, cx);
         });
-        press(cx, "enter");
+        cx.run_until_parked();
         assert!(cx.debug_bounds("notification").is_some());
         view.read_with(cx, |app, _| {
-            assert!(!app.settings_backups.choosing_profile);
+            assert!(app.settings_backups.profile_choice.is_none());
             assert!(!app.settings_backups.reviewing);
             assert!(app.settings_backups.review.is_none());
             assert_eq!(app.settings_backups.profile.profiles().count(), 2);
@@ -197,22 +265,23 @@ mod ui_tests {
         view.update_in(cx, |app, window, _| {
             app.profile_review_focus.picker.focus(window)
         });
-        press(cx, "enter");
-        let unavailable = cx
-            .debug_bounds("unavailable-active-profile")
-            .unwrap()
-            .center();
-        cx.simulate_click(unavailable, Modifiers::default());
+        view.update_in(cx, |app, window, cx| {
+            let menu = app.profile_menu();
+            assert_eq!(menu.labels, ["Profile unavailable"]);
+            assert_eq!(menu.disabled, [0]);
+            assert_eq!(menu.ids, [None]);
+            app.await_account_profile(std::future::ready(Some(0)), window, cx);
+        });
+        cx.run_until_parked();
         for key in ["down", "up", "a"] {
             press(cx, key);
             view.update_in(cx, |app, window, _| {
-                assert!(app.settings_backups.choosing_profile);
+                assert!(app.settings_backups.profile_choice.is_none());
                 assert!(app.profile_review_focus.picker.is_focused(window));
                 assert_eq!(app.settings_backups.profile.active, Profile::Regular);
+                assert!(app.settings_backups.review.is_none());
             });
         }
-        press(cx, "escape");
-        assert!(!view.read_with(cx, |app, _| app.settings_backups.choosing_profile));
         assert!(!root.exists());
     }
 
@@ -339,7 +408,7 @@ mod ui_tests {
 
 pub(crate) struct ProfileReviewFocus {
     pub(crate) picker: FocusHandle,
-    picker_options: [FocusHandle; 16],
+    picker_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     files: FocusHandle,
     cancel: FocusHandle,
     apply: FocusHandle,
@@ -351,7 +420,7 @@ impl ProfileReviewFocus {
     pub(crate) fn new(cx: &mut Context<Astral>) -> Self {
         Self {
             picker: cx.focus_handle().tab_stop(true),
-            picker_options: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            picker_bounds: Default::default(),
             files: cx.focus_handle().tab_stop(true),
             cancel: cx.focus_handle().tab_stop(true),
             apply: cx.focus_handle().tab_stop(true),
@@ -389,7 +458,7 @@ pub struct State {
     accounts: Vec<String>,
     account_choice: Option<uuid::Uuid>,
     account_type_ahead: crate::type_ahead::TypeAhead,
-    choosing_profile: bool,
+    profile_choice: Option<uuid::Uuid>,
     profile_type_ahead: crate::type_ahead::TypeAhead,
     game_running: bool,
     checking_game: bool,
@@ -485,7 +554,7 @@ impl Astral {
                 {
                     state.game_running = running;
                     if running {
-                        state.choosing_profile = false;
+                        state.profile_choice = None;
                     }
                     cx.notify();
                 }
@@ -1326,7 +1395,7 @@ impl Astral {
             self.settings_backups.account = None;
             self.settings_backups.account_context = None;
         }
-        self.settings_backups.choosing_profile = false;
+        self.settings_backups.profile_choice = None;
         self.settings_backups.loading = false;
         self.settings_backups.status = None;
         let client = self.preferences.client;
@@ -1561,16 +1630,12 @@ impl Astral {
     }
 
     pub(crate) fn dismiss_account_profile_picker(&mut self, cx: &mut Context<Self>) -> bool {
-        let was_open = std::mem::take(&mut self.settings_backups.choosing_profile);
+        let was_open = self.settings_backups.profile_choice.take().is_some();
         if was_open {
             self.settings_backups.profile_type_ahead.reset();
             cx.notify();
         }
         was_open
-    }
-
-    pub(crate) fn account_profile_picker_open(&self) -> bool {
-        self.settings_backups.choosing_profile
     }
 
     fn account_profile_picker_available(&self) -> bool {
@@ -1584,86 +1649,177 @@ impl Astral {
     }
 
     pub(crate) fn validate_account_profile_picker(&mut self, window: &mut Window) {
-        if self.settings_backups.choosing_profile && !self.account_profile_picker_available() {
-            self.settings_backups.choosing_profile = false;
+        if self.settings_backups.profile_choice.is_some()
+            && !self.account_profile_picker_available()
+        {
+            self.settings_backups.profile_choice = None;
             self.settings_backups.profile_type_ahead.reset();
             self.root_focus.focus(window);
         }
     }
 
-    fn toggle_account_profile_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings_backups.profile_type_ahead.reset();
-        self.settings_backups.choosing_profile = !self.settings_backups.choosing_profile;
-        if self.settings_backups.choosing_profile {
-            let options = profile_picker_choices(self.cloud_picker_profiles());
-            let index = options
-                .iter()
-                .position(|(profile, _, _)| *profile == self.settings_backups.profile.active)
-                .unwrap_or(0);
-            if !options.is_empty()
-                && let Some(focus) = self.profile_review_focus.picker_options.get(index).cloned()
-            {
-                window.on_next_frame(move |window, _| focus.focus(window));
-            }
-        } else {
-            self.profile_review_focus.picker.focus(window);
+    fn profile_menu(&self) -> ProfileMenu {
+        let active = self.settings_backups.profile.active;
+        let options = profile_picker_choices(self.cloud_picker_profiles());
+        let missing = !options.iter().any(|(id, _, _)| *id == active);
+        let mut menu = ProfileMenu {
+            ids: Vec::new(),
+            labels: Vec::new(),
+            disabled: Vec::new(),
+            selected: 0,
+        };
+        if missing {
+            menu.ids.push(None);
+            menu.labels.push(
+                if self.cloud_picker_profiles().is_some() {
+                    "Profile unavailable"
+                } else {
+                    "Selected profile"
+                }
+                .into(),
+            );
+            menu.disabled.push(0);
         }
+        for (id, name, _) in options {
+            if id == active {
+                menu.selected = menu.ids.len();
+            }
+            menu.ids.push(Some(id));
+            menu.labels.push(name);
+        }
+        menu
+    }
+
+    fn choose_account_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.fixture
+            || self.page != crate::Page::Account
+            || !self.account_profile_picker_available()
+            || self.settings_backups.profile_choice.is_some()
+        {
+            return;
+        }
+        let Some(bounds) = self.profile_review_focus.picker_bounds.get() else {
+            return;
+        };
+        let menu = self.profile_menu();
+        match crate::native_select::choose_with_disabled(
+            window,
+            cx,
+            menu.labels,
+            menu.selected,
+            crate::native_select::Anchor {
+                bounds,
+                font_size: px(14.),
+            },
+            menu.disabled,
+        ) {
+            Ok(choice) => self.await_account_profile(choice, window, cx),
+            Err(error) => self.show_notification(error, true, cx),
+        }
+    }
+
+    fn await_account_profile(
+        &mut self,
+        choice: impl std::future::Future<Output = Option<usize>> + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.page != crate::Page::Account
+            || !self.account_profile_picker_available()
+            || self.settings_backups.profile_choice.is_some()
+        {
+            return;
+        }
+        let token = uuid::Uuid::new_v4();
+        let request = self.settings_backups.request;
+        let client = self.preferences.client;
+        let root = self.root(client).cloned();
+        let account = self.settings_backups.account.clone();
+        let active = self.settings_backups.profile.active;
+        let ids = self.profile_menu().ids;
+        self.settings_backups.profile_choice = Some(token);
+        cx.spawn_in(window, async move |this, cx| {
+            let choice = choice.await;
+            let _ = this.update_in(cx, |app, window, cx| {
+                if app.settings_backups.profile_choice != Some(token) {
+                    return;
+                }
+                app.settings_backups.profile_choice = None;
+                if app.page == crate::Page::Account
+                    && app.preferences.client == client
+                    && app.root(client) == root.as_ref()
+                    && app.settings_backups.request == request
+                    && app.settings_backups.account == account
+                    && app.settings_backups.profile.active == active
+                    && app.account_profile_picker_available()
+                {
+                    app.profile_review_focus.picker.focus(window);
+                    if let Some(profile) =
+                        choice.and_then(|index| ids.get(index)).copied().flatten()
+                    {
+                        app.select_account_profile(profile, window, cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 
-    fn profile_picker_type_ahead(
+    fn select_account_profile(
         &mut self,
-        key: &gpui::Keystroke,
+        profile: Profile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.account_profile_picker_available()
+            || profile == self.settings_backups.profile.active
+        {
+            return;
+        }
+        let options = profile_picker_choices(self.cloud_picker_profiles());
+        if let Some((_, _, cloud)) = options.into_iter().find(|(id, _, _)| *id == profile) {
+            if let Some(cloud) = cloud {
+                self.review_cloud_picker(cloud, window, cx);
+            } else {
+                self.review_local_profile(profile, profile == Profile::Handheld, window, cx);
+            }
+        }
+    }
+
+    pub(crate) fn account_profile_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(text) = crate::type_ahead::printable(key) else {
-            return false;
-        };
-        if !self.account_profile_picker_available() {
+        if self.page != crate::Page::Account
+            || !self.profile_review_focus.picker.is_focused(window)
+            || !self.account_profile_picker_available()
+            || self.settings_backups.profile_choice.is_some()
+        {
             return false;
         }
-        let options = profile_picker_choices(self.cloud_picker_profiles());
-        let active = self.settings_backups.profile.active;
-        let open = self.settings_backups.choosing_profile;
-        let selected = if open {
-            self.profile_review_focus
-                .picker_options
-                .iter()
-                .position(|handle| handle.is_focused(window))
-        } else {
-            options
-                .iter()
-                .position(|(profile, _, _)| *profile == active)
-        }
-        .unwrap_or(0);
-        let names = options
-            .iter()
-            .take(self.profile_review_focus.picker_options.len())
-            .map(|(_, name, _)| name.as_str())
-            .collect::<Vec<_>>();
-        if let Some(index) = self.settings_backups.profile_type_ahead.find(
-            text,
-            &names,
-            selected,
+        let menu = self.profile_menu();
+        let labels: Vec<_> = menu.labels.iter().map(String::as_str).collect();
+        match crate::native_select::closed_key_with_disabled(
+            &event.keystroke,
+            cfg!(target_os = "macos"),
+            &labels,
+            menu.selected,
+            &mut self.settings_backups.profile_type_ahead,
             std::time::Instant::now(),
+            &menu.disabled,
         ) {
-            if open {
-                self.profile_review_focus.picker_options[index].focus(window);
-            } else if let Some((profile, _, cloud)) = options.get(index) {
-                if *profile != active {
-                    if let Some(cloud) = cloud.clone() {
-                        self.review_cloud_picker(cloud, window, cx);
-                    } else {
-                        self.review_local_profile(
-                            *profile,
-                            *profile == Profile::Handheld,
-                            window,
-                            cx,
-                        );
-                    }
+            crate::native_select::KeyResult::Open => self.choose_account_profile(window, cx),
+            crate::native_select::KeyResult::Select(index) => {
+                if let Some(profile) = menu.ids[index] {
+                    self.select_account_profile(profile, window, cx);
                 }
             }
+            crate::native_select::KeyResult::Handled => {}
+            crate::native_select::KeyResult::Ignore => return false,
         }
         true
     }
@@ -1676,48 +1832,17 @@ impl Astral {
     ) -> gpui::Div {
         let state = &self.settings_backups;
         let active = state.profile.active;
-        let options = profile_picker_choices(self.cloud_picker_profiles());
-        let options_len = options
-            .len()
-            .min(self.profile_review_focus.picker_options.len());
-        let mac_popup = cfg!(target_os = "macos");
-        let dark_menu = matches!(
-            window.appearance(),
-            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-        );
-        let menu_background = match (dark_menu, self.preferences.light_theme) {
-            (true, false) => 0x35363a,
-            (true, true) => 0x9e9e9d,
-            (false, true) => 0xf0f0f0,
-            (false, false) => 0xaaaaad,
-        };
-        let menu_text = if dark_menu { 0xf2f1ed } else { 0x101114 };
-        let selected_index = options
-            .iter()
-            .position(|(profile, _, _)| *profile == active)
-            .unwrap_or(0);
-        let selected_name = options
-            .iter()
-            .find(|(profile, _, _)| *profile == active)
-            .map(|(_, name, _)| name.clone())
-            .unwrap_or_else(|| {
-                if self.cloud_picker_profiles().is_some() {
-                    "Profile unavailable"
-                } else {
-                    "Selected profile"
-                }
-                .into()
-            });
+        let menu = self.profile_menu();
+        let selected_name = menu.labels[menu.selected].clone();
         let available = self.account_profile_picker_available();
         let picker_focus = self.profile_review_focus.picker.clone().tab_stop(available);
         // A browser select reserves room for its widest option, not just the
         // currently selected name. Keep custom profile names from resizing it.
         let mut font = window.text_style().font();
         font.weight = gpui::FontWeight(650.);
-        let select_width = options
+        let select_width = menu
+            .labels
             .iter()
-            .map(|(_, name, _)| name)
-            .chain(std::iter::once(&selected_name))
             .map(|name| {
                 let line = window.text_system().shape_line(
                     name.clone().into(),
@@ -1736,144 +1861,77 @@ impl Astral {
             })
             .fold(0_f32, f32::max)
             .ceil();
-        let missing_active = !options.iter().any(|(profile, _, _)| *profile == active);
         let selected = palette
-            .button("account-active-profile", selected_name.clone())
+            .button_base("account-active-profile", selected_name)
+            .debug_selector(|| "account-profile-trigger".into())
+            .relative()
             .h(px(34.))
             .px(px(9.))
             .w(px(select_width))
             .justify_between()
+            .cursor_default()
             .text_size(px(14.))
             .font_weight(gpui::FontWeight(650.))
             .bg(rgb(palette.panel))
-            .track_focus(&picker_focus)
-            .when(state.choosing_profile, |button| {
-                button.shadow(palette.focus_ring())
-            })
+            .child(crate::remember_bounds(
+                self.profile_review_focus.picker_bounds.clone(),
+            ))
             .child(crate::icon("chevron", 13., palette.muted))
-            .when(!available, |button| button.opacity(0.55).cursor_default())
-            .when(available, |button| {
+            .when(!available, |button| {
                 button
-                    .tab_stop(true)
-                    .focus(move |style| style.shadow(palette.focus_ring()))
-                    .on_click(cx.listener(move |app, _, window, cx| {
-                        app.toggle_account_profile_picker(window, cx)
-                    }))
-                    .on_key_down(
-                        cx.listener(move |app, event: &gpui::KeyDownEvent, window, cx| {
-                            match event.keystroke.key.as_str() {
-                                "up" if !app.settings_backups.choosing_profile => {
-                                    app.toggle_account_profile_picker(window, cx)
-                                }
-                                "down" if !app.settings_backups.choosing_profile => {
-                                    app.toggle_account_profile_picker(window, cx)
-                                }
-                                "down" if options_len > 0 => {
-                                    app.profile_review_focus.picker_options[0].focus(window)
-                                }
-                                "up" if app.settings_backups.choosing_profile
-                                    && options_len > 0 =>
-                                {
-                                    app.profile_review_focus.picker_options
-                                        [options_len.saturating_sub(1)]
-                                    .focus(window)
-                                }
-                                _ => {
-                                    if app.profile_picker_type_ahead(&event.keystroke, window, cx) {
-                                        cx.stop_propagation();
-                                    }
-                                    return;
-                                }
-                            }
-                            app.settings_backups.profile_type_ahead.reset();
-                            cx.stop_propagation();
-                        }),
-                    )
-            });
-        div().relative().flex().flex_col()
-            .child(div().flex().items_center().justify_between().gap_3()
-                .text_size(px(14.)).font_weight(gpui::FontWeight(650.))
-                .child("Profile").child(selected))
-            .when(state.choosing_profile && available, |picker| picker.child(
-                gpui::deferred(div().absolute()
-                    .top(px(if mac_popup { -6. - selected_index as f32 * 24. } else { 34. }))
-                    .right(px(if mac_popup { 7. } else { 0. }))
-                    .w(px(select_width + if mac_popup { 5. } else { 0. }))
-                    .occlude().flex().flex_col().gap(px(if mac_popup { 0. } else { 4. })).p_1()
-                    .bg(rgb(if mac_popup { menu_background } else { palette.panel }))
-                    .border_1().border_color(palette.line).rounded(px(if mac_popup { 10. } else { 4. }))
-                    .shadow(vec![gpui::BoxShadow { color: gpui::rgba(0x00000040).into(), offset: gpui::point(px(0.), px(6.)), blur_radius: px(16.), spread_radius: px(0.) }])
-                    .when(missing_active, |menu| menu.child(
-                        div().id("unavailable-active-profile")
-                            .debug_selector(|| "unavailable-active-profile".into())
-                            .flex().items_center().justify_between().gap(px(6.))
-                            .px(px(if mac_popup { 5. } else { 15. }))
-                            .h(px(if mac_popup { 24. } else { 34. }))
-                            .text_size(px(14.)).font_weight(gpui::FontWeight::NORMAL)
-                            .text_color(rgb(if mac_popup { menu_text } else { palette.text })).opacity(0.45).cursor_default()
-                            .when(mac_popup, |row| row.justify_start().child(
-                                div().w(px(14.)).flex_shrink_0().child(crate::icon("check", 12., menu_text))))
-                            .child(selected_name)
-                            .when(!mac_popup, |row| row.child(crate::icon("check", 14., palette.muted)))
-                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(|_, _, cx| cx.stop_propagation())
-                    ))
-                    .children(options.into_iter().take(options_len).enumerate().map(|(index, (profile, name, cloud))| {
-                        let focus = self.profile_review_focus.picker_options[index].clone();
-                        let next = self.profile_review_focus.picker_options[(index + 1) % options_len].clone();
-                        let previous = self.profile_review_focus.picker_options[(index + options_len - 1) % options_len].clone();
-                        let first = self.profile_review_focus.picker_options[0].clone();
-                        let last = self.profile_review_focus.picker_options[options_len - 1].clone();
-                        let apply = move |app: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
-                            app.dismiss_account_profile_picker(cx);
-                            app.profile_review_focus.picker.focus(window);
-                            if profile != active {
-                                if let Some(cloud) = cloud.clone() { app.review_cloud_picker(cloud, window, cx); }
-                                else { app.review_local_profile(profile, profile == Profile::Handheld, window, cx); }
-                            }
-                        };
-                        let hover_focus = focus.clone();
-                        let button = if mac_popup {
-                            div().id(("account-profile-option", index)).flex().items_center().gap(px(6.)).px(px(5.)).h(px(24.))
-                                .rounded(px(5.)).text_size(px(14.)).font_weight(gpui::FontWeight::NORMAL).text_color(rgb(menu_text))
-                                .child(div().w(px(14.)).flex_shrink_0().when(profile == active, |mark| mark.child(crate::icon("check", 12., if focus.is_focused(window) { 0xffffff } else { menu_text }))))
-                                .child(name)
-                        } else {
-                            palette.button(("account-profile-option", index), name).h(px(34.)).justify_between()
-                                .when(profile == active, |button| button.child(crate::icon("check", 14., palette.text)))
-                        };
-                        crate::keyboard_button(button.track_focus(&focus), palette,
-                            cx.listener(move |app, _: &(), window, cx| apply(app, window, cx)))
-                            .when(mac_popup, |button| button.border_0()
-                                .focus(|style| style.border_0().bg(rgb(0x0a84ff)).text_color(rgb(0xffffff)))
-                                .on_hover(move |hovered, window, _| { if *hovered { hover_focus.focus(window); } }))
-                            .on_key_down(cx.listener(move |app, event: &gpui::KeyDownEvent, window, cx| {
-                                match event.keystroke.key.as_str() {
-                                    "down" => next.focus(window),
-                                    "up" => previous.focus(window),
-                                    "home" => first.focus(window),
-                                    "end" => last.focus(window),
-                                    _ => {
-                                        if app.profile_picker_type_ahead(&event.keystroke, window, cx) {
-                                            cx.stop_propagation();
-                                        }
-                                        return;
-                                    }
-                                }
-                                app.settings_backups.profile_type_ahead.reset();
-                                cx.stop_propagation();
-                            }))
-                    }))).with_priority(crate::NATIVE_PICKER_LAYER),
-            ))
-            .when(active == Profile::Handheld && available, |picker| {
-                picker.child(div().child(palette.text_button("review-handheld-setup", "Review Handheld setup")
-                    .focusable().tab_stop(true).focus(move |style| style.border_color(rgb(palette.accent)))
-                    .on_click(cx.listener(|app, _, window, cx| app.review_local_profile(Profile::Handheld, true, window, cx)))))
+                    .track_focus(&picker_focus)
+                    .tab_stop(false)
+                    .opacity(0.55)
+                    .cursor_default()
             })
-            .when(state.account.is_none() && !state.loading, |picker| picker.child(
-                palette.label("Open WoW once, then close it to set up profiles.").text_size(px(11.)),
-            ))
-            .when(state.profile.interrupted, |picker| picker.child(self.settings_backup_controls(palette, cx)))
+            .when(available, |button| {
+                crate::outlined_button(
+                    button,
+                    palette,
+                    &picker_focus,
+                    cx.listener(|app, _: &(), window, cx| app.choose_account_profile(window, cx)),
+                )
+                .capture_key_up(crate::native_select::suppress_button_keys)
+            });
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .text_size(px(14.))
+                    .font_weight(gpui::FontWeight(650.))
+                    .child("Profile")
+                    .child(selected),
+            )
+            .when(active == Profile::Handheld && available, |picker| {
+                picker.child(
+                    div().child(
+                        palette
+                            .text_button("review-handheld-setup", "Review Handheld setup")
+                            .focusable()
+                            .tab_stop(true)
+                            .focus(move |style| style.border_color(rgb(palette.accent)))
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.review_local_profile(Profile::Handheld, true, window, cx)
+                            })),
+                    ),
+                )
+            })
+            .when(state.account.is_none() && !state.loading, |picker| {
+                picker.child(
+                    palette
+                        .label("Open WoW once, then close it to set up profiles.")
+                        .text_size(px(11.)),
+                )
+            })
+            .when(state.profile.interrupted, |picker| {
+                picker.child(self.settings_backup_controls(palette, cx))
+            })
             .when_some(state.status.as_ref(), |picker, status| {
                 let (message, color) = match status {
                     Ok(message) => (message, palette.success),
@@ -2319,6 +2377,13 @@ fn backup_date(millis: u64) -> String {
 
 /// Cloud profiles may not exist in this computer's local store yet. Keep them
 /// reachable in the main picker; management only creates/renames/deletes them.
+struct ProfileMenu {
+    ids: Vec<Option<Profile>>,
+    labels: Vec<String>,
+    disabled: Vec<usize>,
+    selected: usize,
+}
+
 fn profile_picker_choices(
     cloud: Option<&[crate::cloud::CloudProfile]>,
 ) -> Vec<(Profile, String, Option<crate::cloud::CloudProfile>)> {
