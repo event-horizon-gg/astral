@@ -67,7 +67,6 @@ fn retry_keys(entries: &[Action]) -> Vec<ButtonKey> {
 struct RestoreFocus {
     cancel: FocusHandle,
     restore: FocusHandle,
-    previous: Option<FocusHandle>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -409,25 +408,18 @@ impl State {
 impl Astral {
     pub(crate) fn update_addon_restore_focus(&mut self, window: &mut Window, cx: &Context<Self>) {
         if self.activity.selected().is_some() {
-            let focus = self
-                .activity
+            self.activity
                 .confirmation_focus
                 .get_or_insert_with(|| RestoreFocus {
                     cancel: cx.focus_handle().tab_stop(true),
                     restore: cx.focus_handle().tab_stop(true),
-                    previous: window.focused(cx),
                 });
-            if self.activity.restoring {
-                focus.restore.focus(window);
-            } else if !focus.cancel.is_focused(window) && !focus.restore.is_focused(window) {
-                focus.cancel.focus(window);
-            }
-        } else if let Some(focus) = self.activity.confirmation_focus.take() {
-            focus
-                .previous
-                .as_ref()
-                .unwrap_or(&self.root_focus)
-                .focus(window);
+        } else if let Some(focus) = self.activity.confirmation_focus.take()
+            && (focus.cancel.is_focused(window) || focus.restore.is_focused(window))
+        {
+            // main.jsx's ordinary modal has no autofocus, Tab trap or opener
+            // restoration. A removed focused button falls back to the page.
+            self.root_focus.focus(window);
         }
     }
 
@@ -1212,23 +1204,8 @@ impl Astral {
         let Some(focus) = &self.activity.confirmation_focus else {
             return modal;
         };
-        let cancel_focus = focus.cancel.clone();
-        let restore_focus = focus.restore.clone();
-        let restoring = self.activity.restoring;
         let record = &backup.transaction;
         let mut body = crate::account::dialog_panel("addon-restore-dialog", palette)
-            .on_key_down(move |event, window, cx| {
-                if event.keystroke.key == "tab" {
-                    if !restoring {
-                        if cancel_focus.is_focused(window) {
-                            restore_focus.focus(window);
-                        } else {
-                            cancel_focus.focus(window);
-                        }
-                    }
-                    cx.stop_propagation();
-                }
-            })
             .child(icon("history", 26., palette.accent))
             .child(div().mt(px(20.)).text_size(px(24.)).line_height(px(29.)).font_weight(gpui::FontWeight::MEDIUM)
                 .child(format!("{} {}?", if backup.interrupted { "Recover" } else { "Restore" }, record.addon)))
@@ -1587,15 +1564,60 @@ mod ui_tests {
                 view.read_with(cx, |app, _| app.activity.confirmation.clone()),
                 Some(second.clone())
             );
-            // Cancel the confirmation through its real keyboard action; never restore files.
-            press(cx, "enter");
-            assert!(view.read_with(cx, |app, _| app.activity.confirmation.is_none()));
             view.update_in(cx, |app, window, cx| {
                 assert!(
                     app.activity
                         .control_focus(ButtonKey::Restore(second.clone()), cx)
                         .is_focused(window)
-                );
+                )
+            });
+            // main.jsx does not autofocus/trap this modal: the next underlying
+            // backup action precedes Cancel in ordinary document Tab order.
+            press(cx, "tab");
+            view.update_in(cx, |app, window, cx| {
+                assert!(
+                    app.activity
+                        .control_focus(ButtonKey::Restore(first.clone()), cx)
+                        .is_focused(window)
+                )
+            });
+            press(cx, "tab");
+            view.update_in(cx, |app, window, _| {
+                assert!(
+                    app.activity
+                        .confirmation_focus
+                        .as_ref()
+                        .unwrap()
+                        .cancel
+                        .is_focused(window)
+                )
+            });
+            press(cx, "shift-tab");
+            view.update_in(cx, |app, window, cx| {
+                assert!(
+                    app.activity
+                        .control_focus(ButtonKey::Restore(first.clone()), cx)
+                        .is_focused(window)
+                )
+            });
+            press(cx, "tab");
+            press(cx, "enter");
+            assert!(view.read_with(cx, |app, _| app.activity.confirmation.is_none()));
+            view.update_in(cx, |app, window, cx| {
+                assert!(app.root_focus.is_focused(window));
+                app.activity.confirm_addon_restore(second.clone());
+                app.brand_focus.focus(window);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, cx| {
+                assert!(app.brand_focus.is_focused(window));
+                app.activity.dismiss_confirmation();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, cx| {
+                assert!(app.brand_focus.is_focused(window));
                 app.checking = true;
                 app.brand_focus.focus(window);
                 cx.notify();
