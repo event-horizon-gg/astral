@@ -97,3 +97,23 @@ pub(super) fn read(path: &Path) -> io::Result<PathBuf> {
         Ok(PathBuf::from(OsString::from_wide(&buffer[..end])))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn shell_paths_remove_verbatim_prefix_without_changing_unc_or_unicode() {
+        assert_eq!(
+            normalize(Path::new(r"\\?\C:\Games\Móonkin")),
+            PathBuf::from(r"C:\Games\Móonkin")
+        );
+        assert_eq!(
+            normalize(Path::new(r"\\?\UNC\server\share\backups")),
+            PathBuf::from(r"\\server\share\backups")
+        );
+        assert_eq!(
+            normalize(Path::new(r"C:\Games\backups")),
+            PathBuf::from(r"C:\Games\backups")
+        );
+    }
+}

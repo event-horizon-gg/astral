@@ -587,7 +587,15 @@ impl Astral {
             return;
         }
         let task = self.backup_collection_task(cx);
-        self.await_backup_collection(task, |path, cx| cx.open_with_system(&path), cx);
+        self.await_backup_collection(
+            task,
+            |path, cx| {
+                #[cfg(target_os = "windows")]
+                let path = crate::backup_collection::shell_path(&path);
+                cx.open_with_system(&path);
+            },
+            cx,
+        );
     }
 
     pub fn load_backups(&mut self, cx: &mut Context<Self>) {

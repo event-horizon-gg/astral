@@ -39,6 +39,11 @@ pub(crate) fn update(
     }
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn shell_path(path: &Path) -> PathBuf {
+    windows::normalize(path)
+}
+
 pub(crate) fn existing(preferences: &Path) -> io::Result<PathBuf> {
     let folder = preferences
         .parent()
