@@ -1226,9 +1226,10 @@ impl Astral {
                 .border_0()
                 .when(busy, |button| button.opacity(0.45).cursor_default())
                 .when(!busy, |button| {
-                    crate::keyboard_button(
+                    crate::outlined_button(
                         button,
                         palette,
+                        &self.account_focus.profiles_manage,
                         cx.listener(|app, _: &(), _, cx| {
                             app.account.profiles.manage = true;
                             app.refresh_cloud_profile_list(cx);

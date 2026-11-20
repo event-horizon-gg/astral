@@ -61,6 +61,66 @@ fn cloud_backup_size(bytes: u64) -> String {
     }
 }
 
+pub(super) struct PageFocus {
+    manage_data: FocusHandle,
+    delete_data: FocusHandle,
+    shared_sync: FocusHandle,
+    shared_refresh: FocusHandle,
+    devices_refresh: FocusHandle,
+    profiles_manage: FocusHandle,
+    rows: std::cell::RefCell<std::collections::HashMap<(&'static str, String), FocusHandle>>,
+}
+
+impl PageFocus {
+    pub(super) fn new(cx: &gpui::App) -> Self {
+        Self {
+            manage_data: cx.focus_handle().tab_stop(true),
+            delete_data: cx.focus_handle().tab_stop(true),
+            shared_sync: cx.focus_handle().tab_stop(true),
+            shared_refresh: cx.focus_handle().tab_stop(true),
+            devices_refresh: cx.focus_handle().tab_stop(true),
+            profiles_manage: cx.focus_handle().tab_stop(true),
+            rows: Default::default(),
+        }
+    }
+
+    fn row(&self, kind: &'static str, id: &str, cx: &gpui::App) -> FocusHandle {
+        self.rows
+            .borrow_mut()
+            .entry((kind, id.to_owned()))
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone()
+    }
+
+    fn retain_rows(&self, state: &State) {
+        let mut current = std::collections::HashSet::new();
+        if let Some(overview) = &state.overview {
+            current.extend(
+                overview
+                    .history
+                    .iter()
+                    .map(|backup| ("history", backup.id.clone())),
+            );
+            current.extend(
+                overview
+                    .devices
+                    .iter()
+                    .map(|device| ("device", device.id.clone())),
+            );
+        }
+        for shared in state.shared.iter().flatten() {
+            for addon in shared.addons.iter().flatten() {
+                for kind in ["install", "zip", "source"] {
+                    current.insert((kind, addon.folder.clone()));
+                }
+            }
+        }
+        self.rows
+            .borrow_mut()
+            .retain(|key, _| current.contains(key));
+    }
+}
+
 #[derive(Default)]
 pub struct State {
     loaded: bool,
@@ -280,6 +340,115 @@ mod ui_tests {
         view.update_in(cx, |app, window, _| {
             assert!(app.brand_focus.is_focused(window))
         });
+    }
+
+    #[gpui::test]
+    fn account_page_focus_keeps_data_controls_and_device_identity_in_both_themes(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (view, cx) =
+                cx.add_window_view(|_, cx| {
+                    let mut app = Astral::new(
+                        [None, None],
+                        Some(directory.path()),
+                        Some(Client::Retail),
+                        light,
+                        cx,
+                    );
+                    app.page = Page::Account;
+                    app.account.session = Some(
+                        serde_json::from_value(serde_json::json!({
+                            "token": "a".repeat(43), "name": "Fixture#1234"
+                        }))
+                        .unwrap(),
+                    );
+                    app.account.overview = Some(serde_json::from_value(serde_json::json!({
+                    "devices": [
+                        { "id": "first-fixture", "label": "First fixture", "current": true },
+                        { "id": "second-fixture", "label": "Second fixture", "current": false }
+                    ], "history": [], "revision": 0
+                })).unwrap());
+                    app
+                });
+            cx.simulate_resize(size(px(1250.), px(1600.)));
+            cx.run_until_parked();
+            let manage = cx.debug_bounds("manage-cloud-data").unwrap();
+            view.update_in(cx, |app, window, _| {
+                app.account_focus.manage_data.focus(window)
+            });
+            cx.run_until_parked();
+            assert_eq!(manage, cx.debug_bounds("manage-cloud-data").unwrap());
+            press(cx, "space");
+            assert!(view.read_with(cx, |app, _| app.account.manage_data));
+            assert_eq!(manage, cx.debug_bounds("manage-cloud-data").unwrap());
+            press(cx, "tab");
+            view.update_in(cx, |app, window, cx| {
+                assert!(app.account_focus.delete_data.is_focused(window));
+                app.account.busy = Some("Fixture operation");
+                app.account_focus.manage_data.focus(window);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            press(cx, "tab");
+            view.update_in(cx, |app, window, cx| {
+                assert!(!app.account_focus.delete_data.is_focused(window));
+                app.account.busy = None;
+                app.account_focus
+                    .row("device", "second-fixture", cx)
+                    .focus(window);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let before = cx.debug_bounds("revoke-device:second-fixture").unwrap();
+            view.update_in(cx, |app, _, cx| {
+                app.account.overview.as_mut().unwrap().devices.reverse();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, cx| {
+                assert!(
+                    app.account_focus
+                        .row("device", "second-fixture", cx)
+                        .is_focused(window)
+                );
+                assert!(
+                    !app.account_focus
+                        .row("device", "first-fixture", cx)
+                        .is_focused(window)
+                );
+            });
+            let after = cx.debug_bounds("revoke-device:second-fixture").unwrap();
+            assert_eq!(before.size.width, after.size.width);
+            // Moving rows can round their fractional line height to a different
+            // physical pixel; the focus identity must still follow the device.
+            assert!((before.size.height - after.size.height).abs() <= px(1.));
+            press(cx, "enter");
+            assert_eq!(
+                view.read_with(cx, |app, _| app.account.revoke.clone())
+                    .as_deref(),
+                Some("second-fixture")
+            );
+            // The entry point only opens a confirmation. Never confirm remote sign-out.
+            view.update_in(cx, |app, _, cx| {
+                app.dismiss_sync_dialog(cx);
+                app.account
+                    .overview
+                    .as_mut()
+                    .unwrap()
+                    .devices
+                    .retain(|device| device.id != "second-fixture");
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert!(view.read_with(cx, |app, _| {
+                !app.account_focus
+                    .rows
+                    .borrow()
+                    .contains_key(&("device", "second-fixture".into()))
+            }));
+        }
     }
 }
 
@@ -2027,9 +2196,10 @@ impl Astral {
                     label: date,
                     version: backup.revision,
                 };
-                restore = crate::keyboard_button(
+                restore = crate::outlined_button(
                     restore,
                     palette,
+                    &self.account_focus.row("history", &backup.id, cx),
                     cx.listener(move |app, _: &(), _, cx| {
                         app.account.history_error = None;
                         app.account.delete_confirmation = None;
@@ -2163,6 +2333,10 @@ impl Astral {
                         .child(
                             palette
                                 .text_button(("revoke-device", index), "Sign out")
+                                .debug_selector({
+                                    let id = device.id.clone();
+                                    move || format!("revoke-device:{id}")
+                                })
                                 .flex()
                                 .items_center()
                                 .gap(px(6.))
@@ -2174,9 +2348,10 @@ impl Astral {
                                 .child(crate::icon("logout", 13., palette.muted))
                                 .when(busy, |button| button.opacity(0.45).cursor_default())
                                 .when(!busy, |button| {
-                                    crate::keyboard_button(
+                                    crate::outlined_button(
                                         button,
                                         palette,
+                                        &self.account_focus.row("device", &device.id, cx),
                                         cx.listener(move |app, _: &(), _, cx| {
                                             app.account.revoke = Some(id.clone());
                                             app.account.history_restore = None;
@@ -2409,8 +2584,9 @@ impl Astral {
             "▸ Manage cloud data"
         };
         div().mt(px(35.)).pt(px(20.)).border_t_1().border_color(palette.line)
-            .child(crate::keyboard_button(
-                palette.text_button("manage-cloud-data", label).line_height(px(13.2)).border_0(), palette,
+            .child(crate::outlined_button(
+                palette.text_button("manage-cloud-data", label).debug_selector(|| "manage-cloud-data".into()).line_height(px(13.2)).border_0(), palette,
+                    &self.account_focus.manage_data,
                 cx.listener(|app, _: &(), _, cx| { app.account.manage_data = !app.account.manage_data; cx.notify(); }),
             ))
             .when(self.account.manage_data, |panel| panel.child(div().py(px(25.)).flex().items_start().justify_between().gap(px(22.))
@@ -2421,7 +2597,7 @@ impl Astral {
                     .text_size(px(10.)).line_height(px(12.)).py(px(5.)).text_color(rgb(0xe6a5ae)).border_0()
                     .flex_row_reverse().child(crate::icon("trash", 14., 0xe6a5ae))
                     .when(busy, |button| button.opacity(0.45).cursor_default())
-                    .when(!busy, |button| crate::keyboard_button(button, palette,
+                    .when(!busy, |button| crate::outlined_button(button, palette, &self.account_focus.delete_data,
                         cx.listener(|app, _: &(), _, cx| app.start_cloud_deletion(cx)))))))
     }
 
@@ -2499,9 +2675,10 @@ impl Astral {
                             button.opacity(0.45).cursor_default()
                         })
                         .when(!busy && !running, |button| {
-                            crate::keyboard_button(
+                            crate::outlined_button(
                                 button,
                                 palette,
+                                &self.account_focus.shared_sync,
                                 cx.listener(|app, _: &(), _, cx| app.sync_shared_addons(cx)),
                             )
                         }),
@@ -2510,9 +2687,10 @@ impl Astral {
                     action(palette.text_button("reload-shared-addons", "Refresh"))
                         .when(busy, |button| button.opacity(0.45).cursor_default())
                         .when(!busy, |button| {
-                            crate::keyboard_button(
+                            crate::outlined_button(
                                 button,
                                 palette,
+                                &self.account_focus.shared_refresh,
                                 cx.listener(|app, _: &(), _, cx| app.refresh_account(None, cx)),
                             )
                         }),
@@ -2607,9 +2785,10 @@ impl Astral {
                         .line_height(px(13.2))
                         .border_0();
                     row = row.child(if self.can_start_update_batch() {
-                        crate::keyboard_button(
+                        crate::outlined_button(
                             button,
                             palette,
+                            &self.account_focus.row("install", &addon.folder, cx),
                             cx.listener(move |app, _: &(), _, cx| {
                                 app.install_missing_catalog_addon(&id, cx);
                             }),
@@ -2633,7 +2812,13 @@ impl Astral {
                                     }
                                 }))
                                 .when(busy, |button| button.opacity(0.45).cursor_default())
-                                .when(!busy, |button| button.focusable().tab_stop(true)),
+                                .when(!busy, |button| {
+                                    crate::button_outline(
+                                        button,
+                                        palette,
+                                        &self.account_focus.row("source", &addon.folder, cx),
+                                    )
+                                }),
                         );
                     }
                     row = row.child(
@@ -2655,7 +2840,11 @@ impl Astral {
                                     button.opacity(0.45).cursor_default()
                                 })
                                 .when(!busy && !running, |button| {
-                                    button.focusable().tab_stop(true)
+                                    crate::button_outline(
+                                        button,
+                                        palette,
+                                        &self.account_focus.row("zip", &addon.folder, cx),
+                                    )
                                 }),
                         ),
                     );
@@ -2676,6 +2865,7 @@ impl Astral {
         cx: &Context<Self>,
     ) -> gpui::Div {
         let account = &self.account;
+        self.account_focus.retain_rows(account);
         let name = self.account_name();
         let signed_in = name.is_some();
         // Fixture sign-in is blocked at the handler; keep its appearance equal
@@ -2961,9 +3151,10 @@ impl Astral {
                             .child(crate::icon("refresh", 13., palette.muted))
                             .when(!ready, |button| button.opacity(0.45).cursor_default())
                             .when(ready, |button| {
-                                crate::keyboard_button(
+                                crate::outlined_button(
                                     button,
                                     palette,
+                                    &self.account_focus.devices_refresh,
                                     cx.listener(|app, _: &(), _, cx| app.refresh_account(None, cx)),
                                 )
                             }),
