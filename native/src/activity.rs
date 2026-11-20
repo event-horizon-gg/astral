@@ -244,6 +244,71 @@ fn earlier_actions(
     Ok(actions)
 }
 
+fn backup_history(
+    root: Option<&Path>,
+    client: Client,
+    known_roots: &[(Client, PathBuf)],
+    archives: &[(&str, PathBuf)],
+    catalog: &[crate::Definition],
+) -> (Result<Vec<installer::Backup>, String>, Option<String>) {
+    let mut archive_error = None;
+    let mut records = if let Some(root) = root {
+        installer::list(root, client)
+    } else {
+        let mut records = Vec::new();
+        for (client, root) in known_roots {
+            match installer::list(root, *client) {
+                Ok(found) => records.extend(found),
+                Err(error) => archive_error = Some(error),
+            }
+        }
+        Ok(records)
+    };
+    if let Ok(records) = &mut records {
+        for (_, archive) in archives
+            .iter()
+            .filter(|(label, _)| *label == "Earlier Astral backups")
+        {
+            let earlier = if let Some(root) = root {
+                installer::list_electron(archive, root, client, catalog)
+            } else {
+                installer::list_electron_unfiltered(archive, catalog)
+            };
+            match earlier {
+                Ok(found) => records.extend(found),
+                Err(error) => archive_error = Some(error),
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        records.retain(|backup| {
+            seen.insert(
+                backup
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| backup.path.clone()),
+            )
+        });
+        installer::sort_backups(records);
+    }
+    (records, archive_error)
+}
+
+fn backup_folder(
+    root: Option<&Path>,
+    client: Client,
+    preferences: Option<&Path>,
+) -> Result<PathBuf, String> {
+    if let Some(root) = root {
+        return installer::open_backup_folder(root, client);
+    }
+    let folder = preferences
+        .and_then(Path::parent)
+        .ok_or("Astral storage is unavailable.")?
+        .join("backups");
+    fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    Ok(folder)
+}
+
 fn activity_button(
     button: Stateful<gpui::Div>,
     palette: Palette,
@@ -444,9 +509,11 @@ impl Astral {
         self.activity.backup_notes.clear();
         self.activity.recent.clear();
         self.activity.recent_error = None;
-        let Some(root) = self.root(client).cloned() else {
-            return;
-        };
+        let root = self.root(client).cloned();
+        let known_roots: Vec<_> = [Client::Retail, Client::Forever]
+            .into_iter()
+            .filter_map(|client| self.root(client).cloned().map(|root| (client, root)))
+            .collect();
         let archives = self.activity_archives();
         let catalog = self.catalog.clone();
         let preferences = self.preferences_path.clone();
@@ -460,11 +527,18 @@ impl Astral {
                 .as_deref()
                 .map_or_else(|| Ok(Vec::new()), recent_actions)
                 .map(|mut entries| {
-                    let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
-                    entries.retain(|entry| entry.client == client && entry.root == canonical);
+                    if let Some(root) = &root {
+                        let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+                        entries.retain(|entry| entry.client == client && entry.root == canonical);
+                    } else {
+                        entries.clear();
+                    }
                     entries
                 });
-            match earlier_actions(&earlier_activity, &root, client) {
+            match root.as_ref().map_or_else(
+                || Ok(Vec::new()),
+                |root| earlier_actions(&earlier_activity, root, client),
+            ) {
                 Ok(earlier) => {
                     if let Ok(entries) = &mut recent {
                         entries.extend(earlier);
@@ -477,20 +551,8 @@ impl Astral {
                     eprintln!("Couldn't read earlier addon activity. {error}");
                 }
             }
-            let mut archive_error = None;
-            let records = installer::list(&root, client).map(|mut records| {
-                for (_, archive) in archives
-                    .into_iter()
-                    .filter(|(label, _)| *label == "Earlier Astral backups")
-                {
-                    match installer::list_electron(&archive, &root, client, &catalog) {
-                        Ok(earlier) => records.extend(earlier),
-                        Err(error) => archive_error = Some(error),
-                    }
-                }
-                installer::sort_backups(&mut records);
-                records
-            });
+            let (records, archive_error) =
+                backup_history(root.as_deref(), client, &known_roots, &archives, &catalog);
             (records, archive_error, recent)
         });
         cx.spawn(async move |this, cx| {
@@ -516,6 +578,14 @@ impl Astral {
         }
         let client = self.preferences.client;
         let Some(root) = self.root(client).cloned() else {
+            if self.activity.selected().is_some() && !self.activity.restoring {
+                self.activity.confirmation = None;
+                self.show_notification(
+                    "This backup belongs to another game installation.",
+                    true,
+                    cx,
+                );
+            }
             return;
         };
         let Some(backup) = self.activity.selected() else {
@@ -680,33 +750,31 @@ impl Astral {
                             |records| format!("Backups ({})", records.len()),
                         )),
                 )
-                .when_some(self.root(client).cloned(), |row, root| {
-                    row.child(
-                        crate::outlined_button(
-                            palette.button("open-backup-folder", ""),
-                            palette,
-                            &self.activity.control_focus(ButtonKey::OpenFolder, cx),
-                            cx.listener(move |app, _: &(), _, cx| {
-                                match installer::open_backup_folder(&root, client) {
-                                    Ok(path) => cx.open_with_system(&path),
-                                    Err(error) => {
-                                        app.activity.outcome = Some(Err(error));
-                                        cx.notify();
-                                    }
+                .child(
+                    crate::outlined_button(
+                        palette
+                            .button("open-backup-folder", "")
+                            .debug_selector(|| "activity-open-backups".into()),
+                        palette,
+                        &self.activity.control_focus(ButtonKey::OpenFolder, cx),
+                        cx.listener(move |app, _: &(), _, cx| {
+                            match backup_folder(
+                                app.root(client).map(PathBuf::as_path),
+                                client,
+                                app.preferences_path.as_deref(),
+                            ) {
+                                Ok(path) => cx.open_with_system(&path),
+                                Err(error) => {
+                                    app.activity.outcome = Some(Err(error));
+                                    cx.notify();
                                 }
-                            }),
-                        )
-                        .child(icon("folder", 14., palette.muted))
-                        .child("Open backups"),
+                            }
+                        }),
                     )
-                }),
+                    .child(icon("folder", 14., palette.muted))
+                    .child("Open backups"),
+                ),
         );
-        if self.root(client).is_none() {
-            return page.child(palette.label(format!(
-                "Choose your {} folder in Settings.",
-                client.label()
-            )));
-        }
         let records = match &self.activity.entries {
             Some(Ok(records)) if !records.is_empty() => records,
             Some(Ok(_)) => {
@@ -1751,6 +1819,171 @@ mod navigation_ui_tests {
                 )
             });
             // Never activate Retry: it would start an addon operation.
+        }
+    }
+}
+
+#[cfg(all(test, feature = "headless-ui-tests"))]
+mod global_history_ui_tests {
+    use super::*;
+    use crate::{Page, ui_tests::press};
+    use gpui::{TestAppContext, size};
+
+    #[gpui::test]
+    fn rootless_activity_finishes_loading_and_keeps_folder_and_library_actions(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                let mut app = Astral::new(
+                    [None, None],
+                    Some(directory.path()),
+                    Some(Client::Retail),
+                    light,
+                    cx,
+                );
+                app.page = Page::Backups;
+                app.load_backups(cx);
+                app
+            });
+            cx.simulate_resize(size(px(1250.), px(1000.)));
+            cx.run_until_parked();
+            assert!(view.read_with(
+                cx,
+                |app, _| matches!(&app.activity.entries, Some(Ok(entries)) if entries.is_empty())
+            ));
+            assert!(cx.debug_bounds("activity-open-backups").is_some());
+            assert!(cx.debug_bounds("activity-open-library").is_some());
+            view.update_in(cx, |app, window, cx| {
+                app.activity
+                    .control_focus(ButtonKey::OpenFolder, cx)
+                    .focus(window)
+            });
+            press(cx, "tab");
+            view.update_in(cx, |app, window, cx| {
+                assert!(
+                    app.activity
+                        .control_focus(ButtonKey::OpenLibrary, cx)
+                        .is_focused(window)
+                )
+            });
+            press(cx, "enter");
+            assert!(view.read_with(cx, |app, _| app.page == Page::Library));
+            let backup_path = directory.path().join("global-fixture");
+            view.update_in(cx, |app, _, cx| {
+                app.page = Page::Backups;
+                app.activity.entries = Some(Ok(vec![installer::Backup {
+                    path: backup_path.clone(),
+                    transaction: serde_json::from_value(serde_json::json!({
+                        "addon": "Fixture", "release": "2", "created": 1_700_000_000,
+                        "folders": ["Fixture"], "previous": ["Fixture"]
+                    }))
+                    .unwrap(),
+                    interrupted: false,
+                    recovered: false,
+                    electron: true,
+                }]));
+                app.activity.confirm_addon_restore(backup_path.clone());
+                cx.notify();
+            });
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, _| {
+                app.activity
+                    .confirmation_focus
+                    .as_ref()
+                    .unwrap()
+                    .restore
+                    .focus(window)
+            });
+            press(cx, "enter");
+            assert!(
+                view.read_with(cx, |app, _| app.activity.confirmation.is_none()
+                    && !app.activity.restoring)
+            );
+            assert!(cx.debug_bounds("notification").is_some());
+            assert!(!backup_path.exists());
+            // GPUI's fake platform cannot open a file manager. Verify folder
+            // creation separately without calling the OS opener.
+            let prefs = directory.path().join("preferences.json");
+            assert_eq!(
+                backup_folder(None, Client::Retail, Some(&prefs)).unwrap(),
+                directory.path().join("backups")
+            );
+            assert!(directory.path().join("backups").is_dir());
+        }
+    }
+}
+
+#[cfg(test)]
+mod global_history_tests {
+    use super::*;
+
+    #[test]
+    fn global_history_merges_known_clients_and_archives_but_selected_history_stays_scoped() {
+        let temp = tempfile::tempdir().unwrap();
+        let retail = temp.path().join("_retail_");
+        let forever = temp.path().join("_forever_");
+        let archive = temp.path().join("archive");
+        let catalog = vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "keyui", "name": "KeyUI", "folder": "KeyUI"
+            }))
+            .unwrap(),
+        ];
+        for (index, (root, flavor)) in [(&retail, "retail"), (&forever, "forever")]
+            .into_iter()
+            .enumerate()
+        {
+            fs::create_dir_all(root.join("Interface/AddOns/KeyUI")).unwrap();
+            fs::write(
+                root.join("Interface/AddOns/KeyUI/unchanged.lua"),
+                "original",
+            )
+            .unwrap();
+            let native = root.join("Interface/.astral-native-backups/native-fixture");
+            fs::create_dir_all(&native).unwrap();
+            preferences::save_json(
+                &native.join("manifest.json"),
+                &serde_json::json!({
+                    "addon": "KeyUI", "release": "2", "created": 1_793_959_050,
+                    "folders": ["KeyUI"], "previous": ["KeyUI"]
+                }),
+            )
+            .unwrap();
+            let id = format!("{}-keyui", 1_793_959_050_000_u64 + index as u64);
+            let legacy = archive.join(&id);
+            fs::create_dir_all(&legacy).unwrap();
+            preferences::save_json(
+                &legacy.join("manifest.json"),
+                &serde_json::json!({
+                    "id": id, "root": root, "flavor": flavor, "addonId": "keyui",
+                    "name": "KeyUI", "release": "2", "version": "1",
+                    "folders": ["KeyUI"], "previousFolders": ["KeyUI"]
+                }),
+            )
+            .unwrap();
+        }
+        let known = vec![
+            (Client::Retail, retail.clone()),
+            (Client::Forever, forever.clone()),
+        ];
+        let archives = vec![
+            ("Earlier Astral backups", archive.clone()),
+            ("Earlier Astral backups", archive),
+        ];
+        let (all, error) = backup_history(None, Client::Retail, &known, &archives, &catalog);
+        assert!(error.is_none());
+        assert_eq!(all.unwrap().len(), 4);
+        let (selected, error) =
+            backup_history(Some(&retail), Client::Retail, &known, &archives, &catalog);
+        assert!(error.is_none());
+        assert_eq!(selected.unwrap().len(), 2);
+        for root in [&retail, &forever] {
+            assert_eq!(
+                fs::read_to_string(root.join("Interface/AddOns/KeyUI/unchanged.lua")).unwrap(),
+                "original"
+            );
         }
     }
 }

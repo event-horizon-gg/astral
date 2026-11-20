@@ -203,6 +203,21 @@ pub fn list_electron(
     catalog: &[Definition],
 ) -> Result<Vec<Backup>, String> {
     let root = root.canonicalize().map_err(|error| error.to_string())?;
+    list_electron_scope(archive, Some((&root, client)), catalog)
+}
+
+pub fn list_electron_unfiltered(
+    archive: &Path,
+    catalog: &[Definition],
+) -> Result<Vec<Backup>, String> {
+    list_electron_scope(archive, None, catalog)
+}
+
+fn list_electron_scope(
+    archive: &Path,
+    scope: Option<(&Path, Client)>,
+    catalog: &[Definition],
+) -> Result<Vec<Backup>, String> {
     if !packages::existing_folder(archive)? {
         return Ok(Vec::new());
     }
@@ -216,7 +231,7 @@ pub fn list_electron(
         {
             continue;
         }
-        if let Ok(Some(record)) = read_electron_backup(&entry.path(), &root, client, catalog) {
+        if let Ok(Some(record)) = read_electron_backup_scope(&entry.path(), scope, catalog) {
             records.push(record);
         }
     }
@@ -229,10 +244,23 @@ fn read_electron_backup(
     client: Client,
     catalog: &[Definition],
 ) -> Result<Option<Backup>, String> {
+    read_electron_backup_scope(path, Some((root, client)), catalog)
+}
+
+fn read_electron_backup_scope(
+    path: &Path,
+    scope: Option<(&Path, Client)>,
+    catalog: &[Definition],
+) -> Result<Option<Backup>, String> {
     let manifest: ElectronManifest = read_manifest(&path.join(MANIFEST))?;
-    if manifest.flavor != client || manifest.root.canonicalize().ok().as_deref() != Some(root) {
-        return Ok(None);
+    if let Some((root, client)) = scope {
+        if manifest.flavor != client || manifest.root.canonicalize().ok().as_deref() != Some(root) {
+            return Ok(None);
+        }
     }
+    // Listing an offline installation must not require opening that installation.
+    // Restore still supplies an explicit canonical root and client above.
+    let client = manifest.flavor;
     let (created, id) = manifest.id.split_once('-').ok_or("Invalid backup ID.")?;
     let created_ms = created.parse::<u64>().map_err(|_| "Invalid backup date.")?;
     if id != manifest.addon_id
@@ -1225,6 +1253,73 @@ mod tests {
         )
         .unwrap();
         assert!(addons.join("FixtureCore").is_dir() && addons.join("FixtureBar").is_dir());
+    }
+
+    #[test]
+    fn unfiltered_electron_history_keeps_offline_roots_and_restore_scope_checks() {
+        let (temp, root, _) = game();
+        let archive = temp.path().join("archive");
+        let other = temp.path().join("other-retail");
+        let forever = temp.path().join("_forever_");
+        fs::create_dir_all(&other).unwrap();
+        fs::create_dir_all(&forever).unwrap();
+        let catalog: Vec<Definition> = vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "keyui", "folder": "KeyUI", "name": "KeyUI"
+            }))
+            .unwrap(),
+        ];
+        let mut paths = Vec::new();
+        for (index, (owner, flavor)) in
+            [(&root, "retail"), (&other, "retail"), (&forever, "forever")]
+                .into_iter()
+                .enumerate()
+        {
+            let id = format!("{}-keyui", 1_793_959_050_000_u64 + index as u64);
+            let path = archive.join(&id);
+            fs::create_dir_all(path.join("KeyUI")).unwrap();
+            crate::preferences::save_json(
+                &path.join(MANIFEST),
+                &serde_json::json!({
+                    "id": id, "root": owner, "flavor": flavor, "addonId": "keyui",
+                    "name": "KeyUI", "version": "1", "release": "2",
+                    "folders": ["KeyUI"], "previousFolders": ["KeyUI"]
+                }),
+            )
+            .unwrap();
+            paths.push(path);
+        }
+        assert_eq!(
+            list_electron_unfiltered(&archive, &catalog).unwrap().len(),
+            3
+        );
+        assert_eq!(
+            list_electron(&archive, &root, Client::Retail, &catalog)
+                .unwrap()
+                .len(),
+            1
+        );
+        for foreign in &paths[1..] {
+            assert!(
+                restore_electron_with(&root, Client::Retail, foreign, &catalog, || Ok(())).is_err()
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(root.join("Interface/AddOns/KeyUI/old.lua")).unwrap(),
+            "-- original"
+        );
+        fs::remove_dir(&other).unwrap();
+        fs::remove_dir(&forever).unwrap();
+        assert_eq!(
+            list_electron_unfiltered(&archive, &catalog).unwrap().len(),
+            3
+        );
+        assert_eq!(
+            list_electron(&archive, &root, Client::Retail, &catalog)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
