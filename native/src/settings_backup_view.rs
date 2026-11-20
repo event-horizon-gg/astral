@@ -404,10 +404,61 @@ mod ui_tests {
         assert!(cx.debug_bounds("notification").is_some());
         assert!(!root.join("WTF").exists());
     }
+
+    #[gpui::test]
+    fn handheld_review_stays_visible_when_blocked_and_returns_focus_after_cancellation(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                cx.bind_keys([KeyBinding::new("escape", crate::DismissOverlay, None)]);
+                let mut app = account_fixture(directory.path(), light, cx);
+                app.load_settings_backups(Some("ALPHA".into()), cx);
+                app.page = Page::Account;
+                app
+            });
+            cx.simulate_resize(size(px(1250.), px(1000.)));
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, cx| {
+                app.settings_backups.profile.active = Profile::Handheld;
+                app.settings_backups.game_running = true;
+                app.brand_focus.focus(window);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let blocked = cx.debug_bounds("review-handheld-setup").unwrap();
+            cx.simulate_click(blocked.center(), Modifiers::default());
+            cx.run_until_parked();
+            assert!(view.read_with(cx, |app, _| !app.settings_backups.reviewing
+                && app.settings_backups.review.is_none()));
+            view.update_in(cx, |app, window, cx| {
+                app.settings_backups.game_running = false;
+                app.profile_review_focus.handheld.focus(window);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert_eq!(blocked, cx.debug_bounds("review-handheld-setup").unwrap());
+            press(cx, "tab");
+            press(cx, "shift-tab");
+            view.update_in(cx, |app, window, _| {
+                assert!(app.profile_review_focus.handheld.is_focused(window))
+            });
+            press(cx, "enter");
+            cx.run_until_parked();
+            assert!(view.read_with(cx, |app, _| app.settings_backups.review.is_some()));
+            press(cx, "escape");
+            view.update_in(cx, |app, window, _| {
+                assert!(app.settings_backups.review.is_none());
+                assert!(app.profile_review_focus.handheld.is_focused(window));
+            });
+        }
+    }
 }
 
 pub(crate) struct ProfileReviewFocus {
     pub(crate) picker: FocusHandle,
+    handheld: FocusHandle,
     picker_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     files: FocusHandle,
     cancel: FocusHandle,
@@ -420,6 +471,7 @@ impl ProfileReviewFocus {
     pub(crate) fn new(cx: &mut Context<Astral>) -> Self {
         Self {
             picker: cx.focus_handle().tab_stop(true),
+            handheld: cx.focus_handle().tab_stop(true),
             picker_bounds: Default::default(),
             files: cx.focus_handle().tab_stop(true),
             cancel: cx.focus_handle().tab_stop(true),
@@ -1918,20 +1970,26 @@ impl Astral {
                     .child("Profile")
                     .child(selected),
             )
-            .when(active == Profile::Handheld && available, |picker| {
-                picker.child(
-                    div().child(
-                        palette
-                            .text_button("review-handheld-setup", "Review Handheld setup")
-                            .focusable()
-                            .tab_stop(true)
-                            .focus(move |style| style.border_color(rgb(palette.accent)))
-                            .on_click(cx.listener(|app, _, window, cx| {
+            .when(
+                active == Profile::Handheld && state.account.is_some(),
+                |picker| {
+                    let button = palette
+                        .text_button("review-handheld-setup", "Review Handheld setup")
+                        .debug_selector(|| "review-handheld-setup".into());
+                    picker.child(div().child(if available {
+                        crate::outlined_button(
+                            button,
+                            palette,
+                            &self.profile_review_focus.handheld,
+                            cx.listener(|app, _: &(), window, cx| {
                                 app.review_local_profile(Profile::Handheld, true, window, cx)
-                            })),
-                    ),
-                )
-            })
+                            }),
+                        )
+                    } else {
+                        button.opacity(0.45).cursor_default()
+                    }))
+                },
+            )
             .when(state.account.is_none() && !state.loading, |picker| {
                 picker.child(
                     palette
