@@ -58,7 +58,10 @@ impl Astral {
             cx,
             labels,
             selected,
-            gpui::point(bounds.left(), bounds.bottom()),
+            crate::native_select::Anchor {
+                bounds,
+                font_size: gpui::px(12.),
+            },
         ) {
             Ok(task) => self.await_discovery_source(task, window, cx),
             Err(error) => self.show_notification(error, true, cx),

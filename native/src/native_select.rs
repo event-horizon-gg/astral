@@ -1,6 +1,12 @@
 //! Popup choices use the existing native-menu dependency. Never call this
 //! adapter on GPUI TestWindow: its native handles are deliberately unavailable.
-use gpui::{App, Pixels, Point, Task, Window};
+use gpui::{App, Bounds, Pixels, Task, Window};
+
+#[derive(Clone, Copy)]
+pub(crate) struct Anchor {
+    pub bounds: Bounds<Pixels>,
+    pub font_size: Pixels,
+}
 
 /// Closed HTML-select keyboard behavior. The OS popup owns its own events
 /// after opening; this only handles keys while the field has focus.
@@ -117,9 +123,9 @@ pub(crate) fn choose(
     cx: &App,
     labels: Vec<String>,
     selected: usize,
-    position: Point<Pixels>,
+    anchor: Anchor,
 ) -> Result<Task<Option<usize>>, String> {
-    choose_with_disabled(window, cx, labels, selected, position, Vec::new())
+    choose_with_disabled(window, cx, labels, selected, anchor, Vec::new())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -128,7 +134,7 @@ pub(crate) fn choose_with_disabled(
     cx: &App,
     labels: Vec<String>,
     selected: usize,
-    position: Point<Pixels>,
+    anchor: Anchor,
     disabled: Vec<usize>,
 ) -> Result<Task<Option<usize>>, String> {
     use tray_icon::menu::{CheckMenuItem, Menu};
@@ -152,7 +158,7 @@ pub(crate) fn choose_with_disabled(
     Ok(cx.foreground_executor().spawn(async move {
         // Run outside an entity/App update borrow: native menu tracking can
         // pump the platform's event loop until selection or cancellation.
-        target.show(&menu, position);
+        target.show(&menu, selected, anchor);
         while let Ok(id) = events.try_recv() {
             if let Some(index) = id
                 .strip_prefix(&prefix)
@@ -193,25 +199,90 @@ impl Target {
         Ok(Self { view, window })
     }
 
-    fn show(&self, menu: &tray_icon::menu::Menu, position: Point<Pixels>) {
-        use tray_icon::menu::{ContextMenu, dpi::LogicalPosition};
+    fn show(&self, menu: &tray_icon::menu::Menu, selected: usize, anchor: Anchor) {
+        use objc2::{MainThreadMarker, MainThreadOnly, rc::Retained};
+        use objc2_app_kit::{NSFont, NSMenu, NSPopUpButtonCell, NSView};
+        use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+        use tray_icon::menu::ContextMenu;
         if !self.window.isVisible() {
             return;
         }
-        // Retained objects stay live on the foreground thread through tracking.
-        unsafe {
-            menu.show_context_menu_for_nsview(
-                (&*self.view as *const objc2_app_kit::NSView).cast(),
-                Some(
-                    LogicalPosition::new(
-                        f64::from(f32::from(position.x)),
-                        f64::from(f32::from(position.y)),
-                    )
-                    .into(),
-                ),
-            );
-        }
+        let mtm = MainThreadMarker::from(&*self.view);
+        // muda owns the item targets/delegate. Keep that menu alive through
+        // synchronous Cocoa tracking without holding an entity/App borrow.
+        let Some(native_menu) = (unsafe { Retained::retain(menu.ns_menu().cast::<NSMenu>()) })
+        else {
+            return;
+        };
+        let view_bounds = self.view.bounds();
+        let frame = cocoa_frame(
+            anchor.bounds,
+            (view_bounds.origin.x, view_bounds.origin.y),
+            view_bounds.size.height,
+            self.view.isFlipped(),
+        );
+        let control = NSView::initWithFrame(
+            NSView::alloc(mtm),
+            NSRect::new(
+                NSPoint::new(frame.0, frame.1),
+                NSSize::new(frame.2, frame.3),
+            ),
+        );
+        self.view.addSubview(&control);
+        let control = AttachedControl(control);
+        // Chromium uses a popup cell, not a context menu: the selected row
+        // aligns over the field and Cocoa constrains it to the field's frame.
+        let cell = NSPopUpButtonCell::initTextCell_pullsDown(
+            NSPopUpButtonCell::alloc(mtm),
+            &NSString::from_str(""),
+            false,
+        );
+        cell.setMenu(Some(&native_menu));
+        cell.setAutoenablesItems(false);
+        cell.selectItemAtIndex(if selected < native_menu.numberOfItems() as usize {
+            selected as isize
+        } else {
+            -1
+        });
+        cell.setFont(Some(&NSFont::menuFontOfSize(f64::from(f32::from(
+            anchor.font_size,
+        )))));
+        cell.attachPopUpWithFrame_inView(control.0.bounds(), &control.0);
+        cell.performClickWithFrame_inView(control.0.bounds(), &control.0);
     }
+}
+
+#[cfg(target_os = "macos")]
+struct AttachedControl(objc2::rc::Retained<objc2_app_kit::NSView>);
+
+#[cfg(target_os = "macos")]
+impl Drop for AttachedControl {
+    fn drop(&mut self) {
+        self.0.removeFromSuperview();
+    }
+}
+
+// GPUI measures logical pixels from the content's top-left; AppKit views can
+// use either vertical direction and a nonzero bounds origin.
+#[cfg(any(target_os = "macos", test))]
+fn cocoa_frame(
+    bounds: Bounds<Pixels>,
+    origin: (f64, f64),
+    height: f64,
+    flipped: bool,
+) -> (f64, f64, f64, f64) {
+    let x = f64::from(f32::from(bounds.left()));
+    let y = if flipped {
+        f64::from(f32::from(bounds.top()))
+    } else {
+        height - f64::from(f32::from(bounds.bottom()))
+    };
+    (
+        origin.0 + x,
+        origin.1 + y,
+        f64::from(f32::from(bounds.size.width)),
+        f64::from(f32::from(bounds.size.height)),
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -228,7 +299,7 @@ impl Target {
         Ok(Self(raw.hwnd.get()))
     }
 
-    fn show(&self, menu: &tray_icon::menu::Menu, position: Point<Pixels>) {
+    fn show(&self, menu: &tray_icon::menu::Menu, _: usize, anchor: Anchor) {
         use tray_icon::menu::{ContextMenu, dpi::LogicalPosition};
         use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindow, IsWindowVisible};
         let hwnd = self.0 as *mut std::ffi::c_void;
@@ -241,8 +312,8 @@ impl Target {
                 self.0,
                 Some(
                     LogicalPosition::new(
-                        f64::from(f32::from(position.x)),
-                        f64::from(f32::from(position.y)),
+                        f64::from(f32::from(anchor.bounds.left())),
+                        f64::from(f32::from(anchor.bounds.bottom())),
                     )
                     .into(),
                 ),
@@ -257,7 +328,7 @@ pub(crate) fn choose(
     _: &App,
     _: Vec<String>,
     _: usize,
-    _: Point<Pixels>,
+    _: Anchor,
 ) -> Result<Task<Option<usize>>, String> {
     Err("The package picker is unavailable on this platform.".into())
 }
@@ -268,7 +339,7 @@ pub(crate) fn choose_with_disabled(
     _: &App,
     _: Vec<String>,
     _: usize,
-    _: Point<Pixels>,
+    _: Anchor,
     _: Vec<usize>,
 ) -> Result<Task<Option<usize>>, String> {
     Err("The picker is unavailable on this platform.".into())
@@ -278,6 +349,22 @@ pub(crate) fn choose_with_disabled(
 mod keyboard_tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn popup_anchor_preserves_field_size_in_both_cocoa_coordinate_directions() {
+        let bounds = Bounds::new(
+            gpui::point(gpui::px(14.25), gpui::px(400.5)),
+            gpui::size(gpui::px(220.75), gpui::px(35.5)),
+        );
+        assert_eq!(
+            cocoa_frame(bounds, (3., 7.), 600., true),
+            (17.25, 407.5, 220.75, 35.5)
+        );
+        assert_eq!(
+            cocoa_frame(bounds, (3., 7.), 600., false),
+            (17.25, 171., 220.75, 35.5)
+        );
+    }
 
     #[test]
     fn platform_navigation_clamps_and_popup_keys_do_not_commit_a_choice() {

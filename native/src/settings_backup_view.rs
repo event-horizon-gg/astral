@@ -563,7 +563,10 @@ impl Astral {
             cx,
             labels,
             selected,
-            gpui::point(bounds.left(), bounds.bottom()),
+            crate::native_select::Anchor {
+                bounds,
+                font_size: px(12.),
+            },
             vec![0],
         ) {
             Ok(choice) => self.await_local_account(choice, window, cx),
