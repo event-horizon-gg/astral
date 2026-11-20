@@ -118,6 +118,30 @@ const HEADER_LAYER: usize = 50;
 const TOOLBAR_LAYER: usize = 80;
 const TOAST_LAYER: usize = 1000;
 
+struct SettingsFocus {
+    folder: gpui::FocusHandle,
+    daily: gpui::FocusHandle,
+    update_banner: gpui::FocusHandle,
+    update_check: gpui::FocusHandle,
+    update_restart: gpui::FocusHandle,
+    update_download: gpui::FocusHandle,
+    update_notes: gpui::FocusHandle,
+}
+
+impl SettingsFocus {
+    fn new(cx: &App) -> Self {
+        Self {
+            folder: cx.focus_handle(),
+            daily: cx.focus_handle(),
+            update_banner: cx.focus_handle(),
+            update_check: cx.focus_handle(),
+            update_restart: cx.focus_handle(),
+            update_download: cx.focus_handle(),
+            update_notes: cx.focus_handle(),
+        }
+    }
+}
+
 struct Astral {
     fixture: bool,
     preferences: Preferences,
@@ -153,6 +177,7 @@ struct Astral {
     brand_focus: gpui::FocusHandle,
     header_button_focus: [gpui::FocusHandle; 7],
     header_focus: gpui::FocusHandle,
+    settings_focus: SettingsFocus,
     main_scroll: gpui::ScrollHandle,
     main_overflows: bool,
     scrollbar_drag: Option<(f32, f32)>,
@@ -289,6 +314,7 @@ impl Astral {
             brand_focus: cx.focus_handle().tab_stop(true),
             header_button_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             header_focus: cx.focus_handle().tab_index(-1),
+            settings_focus: SettingsFocus::new(cx),
             main_scroll: gpui::ScrollHandle::new(),
             main_overflows: false,
             scrollbar_drag: None,
@@ -1113,9 +1139,10 @@ impl Astral {
                         {
                             change.opacity(0.45).cursor_default()
                         } else {
-                            keyboard_button(
+                            outlined_button(
                                 change,
                                 palette,
+                                &self.settings_focus.folder,
                                 cx.listener(move |app, _: &(), window, cx| {
                                     app.choose_root(client, window, cx);
                                 }),

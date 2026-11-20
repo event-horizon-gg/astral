@@ -722,9 +722,10 @@ impl Astral {
                         .button("check-daily-now", "Check now")
                         .when(!can_check, |button| button.opacity(0.6).cursor_default())
                         .when(can_check, |button| {
-                            crate::keyboard_button(
+                            crate::outlined_button(
                                 button,
                                 palette,
+                                &self.settings_focus.daily,
                                 cx.listener(|app, _: &(), _, cx| app.run_daily_checks(true, cx)),
                             )
                         }),

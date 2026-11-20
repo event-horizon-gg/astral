@@ -714,9 +714,10 @@ impl Astral {
                         .text_size(px(16.))
                         .child(format!("Astral {} is available", release.version)),
                 )
-                .child(crate::keyboard_button(
+                .child(crate::outlined_button(
                     div()
                         .id("view-app-update")
+                        .debug_selector(|| "view-app-update".into())
                         .flex()
                         .items_center()
                         .gap(px(7.))
@@ -726,6 +727,7 @@ impl Astral {
                         .child("View update")
                         .child(icon("arrow-right", 14., palette.accent)),
                     palette,
+                    &self.settings_focus.update_banner,
                     cx.listener(|app, _: &(), window, cx| app.navigate(Page::Settings, window, cx)),
                 )),
         )
@@ -982,9 +984,10 @@ impl Astral {
                         if self.fixture || state.busy() {
                             button.opacity(0.45).cursor_default()
                         } else {
-                            crate::keyboard_button(
+                            crate::outlined_button(
                                 button,
                                 palette,
+                                &self.settings_focus.update_check,
                                 cx.listener(|app, _: &(), _, cx| {
                                     app.check_app_update(cx);
                                 }),
@@ -1000,9 +1003,10 @@ impl Astral {
                                     .primary_button("restart-for-update", "Update & restart")
                                     .when(!ready, |button| button.opacity(0.45).cursor_default())
                                     .when(ready, |button| {
-                                        crate::keyboard_button(
+                                        crate::outlined_button(
                                             button,
                                             palette,
+                                            &self.settings_focus.update_restart,
                                             cx.listener(|app, _: &(), _, cx| {
                                                 app.install_app_update(cx);
                                             }),
@@ -1015,9 +1019,10 @@ impl Astral {
                         matches!(state.phase, Phase::Available(_))
                             && self.preferences_path.is_some(),
                         |row| {
-                            row.child(crate::keyboard_button(
+                            row.child(crate::outlined_button(
                                 palette.primary_button("download-app-update", "Download update"),
                                 palette,
+                                &self.settings_focus.update_download,
                                 cx.listener(|app, _: &(), _, cx| app.stage_app_update(cx)),
                             ))
                         },
@@ -1031,9 +1036,10 @@ impl Astral {
                 release.filter(|release| !release.notes.is_empty()),
                 |view, release| {
                     view.child(
-                        div().mt(px(11.)).child(crate::keyboard_button(
+                        div().mt(px(11.)).child(crate::outlined_button(
                             div()
                                 .id("app-release-notes")
+                                .debug_selector(|| "app-release-notes".into())
                                 .flex()
                                 .items_center()
                                 .gap(px(5.))
@@ -1051,6 +1057,7 @@ impl Astral {
                                 ))
                                 .child(format!("What’s new in {}", release.version)),
                             palette,
+                            &self.settings_focus.update_notes,
                             cx.listener(|app, _: &(), _, cx| {
                                 app.app_updates.notes_open = !app.app_updates.notes_open;
                                 cx.notify();
@@ -1077,5 +1084,85 @@ impl Astral {
                     })
                 },
             )
+    }
+}
+
+#[cfg(all(test, feature = "headless-ui-tests"))]
+mod ui_tests {
+    use super::*;
+    use crate::{Client, focus_visible, ui_tests::press};
+    use gpui::{Modifiers, TestAppContext, size};
+
+    #[gpui::test]
+    fn update_text_actions_keep_bounds_and_keyboard_pointer_behaviour_in_both_themes(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                let mut app = Astral::new(
+                    [None, None],
+                    Some(directory.path()),
+                    Some(Client::Retail),
+                    light,
+                    cx,
+                );
+                app.page = Page::Settings;
+                app.app_updates.phase = Phase::Available(Release {
+                    version: Version::new(9, 9, 9),
+                    notes: "Fixture release notes".into(),
+                    asset: Asset {
+                        url: "https://example.invalid/update.zip".into(),
+                        sha256: "a".repeat(64),
+                        size: 42,
+                    },
+                });
+                app
+            });
+            cx.simulate_resize(size(px(1250.), px(1200.)));
+            cx.run_until_parked();
+            let before = cx.debug_bounds("app-release-notes").unwrap();
+            view.update_in(cx, |app, window, _| {
+                app.settings_focus.update_notes.focus(window)
+            });
+            cx.run_until_parked();
+            assert_eq!(before, cx.debug_bounds("app-release-notes").unwrap());
+            press(cx, "enter");
+            assert!(view.read_with(cx, |app, _| app.app_updates.notes_open));
+            assert_eq!(before, cx.debug_bounds("app-release-notes").unwrap());
+            view.update_in(cx, |app, window, _| app.brand_focus.focus(window));
+            cx.simulate_click(before.center(), Modifiers::default());
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, cx| {
+                assert!(!app.app_updates.notes_open);
+                assert!(!focus_visible::indicated(
+                    &app.settings_focus.update_notes,
+                    window,
+                    cx
+                ));
+            });
+            press(cx, "space");
+            view.update_in(cx, |app, window, cx| {
+                assert!(app.app_updates.notes_open);
+                assert!(focus_visible::indicated(
+                    &app.settings_focus.update_notes,
+                    window,
+                    cx
+                ));
+            });
+            assert_eq!(before, cx.debug_bounds("app-release-notes").unwrap());
+            view.update_in(cx, |app, window, cx| {
+                app.navigate(Page::Library, window, cx);
+            });
+            cx.run_until_parked();
+            let banner = cx.debug_bounds("view-app-update").unwrap();
+            view.update_in(cx, |app, window, _| {
+                app.settings_focus.update_banner.focus(window)
+            });
+            cx.run_until_parked();
+            assert_eq!(banner, cx.debug_bounds("view-app-update").unwrap());
+            press(cx, "enter");
+            assert!(view.read_with(cx, |app, _| app.page == Page::Settings));
+        }
     }
 }
