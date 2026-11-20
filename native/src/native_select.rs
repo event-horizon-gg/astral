@@ -2,6 +2,71 @@
 //! adapter on GPUI TestWindow: its native handles are deliberately unavailable.
 use gpui::{App, Pixels, Point, Task, Window};
 
+/// Closed HTML-select keyboard behavior. The OS popup owns its own events
+/// after opening; this only handles keys while the field has focus.
+#[derive(Debug, PartialEq)]
+pub(crate) enum KeyResult {
+    Ignore,
+    Handled,
+    Open,
+    Select(usize),
+}
+
+pub(crate) fn closed_key(
+    key: &gpui::Keystroke,
+    mac: bool,
+    labels: &[&str],
+    current: usize,
+    search: &mut crate::type_ahead::TypeAhead,
+    now: std::time::Instant,
+) -> KeyResult {
+    let m = key.modifiers;
+    let name = key.key.as_str();
+    if ((mac || m.alt) && matches!(name, "up" | "down")) || (name == "f4" && !m.alt && !m.control) {
+        return KeyResult::Open;
+    }
+    if !m.control && !m.alt && !m.platform && !m.function {
+        if name == "enter" {
+            return if mac {
+                KeyResult::Handled
+            } else {
+                KeyResult::Open
+            };
+        }
+        if name == "space" && !search.active(now) {
+            return KeyResult::Open;
+        }
+    }
+    if !mac && !m.modified() && !labels.is_empty() {
+        let end = labels.len() - 1;
+        let current = current.min(end);
+        let next = match name {
+            "down" | "right" => Some((current + 1).min(end)),
+            "up" | "left" => Some(current.saturating_sub(1)),
+            "pagedown" => Some(current.saturating_add(3).min(end)),
+            "pageup" => Some(current.saturating_sub(3)),
+            "home" => Some(0),
+            "end" => Some(end),
+            _ => None,
+        };
+        if let Some(next) = next {
+            return KeyResult::Select(next);
+        }
+    }
+    // Space extends a live prefix instead of reopening the popup.
+    let text = if name == "space" && !m.control && !m.alt && !m.platform && !m.function {
+        Some(" ")
+    } else {
+        crate::type_ahead::printable(key)
+    };
+    if let Some(text) = text {
+        return search
+            .find(text, labels, current, now)
+            .map_or(KeyResult::Handled, KeyResult::Select);
+    }
+    KeyResult::Ignore
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn choose(
     window: &Window,
@@ -139,4 +204,151 @@ pub(crate) fn choose(
     _: Point<Pixels>,
 ) -> Result<Task<Option<usize>>, String> {
     Err("The package picker is unavailable on this platform.".into())
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn platform_navigation_clamps_and_popup_keys_do_not_commit_a_choice() {
+        let labels = [
+            "Choose an addon ZIP",
+            "Alpha.zip",
+            "Beta.zip",
+            "Gamma.zip",
+            "Omega.zip",
+        ];
+        let mut search = crate::type_ahead::TypeAhead::default();
+        let now = Instant::now();
+        let mut selection = 0;
+        for (key, expected) in [
+            ("down", 1),
+            ("pagedown", 4),
+            ("right", 4),
+            ("pageup", 1),
+            ("up", 0),
+            ("left", 0),
+            ("end", 4),
+            ("home", 0),
+        ] {
+            let result = closed_key(
+                &gpui::Keystroke::parse(key).unwrap(),
+                false,
+                &labels,
+                selection,
+                &mut search,
+                now,
+            );
+            assert_eq!(result, KeyResult::Select(expected));
+            selection = expected;
+        }
+        for mac in [true, false] {
+            for key in ["alt-down", "alt-up", "f4", "space"] {
+                assert_eq!(
+                    closed_key(
+                        &gpui::Keystroke::parse(key).unwrap(),
+                        mac,
+                        &labels,
+                        2,
+                        &mut search,
+                        now
+                    ),
+                    KeyResult::Open
+                );
+            }
+            assert_eq!(
+                closed_key(
+                    &gpui::Keystroke::parse("ctrl-b").unwrap(),
+                    mac,
+                    &labels,
+                    2,
+                    &mut search,
+                    now
+                ),
+                KeyResult::Ignore
+            );
+            assert_eq!(
+                closed_key(
+                    &gpui::Keystroke::parse("enter").unwrap(),
+                    mac,
+                    &labels,
+                    2,
+                    &mut search,
+                    now
+                ),
+                if mac {
+                    KeyResult::Handled
+                } else {
+                    KeyResult::Open
+                }
+            );
+        }
+        assert_eq!(
+            closed_key(
+                &gpui::Keystroke::parse("down").unwrap(),
+                true,
+                &labels,
+                2,
+                &mut search,
+                now
+            ),
+            KeyResult::Open
+        );
+        assert_eq!(
+            closed_key(
+                &gpui::Keystroke::parse("left").unwrap(),
+                true,
+                &labels,
+                2,
+                &mut search,
+                now
+            ),
+            KeyResult::Ignore
+        );
+    }
+
+    #[test]
+    fn typed_spaces_extend_a_live_prefix_then_expire_to_popup_activation() {
+        let labels = [
+            "Choose an addon ZIP",
+            "Alpha classic.zip",
+            "Alpha retail.zip",
+        ];
+        for mac in [true, false] {
+            let mut search = crate::type_ahead::TypeAhead::default();
+            let now = Instant::now();
+            let mut selection = 0;
+            for (step, key) in ["a", "l", "p", "h", "a", "space", "r"]
+                .into_iter()
+                .enumerate()
+            {
+                let result = closed_key(
+                    &gpui::Keystroke::parse(key).unwrap(),
+                    mac,
+                    &labels,
+                    selection,
+                    &mut search,
+                    now + Duration::from_millis(step as u64 * 10),
+                );
+                let KeyResult::Select(next) = result else {
+                    panic!("{key}: {result:?}")
+                };
+                selection = next;
+            }
+            assert_eq!(selection, 2);
+            assert_eq!(
+                closed_key(
+                    &gpui::Keystroke::parse("space").unwrap(),
+                    mac,
+                    &labels,
+                    selection,
+                    &mut search,
+                    now + Duration::from_secs(2)
+                ),
+                KeyResult::Open
+            );
+        }
+    }
 }

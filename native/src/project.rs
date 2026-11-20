@@ -19,6 +19,7 @@ pub struct ProjectReview {
     selected: Option<usize>,
     package_request: Option<uuid::Uuid>,
     package_focus: FocusHandle,
+    package_search: crate::type_ahead::TypeAhead,
     action_focus: [FocusHandle; 2],
     package_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     show_notes: bool,
@@ -234,6 +235,7 @@ impl Astral {
             selected: None,
             package_request: None,
             package_focus: cx.focus_handle().tab_stop(true),
+            package_search: Default::default(),
             action_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             package_bounds: Default::default(),
             show_notes: false,
@@ -528,9 +530,44 @@ impl Astral {
             self.dismiss_project_review(window, cx);
             return true;
         }
+        if review.package_focus.is_focused(window)
+            && review.inspected.is_none()
+            && !review.busy
+            && review.package_request.is_none()
+        {
+            let review = self.project_review.as_mut().unwrap();
+            let Some(Ok(release)) = &review.release else {
+                return false;
+            };
+            let labels: Vec<_> = std::iter::once("Choose an addon ZIP".to_owned())
+                .chain(release.packages.iter().map(package_label))
+                .collect();
+            let labels: Vec<_> = labels.iter().map(String::as_str).collect();
+            match crate::native_select::closed_key(
+                &event.keystroke,
+                cfg!(target_os = "macos"),
+                &labels,
+                review.selected.map_or(0, |index| index + 1),
+                &mut review.package_search,
+                Instant::now(),
+            ) {
+                crate::native_select::KeyResult::Open => {
+                    self.choose_project_package(window, cx);
+                    return true;
+                }
+                crate::native_select::KeyResult::Select(index) => {
+                    review.selected = index.checked_sub(1);
+                    cx.notify();
+                    return true;
+                }
+                crate::native_select::KeyResult::Handled => return true,
+                crate::native_select::KeyResult::Ignore => {}
+            }
+        }
         if event.keystroke.key != "tab" {
             return false;
         }
+        let review = self.project_review.as_ref().unwrap();
         // Match useDialog's explicit selector: summary disclosures are clickable
         // but are not part of the trapped button/input/select sequence.
         let mut stops = Vec::new();
@@ -741,6 +778,14 @@ impl Astral {
                                 cx.listener(|app, _: &(), window, cx| {
                                     app.choose_project_package(window, cx)
                                 }),
+                            )
+                            .capture_key_up(
+                                |event: &gpui::KeyUpEvent, window, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                    }
+                                },
                             )
                         });
                     body = body.child(selector);
@@ -956,6 +1001,7 @@ mod ui_tests {
             selected: None,
             package_request: None,
             package_focus: cx.focus_handle().tab_stop(true),
+            package_search: Default::default(),
             action_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             package_bounds: Default::default(),
             show_notes: false,
@@ -978,6 +1024,61 @@ mod ui_tests {
                 url: format!("https://example.invalid/{id}.zip"),
             })
             .collect();
+    }
+
+    #[gpui::test]
+    fn closed_package_field_accepts_prefixes_without_opening_or_moving_dialog_focus(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = fixture(directory.path(), cx);
+            add_packages(&mut app);
+            let review = app.project_review.as_mut().unwrap();
+            let packages = &mut review.release.as_mut().unwrap().as_mut().unwrap().packages;
+            packages[0].name = "Alpha retail.zip".into();
+            packages[1].name = "Beta classic.zip".into();
+            app
+        });
+        view.update_in(cx, |app, window, _| {
+            app.project_review
+                .as_ref()
+                .unwrap()
+                .package_focus
+                .focus(window)
+        });
+        press(cx, "b");
+        assert!(
+            view.read_with(cx, |app, _| app.project_review.as_ref().unwrap().selected
+                == Some(1))
+        );
+        press(cx, "e");
+        press(cx, "t");
+        press(cx, "a");
+        press(cx, "space");
+        press(cx, "c");
+        view.update_in(cx, |app, window, _| {
+            let review = app.project_review.as_ref().unwrap();
+            assert_eq!(review.selected, Some(1));
+            assert!(review.package_request.is_none());
+            assert!(review.package_focus.is_focused(window));
+        });
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.project_review.as_ref().unwrap().action_focus[0].is_focused(window))
+        });
+        // Disabled/pending fields must not accept a new selection.
+        view.update_in(cx, |app, window, _| {
+            let review = app.project_review.as_mut().unwrap();
+            review.package_focus.focus(window);
+            review.busy = true;
+            review.package_search.reset();
+        });
+        press(cx, "a");
+        assert!(
+            view.read_with(cx, |app, _| app.project_review.as_ref().unwrap().selected
+                == Some(1))
+        );
     }
 
     #[gpui::test]

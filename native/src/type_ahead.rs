@@ -10,6 +10,11 @@ pub struct TypeAhead {
 }
 
 impl TypeAhead {
+    pub fn active(&self, now: Instant) -> bool {
+        self.last
+            .is_some_and(|last| now.saturating_duration_since(last) <= Duration::from_secs(1))
+    }
+
     pub fn reset(&mut self) {
         *self = Self::default();
     }
