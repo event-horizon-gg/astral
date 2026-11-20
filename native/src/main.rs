@@ -5,6 +5,7 @@ mod activity;
 mod app_updates;
 mod application_menu;
 mod artwork;
+mod backup_collection;
 mod backup_roots;
 mod batch;
 mod bundled;

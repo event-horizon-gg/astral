@@ -150,6 +150,7 @@ pub fn list(root: &Path, client: Client) -> Result<Vec<Backup>, String> {
     Ok(records)
 }
 
+#[cfg(test)]
 pub fn open_backup_folder(root: &Path, client: Client) -> Result<PathBuf, String> {
     let paths = Paths::open(root, client)?;
     paths.ensure_backup_folder()?;

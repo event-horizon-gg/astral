@@ -16,6 +16,7 @@ pub struct State {
     confirmation: Option<PathBuf>,
     confirmation_focus: Option<RestoreFocus>,
     restoring: bool,
+    opening_collection: bool,
     outcome: Option<Result<String, String>>,
     release_notes: std::collections::HashSet<(u64, usize, usize)>,
     backup_notes: std::collections::HashSet<PathBuf>,
@@ -300,20 +301,9 @@ fn backup_history(
     (records, archive_error)
 }
 
-fn backup_folder(
-    root: Option<&Path>,
-    client: Client,
-    preferences: Option<&Path>,
-) -> Result<PathBuf, String> {
-    if let Some(root) = root {
-        return installer::open_backup_folder(root, client);
-    }
-    let folder = preferences
-        .and_then(Path::parent)
-        .ok_or("Astral storage is unavailable.")?
-        .join("backups");
-    fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
-    Ok(folder)
+struct PreparedCollection {
+    path: PathBuf,
+    warning: Option<String>,
 }
 
 fn activity_button(
@@ -496,10 +486,108 @@ impl Astral {
     }
 
     fn activity_archives(&self) -> Vec<(&'static str, PathBuf)> {
-        if self.fixture {
-            return Vec::new();
+        let mut archives = if self.fixture {
+            Vec::new()
+        } else {
+            earlier_archives(self.preferences_path.as_deref())
+        };
+        if let Some(folder) = self
+            .preferences_path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(|folder| folder.join("backups"))
+            && folder.is_dir()
+            && !archives.iter().any(|(_, path)| path == &folder)
+        {
+            archives.push(("Earlier Astral backups", folder));
         }
-        earlier_archives(self.preferences_path.as_deref())
+        archives
+    }
+
+    fn backup_collection_task(
+        &self,
+        cx: &Context<Self>,
+    ) -> gpui::Task<Result<PreparedCollection, String>> {
+        let preferences = self.preferences_path.clone();
+        let known_roots: Vec<_> = Client::ALL
+            .into_iter()
+            .filter_map(|client| self.root(client).cloned().map(|root| (client, root)))
+            .collect();
+        let archives = self.activity_archives();
+        let catalog = self.catalog.clone();
+        cx.background_executor().spawn(async move {
+            let preferences = preferences.ok_or("Astral storage is unavailable.")?;
+            let (roots, roots_error) =
+                crate::backup_roots::discover(Some(&preferences), &known_roots);
+            let (records, scan_error) =
+                backup_history(None, Client::Retail, &roots, &archives, &catalog);
+            let folders = records?
+                .into_iter()
+                .map(|backup| crate::backup_collection::Folder {
+                    label: format!(
+                        "{}-{}",
+                        backup
+                            .transaction
+                            .created_ms
+                            .unwrap_or(backup.transaction.created.saturating_mul(1000)),
+                        backup.transaction.addon
+                    ),
+                    path: backup.path,
+                })
+                .collect();
+            let warning = roots_error.or(scan_error);
+            match crate::backup_collection::update(preferences.clone(), folders, warning.is_none())
+            {
+                Ok(path) => Ok(PreparedCollection { path, warning }),
+                Err(error) => {
+                    // Browsing existing backups must still work if refreshing
+                    // optional collection metadata fails. Never replace that metadata.
+                    let path = crate::backup_collection::existing(&preferences)
+                        .map_err(|_| error.to_string())?;
+                    Ok(PreparedCollection {
+                        path,
+                        warning: Some(error.to_string()),
+                    })
+                }
+            }
+        })
+    }
+
+    fn await_backup_collection(
+        &mut self,
+        task: impl std::future::Future<Output = Result<PreparedCollection, String>> + 'static,
+        open: impl FnOnce(PathBuf, &mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.activity.opening_collection {
+            return;
+        }
+        self.activity.opening_collection = true;
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |app, cx| {
+                app.activity.opening_collection = false;
+                match result {
+                    Ok(collection) => {
+                        if let Some(warning) = collection.warning {
+                            app.show_notification(warning, true, cx);
+                        }
+                        open(collection.path, cx);
+                    }
+                    Err(error) => app.show_notification(error, true, cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn open_backup_collection(&mut self, cx: &mut Context<Self>) {
+        if self.activity.opening_collection {
+            return;
+        }
+        let task = self.backup_collection_task(cx);
+        self.await_backup_collection(task, |path, cx| cx.open_with_system(&path), cx);
     }
 
     pub fn load_backups(&mut self, cx: &mut Context<Self>) {
@@ -680,7 +768,6 @@ impl Astral {
     pub fn backups_page(&self, palette: Palette, cx: &Context<Self>) -> impl IntoElement {
         let archives = self.activity_archives();
         self.activity.retain_control_focus(&archives);
-        let client = self.preferences.client;
         let mut page = div().flex().flex_col();
         if let Some(Ok(message)) = &self.activity.outcome {
             page = page.child(
@@ -770,19 +857,7 @@ impl Astral {
                             .debug_selector(|| "activity-open-backups".into()),
                         palette,
                         &self.activity.control_focus(ButtonKey::OpenFolder, cx),
-                        cx.listener(move |app, _: &(), _, cx| {
-                            match backup_folder(
-                                app.root(client).map(PathBuf::as_path),
-                                client,
-                                app.preferences_path.as_deref(),
-                            ) {
-                                Ok(path) => cx.open_with_system(&path),
-                                Err(error) => {
-                                    app.activity.outcome = Some(Err(error));
-                                    cx.notify();
-                                }
-                            }
-                        }),
+                        cx.listener(|app, _: &(), _, cx| app.open_backup_collection(cx)),
                     )
                     .child(icon("folder", 14., palette.muted))
                     .child("Open backups"),
@@ -1920,8 +1995,8 @@ mod global_history_ui_tests {
             // creation separately without calling the OS opener.
             let prefs = directory.path().join("preferences.json");
             assert_eq!(
-                backup_folder(None, Client::Retail, Some(&prefs)).unwrap(),
-                directory.path().join("backups")
+                crate::backup_collection::update(prefs.clone(), vec![], true).unwrap(),
+                directory.path().join("backups").canonicalize().unwrap()
             );
             assert!(directory.path().join("backups").is_dir());
         }
@@ -2062,6 +2137,86 @@ mod registered_history_ui_tests {
             );
             assert!(backup.join("manifest.json").is_file());
             assert!(!root.join("Interface/AddOns/Fixture/manifest.json").exists());
+        }
+    }
+
+    #[gpui::test]
+    fn folder_action_prepares_the_real_collection_then_calls_the_opener(cx: &mut TestAppContext) {
+        for light in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let prefs = temp.path().join("preferences.json");
+            let root = temp.path().join("game/_retail_");
+            fs::create_dir_all(root.join("Interface/AddOns/Fixture")).unwrap();
+            let backup = root.join("Interface/.astral-native-backups/catalog-fixture");
+            fs::create_dir_all(&backup).unwrap();
+            let manifest = backup.join("manifest.json");
+            preferences::save_json(
+                &manifest,
+                &serde_json::json!({
+                    "addon": "Fixture", "release": "2", "created": 1_700_000_000,
+                    "folders": ["Fixture"], "previous": ["Fixture"]
+                }),
+            )
+            .unwrap();
+            let original = fs::read(&manifest).unwrap();
+            crate::backup_roots::remember(&prefs, &[(Client::Retail, root)]).unwrap();
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                let mut app = Astral::new(
+                    [None, None],
+                    Some(temp.path()),
+                    Some(Client::Retail),
+                    light,
+                    cx,
+                );
+                app.page = Page::Backups;
+                app
+            });
+            let opened = std::rc::Rc::new(std::cell::RefCell::new(None));
+            view.update(cx, |app, cx| {
+                let task = app.backup_collection_task(cx);
+                let opened = opened.clone();
+                app.await_backup_collection(
+                    task,
+                    move |path, _| *opened.borrow_mut() = Some(path),
+                    cx,
+                );
+                assert!(app.activity.opening_collection);
+            });
+            cx.run_until_parked();
+            let folder = opened.borrow().clone().unwrap();
+            assert_eq!(folder, temp.path().join("backups").canonicalize().unwrap());
+            assert!(fs::read_dir(&folder).unwrap().next().is_some());
+            assert!(view.read_with(cx, |app, _| !app.activity.opening_collection));
+            assert_eq!(fs::read(&manifest).unwrap(), original);
+            fs::write(temp.path().join("backup-collection.json"), "broken").unwrap();
+            *opened.borrow_mut() = None;
+            view.update(cx, |app, cx| {
+                let task = app.backup_collection_task(cx);
+                let opened = opened.clone();
+                app.await_backup_collection(
+                    task,
+                    move |path, _| *opened.borrow_mut() = Some(path),
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+            assert_eq!(opened.borrow().as_ref(), Some(&folder));
+            assert_eq!(
+                fs::read_to_string(temp.path().join("backup-collection.json")).unwrap(),
+                "broken"
+            );
+            assert_eq!(fs::read(&manifest).unwrap(), original);
+            // The real button also reports preparation errors without calling an OS opener.
+            view.update_in(cx, |app, window, cx| {
+                app.preferences_path = None;
+                app.activity
+                    .control_focus(ButtonKey::OpenFolder, cx)
+                    .focus(window);
+                cx.notify();
+            });
+            crate::ui_tests::press(cx, "enter");
+            assert!(cx.debug_bounds("notification").is_some());
+            assert!(view.read_with(cx, |app, _| !app.activity.opening_collection));
         }
     }
 }
