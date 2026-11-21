@@ -2656,3 +2656,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "settings_recovery_tests.rs"]
+mod process_recovery_tests;

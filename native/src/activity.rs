@@ -302,7 +302,9 @@ fn backup_history(
                 Ok(found) => {
                     let journals: std::collections::HashSet<_> =
                         found.iter().map(|(_, path)| path.clone()).collect();
-                    records.retain(|record| record.interrupted || !journals.contains(&record.path));
+                    records.retain(|record| {
+                        record.interrupted || record.recovered || !journals.contains(&record.path)
+                    });
                     records.extend(found.into_iter().map(|(record, _)| record));
                 }
                 Err(error) => archive_error = Some(error),
@@ -1758,6 +1760,58 @@ mod tests {
             1
         );
         assert_eq!(fs::read(history)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn central_copies_do_not_hide_recovered_journals_or_their_interrupted_files() -> io::Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("_retail_");
+        fs::create_dir_all(root.join("Interface/AddOns"))?;
+        let root = root.canonicalize()?;
+        let journal = root.join("Interface/.astral-native-backups/release-recovered");
+        fs::create_dir_all(journal.join("interrupted-files/Fixture"))?;
+        fs::write(
+            journal.join("interrupted-files/Fixture/new.lua"),
+            "interrupted version",
+        )?;
+        let transaction = serde_json::json!({
+            "addon": "Fixture", "release": "2", "created": 1_700_000_000,
+            "folders": ["Fixture"], "previous": ["Fixture"]
+        });
+        preferences::save_json(&journal.join("recovered.json"), &transaction)?;
+        let store = temp.path().join("app/backups");
+        let saved = store.join("native-74ed2239-15f0-4108-9c1f-6796913ef805");
+        fs::create_dir_all(saved.join("previous/Fixture"))?;
+        fs::write(saved.join("previous/Fixture/old.lua"), "original version")?;
+        preferences::save_json(
+            &saved.join("native-manifest.json"),
+            &serde_json::json!({
+                "root": root, "client": "retail", "journal": journal,
+                "transaction": transaction
+            }),
+        )?;
+        let (history, warning) = backup_history(
+            Some(&root),
+            Client::Retail,
+            &[],
+            &[("Earlier Astral backups", store)],
+            &[],
+        );
+        assert!(warning.is_none());
+        let history = history.map_err(io::Error::other)?;
+        assert_eq!(history.len(), 2);
+        let recovery = history.iter().find(|record| record.recovered).unwrap();
+        assert_eq!(recovery.path, journal);
+        assert_eq!(
+            fs::read_to_string(recovery.path.join("interrupted-files/Fixture/new.lua"))?,
+            "interrupted version"
+        );
+        assert_eq!(
+            fs::read_to_string(saved.join("previous/Fixture/old.lua"))?,
+            "original version"
+        );
         Ok(())
     }
 

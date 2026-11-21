@@ -569,7 +569,7 @@ fn install_with(
     )
 }
 
-fn install_with_archive(
+pub(crate) fn install_with_archive(
     package: &Inspection,
     addon: &str,
     (release, notes): (&str, &str),
