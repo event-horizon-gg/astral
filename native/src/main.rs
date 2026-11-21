@@ -1296,6 +1296,9 @@ impl Astral {
             .then(|| window.focused(cx))
             .flatten();
         if self.page != page {
+            if self.page == Page::Settings {
+                self.app_updates.leave_settings();
+            }
             self.invalidate_local_account_picker();
             if self.page == Page::Account {
                 self.close_account_overlays();
@@ -2582,6 +2585,7 @@ impl Render for Astral {
         self.update_cloud_manager_focus(window, cx);
         self.update_sync_dialog_focus(window, cx);
         self.update_addon_restore_focus(window, cx);
+        self.update_app_update_focus(window);
         let palette = Palette::new(self.preferences.light_theme);
         let client = self.preferences.client;
         let library = self.page == Page::Library;
