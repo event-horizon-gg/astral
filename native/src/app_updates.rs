@@ -1090,6 +1090,7 @@ impl Astral {
                 "Check daily",
                 enabled,
                 !self.fixture && !state.busy() && self.preferences_path.is_some(),
+                &self.settings_focus.checkboxes[2],
                 |app, cx| {
                     let previous = app.preferences.app_update_checks;
                     app.preferences.app_update_checks = !previous;

@@ -454,11 +454,76 @@ mod ui_tests {
             });
         }
     }
+    #[gpui::test]
+    fn profile_addon_checkbox_focus_survives_reordering_and_respects_managed_rows(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                let mut app = Astral::new(
+                    [None, None], Some(directory.path()), Some(Client::Retail), light, cx,
+                );
+                app.page = Page::Account;
+                app.settings_backups.addon_rows = Some(Ok(vec![
+                    ProfileAddon { folder: "Mixed".into(), name: "Mixed addon".into(), enabled: None, managed: false },
+                    ProfileAddon { folder: "Ordinary".into(), name: "Ordinary addon".into(), enabled: Some(false), managed: false },
+                    ProfileAddon { folder: "ConsolePort".into(), name: "ConsolePort".into(), enabled: Some(false), managed: true },
+                ]));
+                app
+            });
+            cx.simulate_resize(size(px(1250.), px(1200.)));
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, _| {
+                app.profile_review_focus.addon_choices.borrow()["Mixed"].focus(window);
+            });
+            press(cx, "enter");
+            assert!(view.read_with(cx, |app, _| app.settings_backups.addon_edits.is_empty()));
+            press(cx, "space");
+            assert_eq!(view.read_with(cx, |app, _| app.settings_backups.addon_edits.get("Mixed").copied()), Some(true));
+            view.update(cx, |app, cx| {
+                app.settings_backups.addon_rows.as_mut().unwrap().as_mut().unwrap().reverse();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, _| {
+                assert!(app.profile_review_focus.addon_choices.borrow()["Mixed"].is_focused(window));
+                assert!(!app.profile_review_focus.addon_choices.borrow()["ConsolePort"].is_focused(window));
+            });
+            press(cx, "space");
+            assert_eq!(view.read_with(cx, |app, _| app.settings_backups.addon_edits.get("Mixed").copied()), Some(false));
+            let managed = cx.debug_bounds("profile-addon-choice:ConsolePort").unwrap();
+            cx.simulate_click(managed.center(), Modifiers::default());
+            cx.run_until_parked();
+            assert!(view.read_with(cx, |app, _| !app.settings_backups.addon_edits.contains_key("ConsolePort")));
+            view.update_in(cx, |app, window, _| {
+                app.profile_review_focus.addon_choices.borrow()["Ordinary"].focus(window);
+            });
+            press(cx, "space");
+            assert_eq!(view.read_with(cx, |app, _| app.settings_backups.addon_edits.get("Ordinary").copied()), Some(true));
+            press(cx, "tab");
+            view.update_in(cx, |app, window, _| {
+                assert!(app.profile_review_focus.addon_choices.borrow()["Mixed"].is_focused(window));
+            });
+            // Removing an addon must not retain its old focus registration.
+            view.update(cx, |app, cx| {
+                app.settings_backups.addon_rows.as_mut().unwrap().as_mut().unwrap()
+                    .retain(|row| row.folder != "Ordinary");
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert!(view.read_with(cx, |app, _| !app.profile_review_focus.addon_choices.borrow().contains_key("Ordinary")));
+        }
+    }
 }
 
 pub(crate) struct ProfileReviewFocus {
     pub(crate) picker: FocusHandle,
     handheld: FocusHandle,
+    inspect: FocusHandle,
+    discard_addons: FocusHandle,
+    review_addons: FocusHandle,
+    addon_choices: std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
     picker_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     files: FocusHandle,
     cancel: FocusHandle,
@@ -472,6 +537,10 @@ impl ProfileReviewFocus {
         Self {
             picker: cx.focus_handle().tab_stop(true),
             handheld: cx.focus_handle().tab_stop(true),
+            inspect: cx.focus_handle().tab_stop(true),
+            discard_addons: cx.focus_handle().tab_stop(true),
+            review_addons: cx.focus_handle().tab_stop(true),
+            addon_choices: Default::default(),
             picker_bounds: Default::default(),
             files: cx.focus_handle().tab_stop(true),
             cancel: cx.focus_handle().tab_stop(true),
@@ -881,12 +950,12 @@ impl Astral {
                     .child(crate::icon("arrow-right", 14., palette.muted))
                     .when(!available, |link| link.opacity(0.55))
                     .when(available, |link| {
-                        link.cursor_pointer()
-                            .focusable()
-                            .tab_stop(true)
-                            .hover(move |style| style.text_color(rgb(palette.accent)))
-                            .focus(move |style| style.text_color(rgb(palette.accent)))
-                            .on_click(cx.listener(|app, _, _, cx| app.inspect_local_settings(cx)))
+                        crate::outlined_button(
+                            link.cursor_pointer()
+                                .hover(move |style| style.text_color(rgb(palette.accent))),
+                            palette, &self.profile_review_focus.inspect,
+                            cx.listener(|app, _: &(), _, cx| app.inspect_local_settings(cx)),
+                        )
                     }),
             )
             .when(state.game_running, |panel| {
@@ -909,6 +978,10 @@ impl Astral {
 
     pub(crate) fn profile_addon_controls(&self, palette: Palette, cx: &Context<Self>) -> gpui::Div {
         let state = &self.settings_backups;
+        self.profile_review_focus.addon_choices.borrow_mut().retain(|folder, _| {
+            state.addon_rows.as_ref().and_then(|rows| rows.as_ref().ok())
+                .is_some_and(|rows| rows.iter().any(|row| &row.folder == folder))
+        });
         let count = state.addon_edits.len();
         let busy = self.settings_write_in_progress() || self.account_work_in_progress();
         let blocked = busy || state.game_running;
@@ -932,14 +1005,13 @@ impl Astral {
                             .text_button("discard-profile-addons", "Discard changes")
                             .when(busy, |button| button.opacity(0.45).cursor_default())
                             .when(!busy, |button| {
-                                button
-                                    .focusable()
-                                    .tab_stop(true)
-                                    .focus(move |style| style.border_color(rgb(palette.accent)))
-                                    .on_click(cx.listener(|app, _, _, cx| {
+                                crate::outlined_button(
+                                    button, palette, &self.profile_review_focus.discard_addons,
+                                    cx.listener(|app, _: &(), _, cx| {
                                         app.settings_backups.addon_edits.clear();
                                         cx.notify();
-                                    }))
+                                    }),
+                                )
                             }),
                     )
                 }),
@@ -980,12 +1052,15 @@ impl Astral {
                     .border_t_1()
                     .border_color(palette.line)
                     .overflow_y_scroll()
-                    .children(ordered_rows.into_iter().enumerate().map(|(index, addon)| {
+                    .children(ordered_rows.into_iter().map(|addon| {
                         let value = state
                             .addon_edits
                             .get(&addon.folder)
                             .copied()
                             .or(addon.enabled);
+                        let focus = self.profile_review_focus.addon_choices.borrow_mut()
+                            .entry(addon.folder.clone())
+                            .or_insert_with(|| cx.focus_handle().tab_stop(true)).clone();
                         let original = addon.enabled;
                         let folder = addon.folder.clone();
                         let editable = !addon.managed && !blocked;
@@ -1000,8 +1075,10 @@ impl Astral {
                             }
                             cx.notify();
                         };
-                        div()
-                            .id(("profile-addon-choice", index))
+                        let row_id = format!("profile-addon-choice:{}", addon.folder);
+                        let row = div()
+                            .id(gpui::SharedString::from(row_id.clone()))
+                            .debug_selector(move || row_id.clone())
                             .flex()
                             .items_center()
                             .justify_between()
@@ -1026,9 +1103,8 @@ impl Astral {
                                             .line_height(px(13.)),
                                     )
                                 },
-                            ))
-                            .child(
-                                palette
+                            ));
+                        let mark = palette
                                     .checkbox_mark(value, 17.)
                                     .mt(px(3.))
                                     .mb(px(3.))
@@ -1045,15 +1121,11 @@ impl Astral {
                                             };
                                             mark.bg(rgb(gray)).border_color(rgb(gray))
                                         }
-                                    }),
-                            )
-                            .when(editable, |row| {
-                                row.focusable()
-                                    .tab_stop(true)
-                                    .cursor_pointer()
-                                    .focus(move |style| style.border_color(rgb(palette.accent)))
-                                    .on_click(cx.listener(move |app, _, _, cx| toggle(app, cx)))
-                            })
+                                    });
+                        crate::checkbox_input(
+                            row, mark, palette, &focus, editable,
+                            cx.listener(move |app, _: &(), _, cx| toggle(app, cx)),
+                        )
                     })),
             );
         panel.child(
@@ -1077,13 +1149,10 @@ impl Astral {
                                 let edits = app.settings_backups.addon_edits.clone();
                                 app.review_profile_changes(target, false, edits, window, cx);
                             };
-                        button
-                            .focusable()
-                            .tab_stop(true)
-                            .focus(move |style| style.border_color(rgb(palette.accent)))
-                            .on_click(
-                                cx.listener(move |app, _, window, cx| review(app, window, cx)),
-                            )
+                        crate::outlined_button(
+                            button, palette, &self.profile_review_focus.review_addons,
+                            cx.listener(move |app, _: &(), window, cx| review(app, window, cx)),
+                        )
                     }),
             ),
         )

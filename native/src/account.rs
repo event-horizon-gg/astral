@@ -62,6 +62,7 @@ fn cloud_backup_size(bytes: u64) -> String {
 }
 
 pub(super) struct PageFocus {
+    primary: FocusHandle,
     manage_data: FocusHandle,
     delete_data: FocusHandle,
     shared_sync: FocusHandle,
@@ -74,6 +75,7 @@ pub(super) struct PageFocus {
 impl PageFocus {
     pub(super) fn new(cx: &gpui::App) -> Self {
         Self {
+            primary: cx.focus_handle().tab_stop(true),
             manage_data: cx.focus_handle().tab_stop(true),
             delete_data: cx.focus_handle().tab_stop(true),
             shared_sync: cx.focus_handle().tab_stop(true),
@@ -2634,7 +2636,7 @@ impl Astral {
                     .mt(px(13.)).mb(px(25.)).text_size(px(12.)).line_height(px(22.8)).text_color(rgb(0x8da898)))
                 .child(div().mt(px(10.)).p(px(12.)).border_1().border_color(palette.line).rounded(px(5.))
                     .bg(rgb(palette.background)).text_size(px(14.))
-                    .child(crate::search_input::field(input, "", palette.muted, cx)))
+                    .child(crate::search_input::field(input, "", palette.muted, palette.accent, cx)))
                 .child(div().flex().justify_end().gap(px(9.))
                     .child(palette.button("cancel-cloud-deletion", "Cancel")
                         .when(busy, |button| button.opacity(0.45).cursor_default())
@@ -2971,9 +2973,13 @@ impl Astral {
                                 )
                                 .min_w(px(135.))
                                 .when(signed_in, |button| {
-                                    button
-                                        .flex_row_reverse()
-                                        .child(crate::icon("refresh", 16., 0xffffff))
+                                    button.flex_row_reverse().child(if ready {
+                                        crate::icon("refresh", 16., 0xffffff).into_any_element()
+                                    } else {
+                                        crate::motion::spinner(
+                                            "account-sync-spinner", 16., 0xffffff, self.motion.reduced,
+                                        )
+                                    })
                                 })
                                 .when(!signed_in, |button| {
                                     button.child(crate::icon("arrow-up-right", 16., 0xffffff))
@@ -2989,13 +2995,12 @@ impl Astral {
                                             app.sign_in(cx);
                                         }
                                     };
-                                    button
-                                        .focusable()
-                                        .tab_stop(true)
-                                        .focus(move |style| style.border_color(rgb(palette.text)))
-                                        .on_click(
-                                            cx.listener(move |app, _, _, cx| activate(app, cx)),
-                                        )
+                                    crate::outlined_button(
+                                        button,
+                                        palette,
+                                        &self.account_focus.primary,
+                                        cx.listener(move |app, _: &(), _, cx| activate(app, cx)),
+                                    )
                                 }),
                         )
                         .when(signed_in, |actions| {
@@ -3113,7 +3118,7 @@ impl Astral {
                     .gap_3()
                     .border_t_1()
                     .border_color(palette.line)
-                    .pt_4()
+                    .pt(px(25.))
                     .child(
                         div()
                             .text_size(px(20.))
@@ -3122,7 +3127,7 @@ impl Astral {
                     )
                     .child(palette.label(
                         "Sign in to save your settings and restore them on another computer.",
-                    )),
+                    ).text_size(px(13.)).line_height(px(24.7)).max_w(px(460.))),
             );
             return view.child(
                 div()

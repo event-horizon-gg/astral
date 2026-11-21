@@ -713,11 +713,19 @@ pub fn field(
     input: &Entity<SearchInput>,
     placeholder: &'static str,
     muted: u32,
+    accent: u32,
     cx: &mut App,
 ) -> impl IntoElement {
     input.update(cx, |input, cx| {
         div()
+            .relative()
             .track_focus(&input.focus)
+            .child(crate::control_outline(
+                input.focus.clone(),
+                accent,
+                0.,
+                true,
+            ))
             .key_context("AstralText")
             .flex_1()
             .min_w_0()

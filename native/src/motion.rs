@@ -66,8 +66,10 @@ pub fn rotating_icon(
 
 impl Astral {
     fn busy_motion_visible(&self) -> bool {
-        matches!(self.page, crate::Page::Library | crate::Page::Discover)
-            && self.addon_controls_busy()
+        (matches!(self.page, crate::Page::Library | crate::Page::Discover)
+            && self.addon_controls_busy())
+            || (self.page == crate::Page::Account
+                && (self.account_work_in_progress() || self.settings_write_in_progress()))
     }
 
     pub(crate) fn observe_busy_motion(&mut self, cx: &mut Context<Self>) {

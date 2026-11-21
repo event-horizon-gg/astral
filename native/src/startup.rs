@@ -151,6 +151,7 @@ impl Astral {
                 "Start Astral when I sign in",
                 enabled,
                 !self.fixture && !self.startup.changing && self.preferences_path.is_some(),
+                &self.settings_focus.checkboxes[0],
                 |app, cx| app.set_startup(!app.preferences.start_at_login, cx),
                 cx,
             ))

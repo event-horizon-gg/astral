@@ -687,6 +687,7 @@ impl Astral {
                 && !self.daily_running
                 && !self.daily_schedule_busy
                 && self.preferences_path.is_some(),
+            &self.settings_focus.checkboxes[1],
             |app, cx| {
                 let previous = app.preferences.daily_updates;
                 app.preferences.daily_updates = !previous;

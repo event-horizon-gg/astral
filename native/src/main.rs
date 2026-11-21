@@ -178,6 +178,7 @@ impl LibraryFocus {
 
 struct SettingsFocus {
     folder: gpui::FocusHandle,
+    checkboxes: [gpui::FocusHandle; 3],
     daily: gpui::FocusHandle,
     update_banner: gpui::FocusHandle,
     update_check: gpui::FocusHandle,
@@ -190,6 +191,7 @@ impl SettingsFocus {
     fn new(cx: &App) -> Self {
         Self {
             folder: cx.focus_handle().tab_stop(true),
+            checkboxes: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             daily: cx.focus_handle().tab_stop(true),
             update_banner: cx.focus_handle().tab_stop(true),
             update_check: cx.focus_handle().tab_stop(true),
@@ -848,23 +850,85 @@ fn button_outline(
 }
 
 fn focus_outline(focus: gpui::FocusHandle, color: u32) -> impl IntoElement {
+    control_outline(focus, color, 4., false)
+}
+
+fn control_outline(
+    focus: gpui::FocusHandle,
+    color: u32,
+    radius: f32,
+    text_input: bool,
+) -> impl IntoElement {
     gpui::canvas(
         |_, _, _| (),
         move |bounds, (), window, cx| {
-            if focus_visible::indicated(&focus, window, cx) {
-                // editorial.css: 2px outline, 4px offset, 4px button radius.
+            if (text_input && focus.is_focused(window))
+                || focus_visible::indicated(&focus, window, cx)
+            {
+                // Text-editing controls match :focus-visible even after a mouse
+                // click. Other controls follow the last focus source.
+                // editorial.css: 2px outline, 4px offset.
                 // Paint a transparent-center ring so surrounding surfaces show
                 // through the offset, without adding to the button's layout.
                 window.paint_quad(
                     gpui::outline(bounds.dilate(px(6.)), rgb(color), Default::default())
                         .border_widths(px(2.))
-                        .corner_radii(px(10.)),
+                        .corner_radii(px(radius + 6.)),
                 );
             }
         },
     )
     .absolute()
     .inset_0()
+}
+
+// The label is clickable, but the input itself owns the outline. Chromium
+// toggles checkboxes with Space; Enter must not run a button-style activation.
+fn checkbox_control(
+    row: gpui::Stateful<gpui::Div>,
+    palette: Palette,
+    focus: &gpui::FocusHandle,
+    checked: bool,
+    size: f32,
+    enabled: bool,
+    activate: impl Fn(&(), &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    checkbox_input(
+        row.when(!enabled, |row| row.opacity(0.55)),
+        palette.checkbox_mark(Some(checked), size),
+        palette,
+        focus,
+        enabled,
+        activate,
+    )
+}
+
+fn checkbox_input(
+    row: gpui::Stateful<gpui::Div>,
+    mark: gpui::Div,
+    palette: Palette,
+    focus: &gpui::FocusHandle,
+    enabled: bool,
+    activate: impl Fn(&(), &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    let row = row.child(mark.relative().when(enabled, |mark| {
+        mark.child(control_outline(focus.clone(), palette.accent, 2., false))
+    }));
+    if !enabled {
+        return row;
+    }
+    let focus = focus.clone();
+    row.track_focus(&focus)
+        .cursor_pointer()
+        .on_click(move |event, window, cx| {
+            if matches!(event, gpui::ClickEvent::Keyboard(event)
+                if event.button == gpui::KeyboardButton::Enter)
+            {
+                return;
+            }
+            focus.focus(window);
+            activate(&(), window, cx);
+        })
 }
 
 fn remember_bounds(
@@ -1161,11 +1225,13 @@ impl Palette {
         label: &'static str,
         checked: bool,
         enabled: bool,
+        focus: &gpui::FocusHandle,
         change: fn(&mut Astral, &mut Context<Astral>),
         cx: &Context<Astral>,
     ) -> gpui::Stateful<gpui::Div> {
-        div()
+        let row = div()
             .id(id)
+            .debug_selector(move || id.into())
             .flex()
             .items_center()
             .justify_between()
@@ -1176,16 +1242,16 @@ impl Palette {
             .border_b_1()
             .border_color(self.line)
             .text_size(px(12.))
-            .child(label)
-            .child(self.checkbox_mark(Some(checked), 13.))
-            .when(!enabled, |row| row.opacity(0.55))
-            .when(enabled, |row| {
-                row.focusable()
-                    .tab_stop(true)
-                    .cursor_pointer()
-                    .focus(move |style| style.border_color(rgb(self.accent)))
-                    .on_click(cx.listener(move |app, _, _, cx| change(app, cx)))
-            })
+            .child(label);
+        checkbox_control(
+            row,
+            self,
+            focus,
+            checked,
+            13.,
+            enabled,
+            cx.listener(move |app, _: &(), _, cx| change(app, cx)),
+        )
     }
 }
 
@@ -1744,7 +1810,8 @@ impl Astral {
         } else {
             "Find an addon…"
         };
-        let input = search_input::field(&self.search, placeholder, palette.muted, cx);
+        let input =
+            search_input::field(&self.search, placeholder, palette.muted, palette.accent, cx);
         div()
             .id("addon-search")
             .when(discover, |field| {
@@ -2403,21 +2470,19 @@ impl Astral {
                     .justify_between()
                     .my(px(18.))
                     .text_size(px(12.))
-                    .child("Include in daily updates")
-                    .child(palette.checkbox_mark(Some(included), 14.));
+                    .child("Include in daily updates");
                 let toggle_folder = folder.clone();
-                let drawer = drawer.child(if busy {
-                    toggle.opacity(0.55)
-                } else {
-                    outlined_button(
-                        toggle.cursor_pointer(),
-                        palette,
-                        &self.library_focus.daily,
-                        cx.listener(move |app, _: &(), _, cx| {
-                            app.toggle_daily_exclusion(&toggle_folder, cx);
-                        }),
-                    )
-                });
+                let drawer = drawer.child(checkbox_control(
+                    toggle,
+                    palette,
+                    &self.library_focus.daily,
+                    included,
+                    14.,
+                    !busy,
+                    cx.listener(move |app, _: &(), _, cx| {
+                        app.toggle_daily_exclusion(&toggle_folder, cx);
+                    }),
+                ));
                 let action = palette
                     .primary_button(
                         "addon-release-action",

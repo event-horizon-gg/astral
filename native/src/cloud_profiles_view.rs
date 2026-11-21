@@ -1328,7 +1328,7 @@ impl Astral {
                                     .px(px(2.))
                                     .flex()
                                     .items_center()
-                                    .child(crate::search_input::field(input, "", palette.muted, cx))
+                                    .child(crate::search_input::field(input, "", palette.muted, palette.accent, cx))
                                     .on_key_down(cx.listener(
                                         |app, event: &gpui::KeyDownEvent, _, cx| {
                                             if event.keystroke.key == "enter" {

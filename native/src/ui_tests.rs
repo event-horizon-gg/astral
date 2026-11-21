@@ -1079,3 +1079,128 @@ fn utility_controls_keep_bounds_and_sources_keep_their_keyboard_destinations(
         }
     }
 }
+
+#[gpui::test]
+fn checkbox_labels_keep_focus_and_only_space_toggles_from_keyboard(cx: &mut TestAppContext) {
+    for light in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = Astral::new(
+                [None, None],
+                Some(directory.path()),
+                Some(Client::Retail),
+                false,
+                cx,
+            );
+            app.page = Page::Settings;
+            app.fixture = false;
+            app.preferences.light_theme = light;
+            app
+        });
+        cx.simulate_resize(size(px(1250.), px(1400.)));
+        cx.run_until_parked();
+        let before = cx.debug_bounds("app-update-auto").unwrap();
+        let previous = view.read_with(cx, |app, _| app.preferences.app_update_checks);
+        // Clicking the label, rather than the tiny box, must focus and toggle it.
+        cx.simulate_click(
+            before.origin + point(px(15.), px(15.)),
+            Modifiers::default(),
+        );
+        cx.run_until_parked();
+        view.update_in(cx, |app, window, cx| {
+            assert!(
+                app.settings_focus.checkboxes[2].is_focused(window),
+                "bounds={before:?} fixture={} enabled={} has_prefs={} current={:?}",
+                app.fixture,
+                app.preferences.app_update_checks,
+                app.preferences_path.is_some(),
+                window.focused(cx)
+            );
+            assert!(!focus_visible::indicated(
+                &app.settings_focus.checkboxes[2],
+                window,
+                cx
+            ));
+            assert_eq!(app.preferences.app_update_checks, !previous);
+        });
+        press(cx, "enter");
+        assert_eq!(
+            view.read_with(cx, |app, _| app.preferences.app_update_checks),
+            !previous
+        );
+        press(cx, "space");
+        view.update_in(cx, |app, window, cx| {
+            assert_eq!(app.preferences.app_update_checks, previous);
+            assert!(focus_visible::indicated(
+                &app.settings_focus.checkboxes[2],
+                window,
+                cx
+            ));
+        });
+        assert_eq!(cx.debug_bounds("app-update-auto").unwrap(), before);
+        // Re-rendering the page doesn't replace the checkbox's focus handle.
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(app.settings_focus.update_check.is_focused(window));
+        });
+        // Disabled update controls cannot toggle by label or re-enter Tab order.
+        view.update(cx, |app, cx| {
+            app.fixture = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.simulate_click(before.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(
+            view.read_with(cx, |app, _| app.preferences.app_update_checks),
+            previous
+        );
+        view.update_in(cx, |app, window, _| {
+            app.header_button_focus[6].focus(window)
+        });
+        press(cx, "tab");
+        view.update_in(cx, |app, window, _| {
+            assert!(!app.settings_focus.checkboxes[2].is_focused(window));
+            assert!(!app.settings_focus.update_check.is_focused(window));
+        });
+    }
+}
+
+#[gpui::test]
+fn addon_daily_checkbox_uses_space_without_enter_button_activation(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut app = Astral::new(
+            [None, None],
+            Some(directory.path()),
+            Some(Client::Retail),
+            false,
+            cx,
+        );
+        let mut item = addon();
+        item.source = "GitHub";
+        app.catalog = vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "FixtureAddon", "name": "Fixture addon", "folder": "FixtureAddon",
+                "repo": "fixture/addon"
+            }))
+            .unwrap(),
+        ]
+        .into();
+        app.addons = vec![item];
+        app.selected = Some("FixtureAddon".into());
+        app
+    });
+    cx.simulate_resize(size(px(1250.), px(900.)));
+    view.update_in(cx, |app, window, _| app.library_focus.daily.focus(window));
+    cx.run_until_parked();
+    assert!(!view.read_with(cx, |app, _| app.excluded_from_daily("FixtureAddon")));
+    press(cx, "enter");
+    assert!(!view.read_with(cx, |app, _| app.excluded_from_daily("FixtureAddon")));
+    press(cx, "space");
+    assert!(view.read_with(cx, |app, _| app.excluded_from_daily("FixtureAddon")));
+    press(cx, "space");
+    assert!(!view.read_with(cx, |app, _| app.excluded_from_daily("FixtureAddon")));
+}
