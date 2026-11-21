@@ -995,7 +995,7 @@ impl Astral {
                         .flex()
                         .flex_col()
                         .items_center()
-                        .py(px(70.))
+                        .py(px(40.))
                         .px(px(20.))
                         .border_t_1()
                         .border_color(palette.line)

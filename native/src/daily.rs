@@ -660,6 +660,17 @@ impl Astral {
                 app.daily_waiting = result.as_ref().is_err_and(|error| game_open(error));
                 app.daily_run_error = result.err().filter(|_| force || !app.daily_waiting);
                 app.receive_daily_reports(reports, cx);
+                if force {
+                    if let Some(error) = app.daily_run_error.take() {
+                        app.show_notification(error, true, cx);
+                    } else {
+                        app.show_notification(
+                            "Daily update check finished. See Activity for results.",
+                            false,
+                            cx,
+                        );
+                    }
+                }
             });
         })
         .detach();
@@ -718,12 +729,37 @@ impl Astral {
         } else {
             "First daily check is pending".into()
         };
+        let has_schedule_status = crate::schedule::SUPPORTED
+            && !self.fixture
+            && (self.daily_schedule_error.is_some()
+                || (enabled && !self.preferences.background_updates));
+        if crate::schedule::SUPPORTED && !self.fixture {
+            let background = self.preferences.background_updates;
+            if enabled && !background && self.daily_schedule_error.is_none() {
+                controls = controls.child(
+                    palette
+                        .label("Keep Astral open for daily updates.")
+                        .text_size(gpui::px(12.))
+                        .line_height(gpui::px(21.6))
+                        .mt(gpui::px(9.)),
+                );
+            }
+            if let Some(error) = &self.daily_schedule_error {
+                controls = controls.child(
+                    palette
+                        .label(error.clone())
+                        .text_size(gpui::px(12.))
+                        .line_height(gpui::px(21.6))
+                        .mt(gpui::px(9.)),
+                );
+            }
+        }
         controls = controls.child(
             div()
                 .flex()
                 .items_center()
                 .gap_3()
-                .mt_3()
+                .mt(gpui::px(if has_schedule_status { 17. } else { 12. }))
                 .child(
                     palette
                         .button("check-daily-now", "Check now")
@@ -739,23 +775,8 @@ impl Astral {
                 )
                 .child(palette.label(status).text_size(gpui::px(11.))),
         );
-        if crate::schedule::SUPPORTED && !self.fixture {
-            let background = self.preferences.background_updates;
-            if enabled && !background && self.daily_schedule_error.is_none() {
-                controls = controls.child(palette.label("Keep Astral open for daily updates."));
-            }
-            if let Some(error) = &self.daily_schedule_error {
-                controls = controls
-                    .child(palette.label(error.clone()).text_color(rgb(palette.error)))
-                    .child(
-                        div().child(palette.button("retry-daily-background", "Retry").on_click(
-                            cx.listener(move |app, _, _, cx| {
-                                app.configure_daily_schedule(background, cx)
-                            }),
-                        )),
-                    );
-            }
-        }
+        // Forced checks consume their error into the source-style toast above.
+        // Keep unattended failures visible until the next attempt.
         if let Some(error) = &self.daily_run_error {
             controls = controls.child(palette.label(error.clone()).text_color(rgb(palette.error)));
         }

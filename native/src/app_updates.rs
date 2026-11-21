@@ -610,6 +610,7 @@ use std::time::Instant;
 #[derive(Default)]
 pub struct State {
     phase: Phase,
+    retained_release: Option<Release>,
     last_check: Option<Instant>,
     notes_open: bool,
     check_error: Option<String>,
@@ -630,7 +631,31 @@ enum Phase {
     Error(String),
 }
 
+impl Phase {
+    fn release(&self) -> Option<&Release> {
+        match self {
+            Self::Current(release) | Self::Available(release) | Self::Staged(release, _) => {
+                Some(release)
+            }
+            _ => None,
+        }
+    }
+}
+
 impl State {
+    fn notes_release(&self) -> Option<&Release> {
+        self.phase.release().or(self.retained_release.as_ref())
+    }
+
+    fn transition(&mut self, next: Phase) -> Phase {
+        if let Some(release) = self.phase.release() {
+            // This is presentation metadata only. Download/install still require
+            // their verified Available/Staged phase, never this retained value.
+            self.retained_release = Some(release.clone());
+        }
+        std::mem::replace(&mut self.phase, next)
+    }
+
     pub(crate) fn show_recovery(&mut self, reason: &str) -> bool {
         let message = match reason {
             "wow-running" => "WoW opened during the update. Close it and try again.",
@@ -765,7 +790,7 @@ impl Astral {
         }
         self.app_updates.last_check = Some(Instant::now());
         self.app_updates.check_error = None;
-        let staged = match std::mem::replace(&mut self.app_updates.phase, Phase::Checking) {
+        let staged = match self.app_updates.transition(Phase::Checking) {
             Phase::Staged(release, file) => Some((release, file)),
             _ => None,
         };
@@ -774,7 +799,7 @@ impl Astral {
             let result = task.await;
             let _ = this.update(cx, |app, cx| {
                 let (phase, error) = checked_phase(result, staged);
-                app.app_updates.phase = phase;
+                app.app_updates.transition(phase);
                 app.app_updates.check_error = error;
                 cx.notify();
             });
@@ -796,7 +821,8 @@ impl Astral {
         let release = release.clone();
         let directory = data.join("app-updates");
         let progress = Arc::new(AtomicU8::new(0));
-        self.app_updates.phase = Phase::Downloading(progress.clone());
+        self.app_updates
+            .transition(Phase::Downloading(progress.clone()));
         let executor = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
             let mut displayed = 0;
@@ -831,10 +857,11 @@ impl Astral {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |app, cx| {
-                app.app_updates.phase = match result {
+                let phase = match result {
                     Ok((release, file)) => Phase::Staged(release, file),
                     Err(error) => Phase::Error(error),
                 };
+                app.app_updates.transition(phase);
                 cx.notify();
             });
         })
@@ -846,6 +873,7 @@ impl Astral {
         !self.fixture
             && install_supported()
             && !self.profile_game_running()
+            && !self.addon_controls_busy()
             && !self.daily_running
             && !self.account_work_in_progress()
             && !self.sync_dialog_open()
@@ -874,9 +902,7 @@ impl Astral {
         if !matches!(self.app_updates.phase, Phase::Staged(..)) {
             return;
         }
-        let Phase::Staged(release, file) =
-            std::mem::replace(&mut self.app_updates.phase, Phase::Installing)
-        else {
+        let Phase::Staged(release, file) = self.app_updates.transition(Phase::Installing) else {
             unreachable!()
         };
         self.app_updates.install_error = None;
@@ -892,7 +918,7 @@ impl Astral {
             let _ = this.update(cx, |app, cx| match result {
                 Ok(()) => cx.quit(),
                 Err(error) => {
-                    app.app_updates.phase = Phase::Staged(release, file);
+                    app.app_updates.transition(Phase::Staged(release, file));
                     app.app_updates.install_error = Some(error);
                     cx.notify();
                 }
@@ -908,10 +934,13 @@ impl Astral {
     pub fn app_update_settings(&self, palette: Palette, cx: &Context<Self>) -> gpui::Div {
         let state = &self.app_updates;
         let enabled = self.preferences.app_update_checks;
-        let (message, release) = match &state.phase {
+        let (message, _) = match &state.phase {
             Phase::Idle => (String::new(), None),
             Phase::Checking => ("Checking for a new version…".into(), None),
-            Phase::Unpublished => ("A native release hasn’t been published yet.".into(), None),
+            Phase::Unpublished => (
+                "The first public release hasn’t been published yet.".into(),
+                None,
+            ),
             Phase::Current(release) => ("You’re up to date.".into(), Some(release)),
             Phase::Available(release) => (
                 format!("Astral {} is available.", release.version),
@@ -928,11 +957,17 @@ impl Astral {
             ),
             Phase::Error(error) => (error.clone(), None),
         };
+        let has_message = !message.is_empty();
         div()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(palette.label(format!("Version {CURRENT}")))
+            .child(
+                palette
+                    .label(format!("Version {CURRENT}"))
+                    .text_size(px(12.))
+                    .line_height(px(21.6))
+                    .mt(px(9.)),
+            )
             .when(
                 matches!(state.phase, Phase::Staged(..)) && !install_supported(),
                 |view| {
@@ -969,6 +1004,9 @@ impl Astral {
                 view.child(
                     palette
                         .label(message)
+                        .text_size(px(12.))
+                        .line_height(px(21.6))
+                        .mt(px(9.))
                         .when(matches!(state.phase, Phase::Error(_)), |label| {
                             label.text_color(rgb(palette.error))
                         }),
@@ -978,7 +1016,8 @@ impl Astral {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap_3()
+                    .mt(px(if has_message { 17. } else { 12. }))
                     .child({
                         let button = palette.button("check-app-update", "Check for updates");
                         if self.fixture || state.busy() {
@@ -1033,10 +1072,12 @@ impl Astral {
                 |view| view.child(palette.label("Close WoW before installing the update.")),
             )
             .when_some(
-                release.filter(|release| !release.notes.is_empty()),
+                state
+                    .notes_release()
+                    .filter(|release| !release.notes.is_empty()),
                 |view, release| {
                     view.child(
-                        div().mt(px(11.)).child(crate::outlined_button(
+                        div().mt(px(23.)).child(crate::outlined_button(
                             div()
                                 .id("app-release-notes")
                                 .debug_selector(|| "app-release-notes".into())
@@ -1046,16 +1087,12 @@ impl Astral {
                                 .cursor_pointer()
                                 .text_size(px(11.))
                                 .text_color(rgb(palette.accent))
-                                .child(icon(
-                                    if state.notes_open {
-                                        "chevron"
-                                    } else {
-                                        "chevron-right"
-                                    },
-                                    12.,
-                                    palette.accent,
-                                ))
-                                .child(format!("What’s new in {}", release.version)),
+                                .child(if state.notes_open { "▾" } else { "▸" })
+                                .child(if matches!(state.phase, Phase::Unpublished) {
+                                    "What’s new in ".into()
+                                } else {
+                                    format!("What’s new in {}", release.version)
+                                }),
                             palette,
                             &self.settings_focus.update_notes,
                             cx.listener(|app, _: &(), _, cx| {
@@ -1069,16 +1106,8 @@ impl Astral {
                             palette
                                 .label(release.notes.clone())
                                 .text_size(px(11.))
-                                .line_height(px(20.))
-                                .font_family(if cfg!(target_os = "macos") {
-                                    "Menlo"
-                                } else {
-                                    "Consolas"
-                                })
-                                .p(px(12.))
-                                .rounded(px(5.))
-                                .border_1()
-                                .border_color(palette.line)
+                                .line_height(px(19.8))
+                                .my(px(11.))
                                 .bg(rgb(palette.surface)),
                         )
                     })
@@ -1092,6 +1121,85 @@ mod ui_tests {
     use super::*;
     use crate::{Client, focus_visible, ui_tests::press};
     use gpui::{Modifiers, TestAppContext, size};
+
+    #[gpui::test]
+    fn release_notes_remain_interactive_through_checks_downloads_and_failures(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            let data = tempfile::tempdir().unwrap();
+            let release = Release {
+                version: Version::new(9, 9, 9),
+                notes: "Verified release notes".into(),
+                asset: Asset {
+                    url: "https://example.invalid/update.zip".into(),
+                    sha256: "a".repeat(64),
+                    size: 42,
+                },
+            };
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                let mut app = Astral::new(
+                    [None, None],
+                    Some(data.path()),
+                    Some(Client::Retail),
+                    light,
+                    cx,
+                );
+                app.page = Page::Settings;
+                app.app_updates
+                    .transition(Phase::Available(release.clone()));
+                app.app_updates.notes_open = true;
+                app
+            });
+            cx.simulate_resize(size(px(1250.), px(1200.)));
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, cx| {
+                app.settings_focus.update_notes.focus(window);
+                app.app_updates.transition(Phase::Checking);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            press(cx, "enter");
+            assert!(view.read_with(cx, |app, _| !app.app_updates.notes_open
+                && app.app_updates.notes_release().unwrap().notes == release.notes));
+            view.update_in(cx, |app, _, cx| {
+                app.app_updates
+                    .transition(Phase::Downloading(Arc::new(AtomicU8::new(37))));
+                cx.notify();
+            });
+            cx.run_until_parked();
+            press(cx, "space");
+            assert!(view.read_with(cx, |app, _| app.app_updates.notes_open
+                && matches!(app.app_updates.phase, Phase::Downloading(_))));
+            view.update_in(cx, |app, _, cx| {
+                app.app_updates
+                    .transition(Phase::Error("Fixture download failed".into()));
+                cx.notify();
+            });
+            cx.run_until_parked();
+            press(cx, "enter");
+            assert!(view.read_with(cx, |app, _| !app.app_updates.notes_open
+                && matches!(app.app_updates.phase, Phase::Error(_))));
+            view.update_in(cx, |app, _, cx| {
+                app.app_updates.transition(Phase::Unpublished);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            press(cx, "space");
+            assert!(view.read_with(cx, |app, _| app.app_updates.notes_open));
+            view.update_in(cx, |app, _, cx| {
+                let mut next = release.clone();
+                next.notes.clear();
+                next.version = Version::new(9, 9, 10);
+                app.app_updates.transition(Phase::Available(next));
+                assert!(
+                    app.app_updates.notes_release().unwrap().notes.is_empty(),
+                    "new verified metadata must replace retained notes"
+                );
+                cx.notify();
+            });
+        }
+    }
 
     #[gpui::test]
     fn update_text_actions_keep_bounds_and_keyboard_pointer_behaviour_in_both_themes(
