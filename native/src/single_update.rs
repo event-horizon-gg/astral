@@ -343,8 +343,10 @@ impl Astral {
                     to: result.as_ref().ok().map(|outcome| {
                         if importing {
                             "Imported ZIP".into()
+                        } else if outcome.changed {
+                            releases::display_version(&source, &outcome.tag)
                         } else {
-                            outcome.tag.clone()
+                            outcome.version.clone()
                         }
                     }),
                     verb: match &result {

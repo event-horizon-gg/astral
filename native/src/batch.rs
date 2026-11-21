@@ -213,12 +213,19 @@ pub struct DailyResult {
 
 impl DailyResult {
     pub fn summary(&self, client: Client) -> String {
-        let detail = if self.status == DailyStatus::Updated
-            && (!self.from.is_empty() || !self.to.is_empty())
-        {
+        let detail = if !self.message.is_empty() {
+            self.message.clone()
+        } else if self.status == DailyStatus::Updated {
             format!("{} → {}", self.from, self.to)
         } else {
-            self.message.clone()
+            match self.status {
+                DailyStatus::Updated => "updated",
+                DailyStatus::Current => "current",
+                DailyStatus::Review => "review",
+                DailyStatus::Error => "error",
+                DailyStatus::External => "external",
+            }
+            .into()
         };
         if self.name.is_empty() {
             format!("{} · {detail}", client.label())
@@ -817,7 +824,10 @@ impl Astral {
                                 name: source.name.clone(),
                                 retry_source: Some(source.id.clone()),
                                 from: update.versions.as_ref().map(|version| version.from.clone()),
-                                to: update.versions.as_ref().map(|version| version.to.clone()),
+                                to: update
+                                    .versions
+                                    .as_ref()
+                                    .map(|version| releases::display_version(source, &version.to)),
                                 verb: match &result {
                                     Ok("Already current" | "Already installed") => {
                                         "Already up to date"

@@ -33,6 +33,7 @@ enum ButtonKey {
     Archive(PathBuf),
     ShowFiles(PathBuf),
     Restore(PathBuf),
+    BackupNotes(PathBuf),
     Retry(String, usize),
 }
 
@@ -365,6 +366,38 @@ fn activity_text_button(
     activity_button(activity_text_base(palette, id, label), palette, activate)
 }
 
+fn activity_disclosure(
+    palette: Palette,
+    id: impl Into<ElementId>,
+    expanded: bool,
+    label: impl Into<SharedString>,
+    focus: Option<&FocusHandle>,
+    color: u32,
+    activate: impl Fn(&(), &mut Window, &mut App) + 'static,
+) -> Stateful<gpui::Div> {
+    let button = div()
+        .id(id)
+        .flex()
+        .items_start()
+        .gap(px(4.))
+        .cursor_pointer()
+        .text_size(px(11.))
+        .text_color(rgb(color))
+        .child(if expanded { "▾" } else { "▸" })
+        .child(div().min_w_0().flex_1().child(label.into()));
+    // Keep keyboard activation; browser-default summary focus appearance is a
+    // separate platform acceptance item, rather than a text-button hover style.
+    if let Some(focus) = focus {
+        crate::button_outline(activity_button(button, palette, activate), palette, focus)
+    } else {
+        activity_button(
+            button.border_1().border_color(gpui::transparent_black()),
+            palette,
+            activate,
+        )
+    }
+}
+
 fn outlined_activity_text_button(
     palette: Palette,
     id: impl Into<ElementId>,
@@ -411,6 +444,9 @@ impl State {
             for backup in entries {
                 keys.insert(ButtonKey::ShowFiles(backup.path.clone()));
                 keys.insert(ButtonKey::Restore(backup.path.clone()));
+                if !backup.transaction.notes.is_empty() {
+                    keys.insert(ButtonKey::BackupNotes(backup.path.clone()));
+                }
             }
         }
         keys.extend(
@@ -744,7 +780,24 @@ impl Astral {
         let catalog = self.catalog.clone();
         let prefs = self.preferences_path.clone();
         let name = backup.transaction.addon.clone();
+        let folders = backup.transaction.folders.clone();
+        let previous_version = backup.transaction.previous_version.clone().or_else(|| {
+            backup
+                .transaction
+                .removed
+                .then(|| backup.transaction.release.clone())
+        });
         let task = cx.background_executor().spawn(async move {
+            let installed = if interrupted {
+                None
+            } else {
+                crate::library::scan(&root, client, &catalog)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .find(|addon| addon.modules.iter().any(|module| folders.contains(module)))
+            };
+            let from = installed.as_ref().map(|addon| addon.version.clone());
+            let name = installed.map_or(name, |addon| addon.name);
             let result = if let (true, Some(operation)) = (interrupted, profile_switch) {
                 let data = data.ok_or("Couldn't find the Astral settings folder.")?;
                 crate::settings_backup::Store::open(&data, &root, client, &operation.account)
@@ -764,8 +817,8 @@ impl Astral {
                     client,
                     name,
                     retry_source: None,
-                    from: None,
-                    to: None,
+                    from,
+                    to: result.is_ok().then_some(previous_version).flatten(),
                     verb: if interrupted {
                         "Recovered".into()
                     } else {
@@ -857,6 +910,7 @@ impl Astral {
         {
             page = page.child(
                 div()
+                    .relative()
                     .flex()
                     .items_center()
                     .justify_between()
@@ -867,9 +921,18 @@ impl Astral {
                     .border_color(rgb(palette.text))
                     .child(
                         div()
+                            .absolute()
+                            .bottom_0()
+                            .left_0()
+                            .w_full()
+                            .border_b_1()
+                            .border_color(palette.line),
+                    )
+                    .child(
+                        div()
                             .text_size(px(16.))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(label),
+                            .child(crate::typography::wrapped(label, 16., 1.2, -0.4)),
                     )
                     .child(
                         activity_link(
@@ -939,9 +1002,8 @@ impl Astral {
                             div()
                                 .mt(px(18.))
                                 .mb(px(10.))
-                                .text_size(px(27.))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("No backups yet"),
+                                .font_weight(gpui::FontWeight(650.))
+                                .child(crate::typography::tracked("No backups yet", 27., 1.2, -1.)),
                         )
                         .child(
                             crate::outlined_button(
@@ -1012,65 +1074,77 @@ impl Astral {
                     activity_time(record.created)
                 )
             };
-            rows =
-                rows.child(
-                    div()
-                        .flex()
-                        .flex_shrink_0()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(20.))
-                        .py(px(25.))
-                        .border_b_1()
-                        .border_color(palette.line)
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(20.))
-                                .min_w_0()
-                                .flex_1()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .size(px(40.))
-                                        .flex_shrink_0()
-                                        .rounded_full()
-                                        .border_1()
-                                        .border_color(palette.line)
-                                        .child(icon(
-                                            "history",
-                                            18.,
-                                            if backup.interrupted {
-                                                palette.error
+            rows = rows.child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(20.))
+                    .py(px(25.))
+                    .border_b_1()
+                    .border_color(palette.line)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(20.))
+                            .min_w_0()
+                            .flex_1()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(40.))
+                                    .flex_shrink_0()
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(palette.line)
+                                    .child(icon(
+                                        "history",
+                                        18.,
+                                        if backup.interrupted {
+                                            palette.error
+                                        } else {
+                                            palette.muted
+                                        },
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .child(
+                                        div()
+                                            .text_size(px(16.))
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .child(if ordinary_update {
+                                                format!("{} updated", record.addon)
                                             } else {
-                                                palette.muted
-                                            },
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .child(
-                                            div()
-                                                .text_size(px(16.))
-                                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                .child(if ordinary_update {
-                                                    format!("{} updated", record.addon)
-                                                } else {
-                                                    record.addon.clone()
-                                                }),
-                                        )
-                                        .child(palette.label(detail).mt(px(8.)).text_size(px(12.)))
-                                        .when_some(
-                                            (!record.notes.is_empty()).then_some(&record.notes),
-                                            |body, notes| {
-                                                body.child(activity_text_button(
+                                                record.addon.clone()
+                                            }),
+                                    )
+                                    .child(
+                                        palette
+                                            .label(detail)
+                                            .mt(px(8.))
+                                            .text_size(px(12.))
+                                            .line_height(px(19.2)),
+                                    )
+                                    .when_some(
+                                        (!record.notes.is_empty()).then_some(&record.notes),
+                                        |body, notes| {
+                                            body.child(
+                                                activity_disclosure(
                                                     palette,
                                                     ("backup-notes", index),
+                                                    notes_open,
                                                     "Changelog",
+                                                    Some(&self.activity.control_focus(
+                                                        ButtonKey::BackupNotes(backup.path.clone()),
+                                                        cx,
+                                                    )),
+                                                    palette.accent,
                                                     cx.listener(move |app, _: &(), _, cx| {
                                                         if !app
                                                             .activity
@@ -1083,90 +1157,102 @@ impl Astral {
                                                         }
                                                         cx.notify();
                                                     }),
-                                                ))
-                                                .when(notes_open, |body| {
+                                                )
+                                                .mt(px(23.))
+                                                .debug_selector({
+                                                    let path = backup.path.clone();
+                                                    move || {
+                                                        format!(
+                                                            "backup-changelog:{}",
+                                                            path.file_name()
+                                                                .unwrap_or_default()
+                                                                .to_string_lossy()
+                                                        )
+                                                    }
+                                                }),
+                                            )
+                                            .when(
+                                                notes_open,
+                                                |body| {
                                                     body.child(
                                                         palette
                                                             .label(notes.clone())
-                                                            .mt_2()
-                                                            .p_3()
+                                                            .my(px(11.))
                                                             .bg(rgb(palette.surface))
-                                                            .border_1()
-                                                            .border_color(palette.line)
                                                             .text_size(px(11.))
-                                                            .line_height(px(20.)),
+                                                            .line_height(px(19.8)),
                                                     )
-                                                })
-                                            },
-                                        ),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .flex_shrink_0()
-                                .gap_2()
-                                .when(!ordinary_update, |actions| {
-                                    actions.child(activity_link(
-                                        palette,
-                                        ("show-backup", index),
-                                        "Show files",
-                                        &self.activity.control_focus(
-                                            ButtonKey::ShowFiles(backup.path.clone()),
-                                            cx,
-                                        ),
-                                        move |cx| cx.reveal_path(&show),
-                                    ))
-                                })
-                                .when(
-                                    ordinary_update
-                                        || backup.interrupted
-                                        || (!backup.recovered
-                                            && (!record.previous.is_empty() || backup.electron)),
-                                    |actions| {
-                                        actions.child(
-                                            outlined_activity_text_button(
-                                                palette,
-                                                ("restore-backup", index),
-                                                if backup.interrupted {
-                                                    "Recover…"
-                                                } else {
-                                                    "Restore previous"
                                                 },
-                                                &self.activity.control_focus(
-                                                    ButtonKey::Restore(backup.path.clone()),
-                                                    cx,
-                                                ),
-                                                !self.addon_controls_busy()
-                                                    && !self.profile_game_running(),
-                                                cx.listener(move |app, _: &(), _, cx| {
-                                                    if app.addon_controls_busy()
-                                                        || app.profile_game_running()
-                                                    {
-                                                        return;
-                                                    }
-                                                    app.activity
-                                                        .confirm_addon_restore(path.clone());
-                                                    cx.notify();
-                                                }),
                                             )
-                                            .debug_selector({
-                                                let path = backup.path.clone();
-                                                move || {
-                                                    format!(
-                                                        "restore-backup:{}",
-                                                        path.file_name()
-                                                            .unwrap_or_default()
-                                                            .to_string_lossy()
-                                                    )
+                                        },
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .flex_shrink_0()
+                            .gap_2()
+                            .when(!ordinary_update, |actions| {
+                                actions.child(activity_link(
+                                    palette,
+                                    ("show-backup", index),
+                                    "Show files",
+                                    &self.activity.control_focus(
+                                        ButtonKey::ShowFiles(backup.path.clone()),
+                                        cx,
+                                    ),
+                                    move |cx| cx.reveal_path(&show),
+                                ))
+                            })
+                            .when(
+                                ordinary_update
+                                    || backup.interrupted
+                                    || (!backup.recovered
+                                        && (!record.previous.is_empty() || backup.electron)),
+                                |actions| {
+                                    actions.child(
+                                        outlined_activity_text_button(
+                                            palette,
+                                            ("restore-backup", index),
+                                            if backup.interrupted {
+                                                "Recover…"
+                                            } else {
+                                                "Restore previous"
+                                            },
+                                            &self.activity.control_focus(
+                                                ButtonKey::Restore(backup.path.clone()),
+                                                cx,
+                                            ),
+                                            !self.addon_controls_busy()
+                                                && !self.profile_game_running(),
+                                            cx.listener(move |app, _: &(), _, cx| {
+                                                if app.addon_controls_busy()
+                                                    || app.profile_game_running()
+                                                {
+                                                    return;
                                                 }
+                                                app.activity.confirm_addon_restore(path.clone());
+                                                cx.notify();
                                             }),
                                         )
-                                    },
-                                ),
-                        ),
-                );
+                                        .debug_selector({
+                                            let path = backup.path.clone();
+                                            move || {
+                                                format!(
+                                                    "restore-backup:{}",
+                                                    path.file_name()
+                                                        .unwrap_or_default()
+                                                        .to_string_lossy()
+                                                )
+                                            }
+                                        }),
+                                    )
+                                },
+                            ),
+                    ),
+            );
         }
         page.child(rows)
     }
@@ -1199,14 +1285,21 @@ impl Astral {
         let keys = retry_keys(&self.activity.recent);
         for (index, entry) in self.activity.recent.iter().enumerate() {
             let failed = entry.error.is_some();
-            let detail = match (&entry.error, &entry.to) {
-                (Some(error), _) => Some(error.clone()),
-                (_, Some(to)) => Some(format!(
-                    "{} → {to}",
-                    entry.from.as_deref().unwrap_or("Not installed")
-                )),
-                _ => None,
-            };
+            let detail = entry.error.clone().unwrap_or_else(|| {
+                format!(
+                    "{} → {}",
+                    entry
+                        .from
+                        .as_deref()
+                        .filter(|version| !version.is_empty())
+                        .unwrap_or("Not installed"),
+                    entry
+                        .to
+                        .as_deref()
+                        .filter(|version| !version.is_empty())
+                        .unwrap_or("Installed"),
+                )
+            });
             let retry = entry
                 .retry_source
                 .as_ref()
@@ -1261,10 +1354,18 @@ impl Astral {
                                         if failed { "Failed" } else { &entry.verb }
                                     )),
                             )
-                            .when_some(detail, |body, detail| {
-                                body.child(palette.label(detail).text_size(px(12.)))
-                            })
-                            .child(palette.label(activity_time(entry.time)).text_size(px(12.))),
+                            .child(
+                                palette
+                                    .label(detail)
+                                    .text_size(px(12.))
+                                    .line_height(px(19.2)),
+                            )
+                            .child(
+                                palette
+                                    .label(activity_time(entry.time))
+                                    .text_size(px(12.))
+                                    .line_height(px(19.2)),
+                            ),
                     )
                     .when_some(retry, |row, source| {
                         let button = palette
@@ -1361,11 +1462,14 @@ impl Astral {
                     }
                     let key = (key_time, entry.client.index(), index);
                     let expanded = self.activity.release_notes.contains(&key);
-                    row = row.child(
-                        activity_text_button(
+                    let mut disclosure = div().flex().flex_col().py(px(13.)).my(px(10.)).child(
+                        activity_disclosure(
                             palette,
                             SharedString::from(format!("daily-notes-{key:?}")),
-                            "",
+                            expanded,
+                            result.summary(entry.client),
+                            None,
+                            palette.muted,
                             cx.listener(move |app, _: &(), _, cx| {
                                 if !app.activity.release_notes.remove(&key) {
                                     app.activity.release_notes.insert(key);
@@ -1373,15 +1477,11 @@ impl Astral {
                                 cx.notify();
                             }),
                         )
-                        .py(px(13.))
-                        .my(px(10.))
                         .text_size(px(12.))
-                        .line_height(px(21.6))
-                        .child(if expanded { "▾" } else { "▸" })
-                        .child(result.summary(entry.client)),
+                        .line_height(px(21.6)),
                     );
                     if expanded && !result.notes.is_empty() {
-                        row = row.child(
+                        disclosure = disclosure.child(
                             div()
                                 .id(SharedString::from(format!("daily-notes-scroll-{key:?}")))
                                 .max_h(px(200.))
@@ -1389,14 +1489,14 @@ impl Astral {
                                 .child(
                                     palette
                                         .label(result.notes.clone())
-                                        .font_family("monospace")
                                         .text_size(px(11.))
                                         .line_height(px(19.8))
-                                        .p_3()
+                                        .my(px(11.))
                                         .bg(rgb(palette.surface)),
                                 ),
                         );
                     }
+                    row = row.child(disclosure);
                 }
             }
             panel = panel.child(row);
@@ -1781,6 +1881,97 @@ mod ui_tests {
                 });
                 assert!(!path.exists());
             }
+        }
+    }
+
+    #[gpui::test]
+    fn changelog_disclosure_keeps_keyboard_focus_on_its_backup_after_reordering(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let first = directory.path().join("FirstFixture");
+            let second = directory.path().join("SecondFixture");
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                let mut app = Astral::new(
+                    [None, None],
+                    Some(directory.path()),
+                    Some(Client::Retail),
+                    light,
+                    cx,
+                );
+                app.page = Page::Backups;
+                let mut records = vec![
+                    backup(first.clone(), "First"),
+                    backup(second.clone(), "Second"),
+                ];
+                for record in &mut records {
+                    record.transaction.notes = "First line\nSecond line".into();
+                }
+                app.activity.entries = Some(Ok(records));
+                app
+            });
+            cx.simulate_resize(size(px(1250.), px(1000.)));
+            cx.run_until_parked();
+            let before = cx.debug_bounds("backup-changelog:SecondFixture").unwrap();
+            view.update_in(cx, |app, window, cx| {
+                app.activity
+                    .control_focus(ButtonKey::BackupNotes(second.clone()), cx)
+                    .focus(window);
+            });
+            cx.run_until_parked();
+            assert_eq!(
+                before,
+                cx.debug_bounds("backup-changelog:SecondFixture").unwrap()
+            );
+            press(cx, "enter");
+            assert!(view.read_with(cx, |app, _| app.activity.backup_notes.contains(&second)));
+            assert!(!view.read_with(cx, |app, _| app.activity.backup_notes.contains(&first)));
+            view.update_in(cx, |app, _, cx| {
+                app.activity
+                    .entries
+                    .as_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .reverse();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            view.update_in(cx, |app, window, cx| {
+                assert!(
+                    app.activity
+                        .control_focus(ButtonKey::BackupNotes(second.clone()), cx)
+                        .is_focused(window)
+                );
+            });
+            press(cx, "space");
+            assert!(view.read_with(cx, |app, _| app.activity.backup_notes.is_empty()));
+            press(cx, "tab");
+            view.update_in(cx, |app, window, cx| {
+                assert!(
+                    app.activity
+                        .control_focus(ButtonKey::Restore(second.clone()), cx)
+                        .is_focused(window)
+                );
+            });
+            view.update_in(cx, |app, _, cx| {
+                app.activity
+                    .entries
+                    .as_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .retain(|record| record.path != second);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert!(view.read_with(cx, |app, _| {
+                !app.activity
+                    .button_focus
+                    .borrow()
+                    .contains_key(&ButtonKey::BackupNotes(second.clone()))
+            }));
         }
     }
 

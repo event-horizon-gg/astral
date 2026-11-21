@@ -45,6 +45,20 @@ pub struct Check {
     pub notes: String,
 }
 
+/// engine.cjs exposes the release version separately from its original tag.
+pub(crate) fn display_version(source: &Definition, tag: &str) -> String {
+    use std::sync::OnceLock;
+    if source.version_scheme.as_deref() == Some("questie-bundle") {
+        tag.strip_prefix("bundle/v").unwrap_or(tag).to_owned()
+    } else {
+        static PREFIX: OnceLock<Regex> = OnceLock::new();
+        PREFIX
+            .get_or_init(|| Regex::new(r"^v\.?\s*").expect("valid version prefix"))
+            .replace(tag, "")
+            .into_owned()
+    }
+}
+
 pub fn client() -> ureq::Agent {
     ureq::Agent::config_builder()
         .https_only(true)

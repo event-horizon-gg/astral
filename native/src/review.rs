@@ -212,7 +212,7 @@ impl Astral {
             name: name.clone(),
             retry_source: Some(source.id.clone()),
             from: package.installed_version.clone(),
-            to: Some(tag.clone()),
+            to: Some(releases::display_version(source, &tag)),
             verb: if package.installed_version.is_some() {
                 "Updated".into()
             } else {
