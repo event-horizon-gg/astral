@@ -352,15 +352,20 @@ pub fn run_background(path: &Path, roots: [Option<PathBuf>; 2]) -> io::Result<()
             check = Some(staged.begin_check()?);
         }
         let check = check.unwrap();
-        let result =
-            match batch::daily_updates(root, client, &catalog, &current.batch_exclusions[index]) {
-                Ok(result) => result,
-                Err(error) if game_open(&error) => {
-                    staged.defer_check(check);
-                    break;
-                }
-                Err(error) => return Err(io::Error::other(error)),
-            };
+        let result = match batch::daily_updates(
+            root,
+            client,
+            &catalog,
+            &current.batch_exclusions[index],
+            Some(path),
+        ) {
+            Ok(result) => result,
+            Err(error) if game_open(&error) => {
+                staged.defer_check(check);
+                break;
+            }
+            Err(error) => return Err(io::Error::other(error)),
+        };
         let run = report(root.clone(), Ok(result));
         let interrupted = run.deferred;
         let failed = run.stops_clients();
@@ -641,7 +646,9 @@ impl Astral {
                     &mut reports,
                     targets,
                     force,
-                    |root, client, excluded| batch::daily_updates(root, client, &catalog, excluded),
+                    |root, client, excluded| {
+                        batch::daily_updates(root, client, &catalog, excluded, Some(&path))
+                    },
                 )
             })();
             (read_reports(&path, &old_runs), result)

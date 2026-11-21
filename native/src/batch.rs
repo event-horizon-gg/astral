@@ -65,11 +65,20 @@ fn apply_update(
     root: &Path,
     client: Client,
     catalog: &[Definition],
+    preferences: Option<&Path>,
 ) -> Result<&'static str, String> {
     installer::game_closed()?;
     let source = &catalog[update.source];
     let (tag, notes, bytes) = fetch_package(update, source)?;
-    install_package(bytes, (&tag, &notes), update, root, client, catalog)
+    install_package(
+        bytes,
+        (&tag, &notes),
+        update,
+        root,
+        client,
+        catalog,
+        preferences,
+    )
 }
 
 fn fetch_package(
@@ -114,6 +123,7 @@ pub(crate) fn install_missing(
     root: &Path,
     client: Client,
     catalog: &[Definition],
+    preferences: Option<&Path>,
 ) -> Result<bool, String> {
     apply_update(
         &Update {
@@ -123,6 +133,7 @@ pub(crate) fn install_missing(
         root,
         client,
         catalog,
+        preferences,
     )
     .map(|status| status == "Installed")
 }
@@ -134,6 +145,7 @@ fn install_package(
     root: &Path,
     client: Client,
     catalog: &[Definition],
+    preferences: Option<&Path>,
 ) -> Result<&'static str, String> {
     let source = &catalog[update.source];
     let package = packages::inspect(bytes, root, client, source, catalog)?;
@@ -154,7 +166,7 @@ fn install_package(
         }
         "Installed"
     };
-    installer::install(&package, &source.name, tag, notes)?;
+    installer::install(&package, &source.name, tag, notes, preferences)?;
     Ok(status)
 }
 
@@ -243,6 +255,7 @@ pub fn daily_updates(
     client: Client,
     catalog: &[Definition],
     excluded: &[String],
+    preferences: Option<&Path>,
 ) -> Result<DailyCheck, String> {
     installer::game_closed()?;
     let installed =
@@ -310,8 +323,15 @@ pub fn daily_updates(
                         to: tag.clone(),
                     }),
                 };
-                if install_package(bytes, (&tag, &notes), &update, root, client, catalog)?
-                    == "Updated"
+                if install_package(
+                    bytes,
+                    (&tag, &notes),
+                    &update,
+                    root,
+                    client,
+                    catalog,
+                    preferences,
+                )? == "Updated"
                 {
                     outcome.status = DailyStatus::Updated;
                     outcome.from = addon.version.clone();
@@ -786,7 +806,8 @@ impl Astral {
                 let result = cx
                     .background_executor()
                     .spawn(async move {
-                        let result = apply_update(&update, &root, client, &catalog);
+                        let result =
+                            apply_update(&update, &root, client, &catalog, preferences.as_deref());
                         let source = &catalog[update.source];
                         crate::activity::record(
                             preferences.as_deref(),

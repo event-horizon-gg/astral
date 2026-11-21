@@ -62,7 +62,7 @@ impl Astral {
         let catalog = self.catalog.clone();
         let preferences = self.preferences_path.clone();
         let task = cx.background_executor().spawn(async move {
-            let result = installer::remove(&root, client, &addon, &catalog);
+            let result = installer::remove(&root, client, &addon, &catalog, preferences.as_deref());
             crate::activity::record(
                 preferences.as_deref(),
                 crate::activity::Action {

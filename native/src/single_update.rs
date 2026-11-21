@@ -40,6 +40,7 @@ fn install_if_newer<I: Into<packages::Input>>(
     notes: String,
     download: impl FnOnce(&mut dyn FnMut(u8)) -> Result<I, String>,
     mut progress: impl FnMut(u8),
+    preferences: Option<&Path>,
 ) -> Result<Outcome, String> {
     let installed = library::scan(root, client, catalog)
         .map_err(|error| error.to_string())?
@@ -61,7 +62,7 @@ fn install_if_newer<I: Into<packages::Input>>(
         return Err("The installed version changed. Check for updates again.".into());
     }
     progress(90);
-    installer::install(&package, &source.name, &tag, &notes)?;
+    installer::install(&package, &source.name, &tag, &notes, preferences)?;
     progress(100);
     let version = library::scan(root, client, catalog)
         .map_err(|error| error.to_string())?
@@ -83,6 +84,7 @@ fn update(
     source: &Definition,
     catalog: &[Definition],
     progress: impl FnMut(u8),
+    preferences: Option<&Path>,
 ) -> Result<Outcome, String> {
     installer::game_closed()?;
     if source.bundled == Some(true) {
@@ -96,6 +98,7 @@ fn update(
             String::new(),
             |_| bundled::package(&source.folder),
             progress,
+            preferences,
         )
     } else {
         let release = releases::latest(&releases::client(), source)?;
@@ -108,6 +111,7 @@ fn update(
             release.notes,
             |progress| releases::download_with_progress(&release.package, progress),
             progress,
+            preferences,
         )
     }
 }
@@ -133,6 +137,7 @@ fn import_zip(
     catalog: &[Definition],
     archive: &Path,
     mut progress: impl FnMut(u8),
+    preferences: Option<&Path>,
 ) -> Result<Outcome, String> {
     installer::game_closed()?;
     if source.bundled == Some(true) || source.local == Some(true) {
@@ -159,7 +164,7 @@ fn import_zip(
         .unwrap_or("Addon.zip");
     let tag = format!("ZIP: {name}");
     progress(90);
-    installer::install(&package, &source.name, &tag, "")?;
+    installer::install(&package, &source.name, &tag, "", preferences)?;
     progress(100);
     let version = library::scan(root, client, catalog)
         .map_err(|error| error.to_string())?
@@ -309,8 +314,23 @@ impl Astral {
         let task = cx.background_executor().spawn(async move {
             let progress = |percent| progress.store(percent, AtomicOrdering::Relaxed);
             let result = match input {
-                Input::Latest => update(&root, client, &source, &catalog, progress),
-                Input::Zip(path) => import_zip(&root, client, &source, &catalog, &path, progress),
+                Input::Latest => update(
+                    &root,
+                    client,
+                    &source,
+                    &catalog,
+                    progress,
+                    preferences.as_deref(),
+                ),
+                Input::Zip(path) => import_zip(
+                    &root,
+                    client,
+                    &source,
+                    &catalog,
+                    &path,
+                    progress,
+                    preferences.as_deref(),
+                ),
             };
             crate::activity::record(
                 preferences.as_deref(),
@@ -472,6 +492,7 @@ mod tests {
             &catalog,
             &archive,
             |percent| progress.push(percent),
+            Some(&root.parent().unwrap().join("app/preferences.json")),
         )
         .unwrap();
         assert!(outcome.changed);
@@ -482,7 +503,17 @@ mod tests {
             fs::read_to_string(root.join("WTF/config.wtf")).unwrap(),
             "settings"
         );
-        let backups = installer::list(&root, Client::Retail).unwrap();
+        let backups = installer::list_saved(
+            &root.parent().unwrap().join("app/backups"),
+            Some((&root, Client::Retail)),
+        )
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|(backup, _)| backup)
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
         assert_eq!(backups.len(), 1);
         assert_eq!(
             fs::read_to_string(backups[0].path.join("previous/AstralTalents/old.lua")).unwrap(),
@@ -495,14 +526,33 @@ mod tests {
         let (temp, root, catalog, source) = third_party_fixture("0.1.0");
         let archive = temp.path().join("wrong.zip");
         fs::write(&archive, bundled::package("AstralClock").unwrap()).unwrap();
-        assert!(import_zip(&root, Client::Retail, &source, &catalog, &archive, |_| {}).is_err());
+        assert!(
+            import_zip(
+                &root,
+                Client::Retail,
+                &source,
+                &catalog,
+                &archive,
+                |_| {},
+                Some(&root.parent().unwrap().join("app/preferences.json"))
+            )
+            .is_err()
+        );
         let renamed = temp.path().join("wrong.txt");
         fs::copy(&archive, &renamed).unwrap();
         assert!(
-            import_zip(&root, Client::Retail, &source, &catalog, &renamed, |_| {})
-                .err()
-                .unwrap()
-                .contains("Choose an addon ZIP")
+            import_zip(
+                &root,
+                Client::Retail,
+                &source,
+                &catalog,
+                &renamed,
+                |_| {},
+                Some(&root.parent().unwrap().join("app/preferences.json"))
+            )
+            .err()
+            .unwrap()
+            .contains("Choose an addon ZIP")
         );
         let mut bundled_source = source.clone();
         bundled_source.bundled = Some(true);
@@ -513,7 +563,8 @@ mod tests {
                 &bundled_source,
                 &catalog,
                 &archive,
-                |_| {}
+                |_| {},
+                Some(&root.parent().unwrap().join("app/preferences.json"))
             )
             .err()
             .unwrap()
@@ -527,7 +578,18 @@ mod tests {
             fs::read_to_string(root.join("WTF/config.wtf")).unwrap(),
             "settings"
         );
-        assert!(installer::list(&root, Client::Retail).unwrap().is_empty());
+        assert!(
+            installer::list_saved(
+                &root.parent().unwrap().join("app/backups"),
+                Some((&root, Client::Retail))
+            )
+            .map(|entries| entries
+                .into_iter()
+                .map(|(backup, _)| backup)
+                .collect::<Vec<_>>())
+            .unwrap()
+            .is_empty()
+        );
     }
 
     #[test]
@@ -576,6 +638,7 @@ mod tests {
                     panic!("An already-current addon must not download a ZIP")
                 },
                 |_| {},
+                Some(&root.parent().unwrap().join("app/preferences.json")),
             )
             .unwrap();
             assert!(!result.changed);
@@ -584,7 +647,18 @@ mod tests {
                 root.join("Interface/AddOns/AstralTalents/old.lua")
                     .is_file()
             );
-            assert!(installer::list(&root, Client::Retail).unwrap().is_empty());
+            assert!(
+                installer::list_saved(
+                    &root.parent().unwrap().join("app/backups"),
+                    Some((&root, Client::Retail))
+                )
+                .map(|entries| entries
+                    .into_iter()
+                    .map(|(backup, _)| backup)
+                    .collect::<Vec<_>>())
+                .unwrap()
+                .is_empty()
+            );
         }
     }
 
@@ -604,19 +678,36 @@ mod tests {
                 bundled::package(&source.folder)
             },
             |_| {},
+            Some(&root.parent().unwrap().join("app/preferences.json")),
         );
         assert!(result.err().unwrap().contains("installed version changed"));
         assert!(fs::read_to_string(toc).unwrap().contains("0.2.0"));
-        assert!(installer::list(&root, Client::Retail).unwrap().is_empty());
+        assert!(
+            installer::list_saved(
+                &root.parent().unwrap().join("app/backups"),
+                Some((&root, Client::Retail))
+            )
+            .map(|entries| entries
+                .into_iter()
+                .map(|(backup, _)| backup)
+                .collect::<Vec<_>>())
+            .unwrap()
+            .is_empty()
+        );
     }
 
     #[test]
     fn direct_update_installs_with_a_restorable_backup_and_preserves_settings() {
         let (_temp, root, catalog, source) = fixture("0.1.0");
         let mut progress = vec![];
-        let result = update(&root, Client::Retail, &source, &catalog, |percent| {
-            progress.push(percent)
-        })
+        let result = update(
+            &root,
+            Client::Retail,
+            &source,
+            &catalog,
+            |percent| progress.push(percent),
+            Some(&root.parent().unwrap().join("app/preferences.json")),
+        )
         .unwrap();
         assert_eq!(progress, [90, 100]);
         assert!(result.changed);
@@ -629,7 +720,17 @@ mod tests {
             fs::read_to_string(root.join("WTF/config.wtf")).unwrap(),
             "settings"
         );
-        let backups = installer::list(&root, Client::Retail).unwrap();
+        let backups = installer::list_saved(
+            &root.parent().unwrap().join("app/backups"),
+            Some((&root, Client::Retail)),
+        )
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|(backup, _)| backup)
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
         assert_eq!(backups.len(), 1);
         assert_eq!(
             fs::read_to_string(backups[0].path.join("previous/AstralTalents/old.lua")).unwrap(),

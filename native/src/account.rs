@@ -1769,7 +1769,13 @@ impl Astral {
         self.account.shared_error = None;
         self.account.shared_message = None;
         let task = cx.background_executor().spawn(async move {
-            let result = crate::batch::install_missing(source, &root, client, &catalog);
+            let result = crate::batch::install_missing(
+                source,
+                &root,
+                client,
+                &catalog,
+                preferences.as_deref(),
+            );
             crate::activity::record(
                 preferences.as_deref(),
                 crate::activity::Action {

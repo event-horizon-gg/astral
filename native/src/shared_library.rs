@@ -243,8 +243,9 @@ fn install_packages(
     let mut installed = 0;
     for &index in queue {
         let source = &catalog[index];
-        let done = batch::install_missing(index, root, client, catalog)
-            .map_err(|error| io::Error::other(format!("{}: {error}", source.name)))?;
+        let done =
+            batch::install_missing(index, root, client, catalog, Some(store.preferences_path()))
+                .map_err(|error| io::Error::other(format!("{}: {error}", source.name)))?;
         if done {
             store.preserve_addon_choices(&original, catalog)?;
             installed += 1;

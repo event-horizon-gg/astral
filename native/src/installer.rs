@@ -12,6 +12,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[path = "installer_archive.rs"]
+mod archive;
+
 const BACKUP_DIR: &str = ".astral-native-backups";
 const PENDING: &str = "pending.json";
 const MANIFEST: &str = "manifest.json";
@@ -110,6 +113,45 @@ fn validate_transaction(record: &Transaction) -> Result<(), String> {
             .all(|name| record.folders.contains(name))
     {
         return Err("Invalid backup folders.".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn list_saved(
+    store: &Path,
+    scope: Option<(&Path, Client)>,
+) -> Result<Vec<(Backup, PathBuf)>, String> {
+    archive::list(store, scope)
+}
+
+/// Copy completed legacy restore points without moving their recovery journals.
+pub(crate) fn preserve_backups(
+    root: &Path,
+    client: Client,
+    preferences: &Path,
+) -> Result<(), String> {
+    // Missing/offline installations do not prevent reading already-central copies.
+    let legacy = root.join("Interface").join(BACKUP_DIR);
+    if !legacy.try_exists().map_err(|error| error.to_string())? {
+        return Ok(());
+    }
+    let paths = Paths::open(root, client)?.with_archive(Some(preferences))?;
+    let _lock = paths.lock()?;
+    let store = paths.archive.as_ref().expect("explicit archive context");
+    let known: HashSet<_> = archive::list(store, None)?
+        .into_iter()
+        .map(|(_, journal)| journal)
+        .collect();
+    for backup in list(root, client)? {
+        if backup.interrupted || backup.recovered || known.contains(&backup.path) {
+            continue;
+        }
+        archive::snapshot_from(
+            &paths,
+            &backup.path,
+            &backup.transaction,
+            &backup.path.join("previous"),
+        )?;
     }
     Ok(())
 }
@@ -317,6 +359,8 @@ fn read_electron_backup_scope(
 }
 
 struct Paths {
+    archive: Option<PathBuf>,
+    client: Client,
     interface: PathBuf,
     addons: PathBuf,
     backups: PathBuf,
@@ -345,10 +389,27 @@ impl Paths {
         }
         let backups = interface.join(BACKUP_DIR);
         Ok(Self {
+            archive: None,
+            client,
             interface,
             addons,
             backups,
         })
+    }
+
+    fn with_archive(mut self, preferences: Option<&Path>) -> Result<Self, String> {
+        if let Some(preferences) = preferences {
+            let store = archive::directory(preferences)?;
+            if self
+                .interface
+                .parent()
+                .is_some_and(|root| store.starts_with(root))
+            {
+                return Err("Astral backups must be stored outside the WoW folder.".into());
+            }
+            self.archive = Some(store);
+        }
+        Ok(self)
     }
 
     fn stage(&self) -> Result<tempfile::TempDir, String> {
@@ -424,10 +485,17 @@ pub fn install(
     addon: &str,
     release: &str,
     notes: &str,
+    preferences: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    install_with(package, addon, (release, notes), game_closed, |from, to| {
-        fs::rename(from, to)
-    })
+    let preferences = preferences.ok_or("Couldn't find the Astral settings folder.")?;
+    install_with_archive(
+        package,
+        addon,
+        (release, notes),
+        Some(preferences),
+        game_closed,
+        |from, to| fs::rename(from, to),
+    )
 }
 
 pub fn refresh_talents(
@@ -483,15 +551,34 @@ fn refresh_talents_with(
     Ok(changed)
 }
 
+#[cfg(test)]
 fn install_with(
     package: &Inspection,
     addon: &str,
+    release_notes: (&str, &str),
+    ensure_game_closed: impl Fn() -> Result<(), String>,
+    move_into_place: impl Fn(&Path, &Path) -> io::Result<()>,
+) -> Result<PathBuf, String> {
+    install_with_archive(
+        package,
+        addon,
+        release_notes,
+        None,
+        ensure_game_closed,
+        move_into_place,
+    )
+}
+
+fn install_with_archive(
+    package: &Inspection,
+    addon: &str,
     (release, notes): (&str, &str),
+    preferences: Option<&Path>,
     ensure_game_closed: impl Fn() -> Result<(), String>,
     move_into_place: impl Fn(&Path, &Path) -> io::Result<()>,
 ) -> Result<PathBuf, String> {
     ensure_game_closed()?;
-    let paths = Paths::open(&package.root, package.client)?;
+    let paths = Paths::open(&package.root, package.client)?.with_archive(preferences)?;
     let _lock = paths.lock()?;
     paths.ensure_clean()?;
     let stage = paths.stage()?;
@@ -549,6 +636,7 @@ fn install_with(
         &transaction,
         &transaction.folders,
         move_into_place,
+        || ensure_game_closed().map_err(io::Error::other),
     )
 }
 
@@ -556,11 +644,12 @@ pub(crate) fn install_profile_packages(
     root: &Path,
     client: Client,
     packages: &[Inspection],
+    preferences: &Path,
     profile_switch: ProfileSwitch,
     check: impl Fn() -> io::Result<()>,
     finish: impl FnOnce() -> io::Result<()>,
 ) -> Result<PathBuf, String> {
-    let paths = Paths::open(root, client)?;
+    let paths = Paths::open(root, client)?.with_archive(Some(preferences))?;
     let _lock = paths.lock()?;
     paths.ensure_clean()?;
     let stage = paths.stage()?;
@@ -636,6 +725,7 @@ pub(crate) fn install_profile_packages(
             }
             fs::rename(from, to)
         },
+        check,
         finish,
     )
 }
@@ -645,10 +735,20 @@ pub fn remove(
     client: Client,
     reviewed: &Addon,
     catalog: &[Definition],
+    preferences: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    remove_with(root, client, reviewed, catalog, game_closed)
+    let preferences = preferences.ok_or("Couldn't find the Astral settings folder.")?;
+    remove_with_archive(
+        root,
+        client,
+        reviewed,
+        catalog,
+        Some(preferences),
+        game_closed,
+    )
 }
 
+#[cfg(test)]
 fn remove_with(
     root: &Path,
     client: Client,
@@ -656,8 +756,19 @@ fn remove_with(
     catalog: &[Definition],
     ensure_game_closed: impl Fn() -> Result<(), String>,
 ) -> Result<PathBuf, String> {
+    remove_with_archive(root, client, reviewed, catalog, None, ensure_game_closed)
+}
+
+fn remove_with_archive(
+    root: &Path,
+    client: Client,
+    reviewed: &Addon,
+    catalog: &[Definition],
+    preferences: Option<&Path>,
+    ensure_game_closed: impl Fn() -> Result<(), String>,
+) -> Result<PathBuf, String> {
     ensure_game_closed()?;
-    let paths = Paths::open(root, client)?;
+    let paths = Paths::open(root, client)?.with_archive(preferences)?;
     let _lock = paths.lock()?;
     paths.ensure_clean()?;
     let installed = library::scan(root, client, catalog).map_err(|error| error.to_string())?;
@@ -728,29 +839,53 @@ fn remove_with(
     };
     let stage = paths.stage()?;
     ensure_game_closed()?;
-    apply_transaction(&paths, stage.path(), &transaction, &[], |a, b| {
-        fs::rename(a, b)
-    })
+    apply_transaction(
+        &paths,
+        stage.path(),
+        &transaction,
+        &[],
+        |a, b| fs::rename(a, b),
+        || ensure_game_closed().map_err(io::Error::other),
+    )
 }
 
-pub fn restore(root: &Path, client: Client, backup: &Path) -> Result<(), String> {
-    restore_with(root, client, backup, game_closed)
+pub fn restore(
+    root: &Path,
+    client: Client,
+    backup: &Path,
+    preferences: Option<&Path>,
+) -> Result<(), String> {
+    let preferences = preferences.ok_or("Couldn't find the Astral settings folder.")?;
+    restore_with_archive(root, client, backup, Some(preferences), game_closed)
 }
 
+#[cfg(test)]
 fn restore_with(
     root: &Path,
     client: Client,
     backup: &Path,
     ensure_game_closed: impl Fn() -> Result<(), String>,
 ) -> Result<(), String> {
+    restore_with_archive(root, client, backup, None, ensure_game_closed)
+}
+
+fn restore_with_archive(
+    root: &Path,
+    client: Client,
+    backup: &Path,
+    preferences: Option<&Path>,
+    ensure_game_closed: impl Fn() -> Result<(), String>,
+) -> Result<(), String> {
     ensure_game_closed()?;
-    let paths = Paths::open(root, client)?;
+    let paths = Paths::open(root, client)?.with_archive(preferences)?;
     let _lock = paths.lock()?;
     paths.ensure_clean()?;
-    if backup.parent() != Some(paths.backups.as_path()) || !packages::existing_folder(backup)? {
-        return Err("This backup belongs to a different WoW folder.".into());
-    }
-    let original = read_transaction(&backup.join(MANIFEST))?;
+    let original =
+        if backup.parent() == Some(paths.backups.as_path()) && packages::existing_folder(backup)? {
+            read_transaction(&backup.join(MANIFEST))?
+        } else {
+            archive::restore_record(&paths, backup)?
+        };
     if original.previous.is_empty() && original.profile_switch.is_some() {
         return Err("This backup has no previous addon files.".into());
     }
@@ -766,10 +901,20 @@ pub fn restore_electron(
     client: Client,
     backup: &Path,
     catalog: &[Definition],
+    preferences: Option<&Path>,
 ) -> Result<(), String> {
-    restore_electron_with(root, client, backup, catalog, game_closed)
+    let preferences = preferences.ok_or("Couldn't find the Astral settings folder.")?;
+    restore_electron_with_archive(
+        root,
+        client,
+        backup,
+        catalog,
+        Some(preferences),
+        game_closed,
+    )
 }
 
+#[cfg(test)]
 fn restore_electron_with(
     root: &Path,
     client: Client,
@@ -777,8 +922,19 @@ fn restore_electron_with(
     catalog: &[Definition],
     ensure_game_closed: impl Fn() -> Result<(), String>,
 ) -> Result<(), String> {
+    restore_electron_with_archive(root, client, backup, catalog, None, ensure_game_closed)
+}
+
+fn restore_electron_with_archive(
+    root: &Path,
+    client: Client,
+    backup: &Path,
+    catalog: &[Definition],
+    preferences: Option<&Path>,
+    ensure_game_closed: impl Fn() -> Result<(), String>,
+) -> Result<(), String> {
     ensure_game_closed()?;
-    let paths = Paths::open(root, client)?;
+    let paths = Paths::open(root, client)?.with_archive(preferences)?;
     let root = paths
         .interface
         .parent()
@@ -854,12 +1010,14 @@ fn restore_transaction(
         &transaction,
         &original.previous,
         |a, b| fs::rename(a, b),
+        || ensure_game_closed().map_err(io::Error::other),
     )?;
     Ok(())
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> io::Result<()> {
-    if !source.symlink_metadata()?.is_dir() {
+    let metadata = source.symlink_metadata()?;
+    if !metadata.is_dir() || crate::settings_backup::link(&metadata) {
         return Err(io::Error::other("A backup folder is missing or linked."));
     }
     let mut pending = vec![(source.to_path_buf(), destination.to_path_buf())];
@@ -868,7 +1026,13 @@ fn copy_tree(source: &Path, destination: &Path) -> io::Result<()> {
         for entry in fs::read_dir(source)? {
             let entry = entry?;
             let target = destination.join(entry.file_name());
-            let kind = entry.file_type()?;
+            let metadata = entry.path().symlink_metadata()?;
+            let kind = metadata.file_type();
+            if crate::settings_backup::link(&metadata) {
+                return Err(io::Error::other(
+                    "The backup contains a linked or special file.",
+                ));
+            }
             if kind.is_dir() {
                 pending.push((entry.path(), target));
             } else if kind.is_file() {
@@ -959,10 +1123,17 @@ fn apply_transaction(
     transaction: &Transaction,
     incoming: &[String],
     move_into_place: impl Fn(&Path, &Path) -> io::Result<()>,
+    before_swap: impl Fn() -> io::Result<()>,
 ) -> Result<PathBuf, String> {
-    apply_transaction_with(paths, stage, transaction, incoming, move_into_place, || {
-        Ok(())
-    })
+    apply_transaction_with(
+        paths,
+        stage,
+        transaction,
+        incoming,
+        move_into_place,
+        before_swap,
+        || Ok(()),
+    )
 }
 
 fn apply_transaction_with(
@@ -971,6 +1142,7 @@ fn apply_transaction_with(
     transaction: &Transaction,
     incoming: &[String],
     move_into_place: impl Fn(&Path, &Path) -> io::Result<()>,
+    before_swap: impl Fn() -> io::Result<()>,
     finish: impl FnOnce() -> io::Result<()>,
 ) -> Result<PathBuf, String> {
     let backup = tempfile::Builder::new()
@@ -985,6 +1157,10 @@ fn apply_transaction_with(
     journal.write_all(&manifest).map_err(|e| e.to_string())?;
     journal.sync_all().map_err(|e| e.to_string())?;
     drop(journal);
+    // Publish the previous files outside the game folder before touching AddOns.
+    // A failed backup or a newly running game therefore cannot leave a partial swap.
+    let saved = archive::snapshot(paths, backup.path(), transaction)?;
+    before_swap().map_err(|error| error.to_string())?;
     // Keep recovery files even if the process exits or a rollback can't finish.
     let backup = backup.keep();
 
@@ -1049,7 +1225,15 @@ fn apply_transaction_with(
             )
         })?;
     }
-    Ok(backup)
+    if let Some(saved) = saved {
+        // Central data is authoritative; the local journal was only for rollback.
+        if let Err(error) = fs::remove_dir_all(&backup) {
+            eprintln!("Couldn't remove the completed addon journal: {error}");
+        }
+        Ok(saved)
+    } else {
+        Ok(backup)
+    }
 }
 
 pub(crate) fn game_running() -> Result<bool, String> {
@@ -1186,6 +1370,258 @@ mod tests {
     }
 
     #[test]
+    fn central_restore_point_survives_game_deletion_and_restores_only_its_owner() {
+        let (temp, root, catalog) = game();
+        let preferences = temp.path().join("app/preferences.json");
+        let store = temp.path().join("app/backups");
+        let source = catalog.iter().find(|source| source.id == "keyui").unwrap();
+        let package =
+            packages::inspect(keyui_release(), &root, Client::Retail, source, &catalog).unwrap();
+        let saved = install_with_archive(
+            &package,
+            "KeyUI",
+            ("2", ""),
+            Some(&preferences),
+            || Ok(()),
+            |from, to| fs::rename(from, to),
+        )
+        .unwrap();
+        assert_eq!(
+            saved.parent(),
+            Some(store.canonicalize().unwrap().as_path())
+        );
+        assert!(list(&root, Client::Retail).unwrap().is_empty());
+        assert_eq!(
+            list_saved(&store, Some((&root, Client::Retail)))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            list_saved(&store, Some((&root, Client::Forever)))
+                .unwrap()
+                .is_empty()
+        );
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(list_saved(&store, None).unwrap().len(), 1);
+        assert_eq!(
+            fs::read_to_string(saved.join("previous/KeyUI/old.lua")).unwrap(),
+            "-- original"
+        );
+
+        // A different installation cannot consume the saved files.
+        let other = temp.path().join("other/_retail_");
+        fs::create_dir_all(other.join("Interface/AddOns/KeyUI")).unwrap();
+        fs::write(
+            other.join("Interface/AddOns/KeyUI/current.lua"),
+            "other installation",
+        )
+        .unwrap();
+        assert!(
+            restore_with_archive(
+                &other,
+                Client::Retail,
+                &saved,
+                Some(&preferences),
+                || Ok(())
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(other.join("Interface/AddOns/KeyUI/current.lua")).unwrap(),
+            "other installation"
+        );
+
+        // Reinstalling at the original location preserves the restore point.
+        fs::create_dir_all(root.join("Interface/AddOns/KeyUI")).unwrap();
+        fs::create_dir_all(root.join("WTF")).unwrap();
+        fs::write(
+            root.join("Interface/AddOns/KeyUI/current.lua"),
+            "reinstalled addon",
+        )
+        .unwrap();
+        fs::write(root.join("WTF/config.wtf"), "reinstalled settings").unwrap();
+        restore_with_archive(&root, Client::Retail, &saved, Some(&preferences), || Ok(())).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("Interface/AddOns/KeyUI/old.lua")).unwrap(),
+            "-- original"
+        );
+        assert!(!root.join("Interface/AddOns/KeyUI/current.lua").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("WTF/config.wtf")).unwrap(),
+            "reinstalled settings"
+        );
+        let backups = list_saved(&store, None).unwrap();
+        assert_eq!(backups.len(), 2);
+        let undo = &backups
+            .iter()
+            .find(|(backup, _)| backup.transaction.restored)
+            .unwrap()
+            .0
+            .path;
+        assert_eq!(
+            fs::read_to_string(undo.join("previous/KeyUI/current.lua")).unwrap(),
+            "reinstalled addon"
+        );
+    }
+
+    #[test]
+    fn backup_failure_and_game_opening_after_snapshot_leave_live_addons_unchanged() {
+        for unavailable_store in [false, true] {
+            let (temp, root, catalog) = game();
+            let preferences = temp.path().join("app/preferences.json");
+            if unavailable_store {
+                fs::create_dir_all(preferences.parent().unwrap()).unwrap();
+                fs::write(temp.path().join("app/backups"), "unrelated file").unwrap();
+            }
+            let source = catalog.iter().find(|source| source.id == "keyui").unwrap();
+            let package =
+                packages::inspect(keyui_release(), &root, Client::Retail, source, &catalog)
+                    .unwrap();
+            let calls = Cell::new(0);
+            let result = install_with_archive(
+                &package,
+                "KeyUI",
+                ("2", ""),
+                Some(&preferences),
+                || {
+                    calls.set(calls.get() + 1);
+                    if calls.get() == 3 {
+                        Err("WoW opened during the backup.".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                |from, to| fs::rename(from, to),
+            );
+            assert!(result.is_err());
+            assert_eq!(
+                fs::read_to_string(root.join("Interface/AddOns/KeyUI/old.lua")).unwrap(),
+                "-- original"
+            );
+            assert!(!root.join("Interface/AddOns/KeyUI/new.lua").exists());
+            assert!(list(&root, Client::Retail).unwrap().is_empty());
+            if unavailable_store {
+                assert_eq!(
+                    fs::read_to_string(temp.path().join("app/backups")).unwrap(),
+                    "unrelated file"
+                );
+            } else {
+                assert_eq!(calls.get(), 3);
+                assert_eq!(
+                    list_saved(&temp.path().join("app/backups"), None)
+                        .unwrap()
+                        .len(),
+                    1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn central_copy_does_not_weaken_swap_rollback_or_lose_the_original_files() {
+        let (temp, root, catalog) = game();
+        let preferences = temp.path().join("app/preferences.json");
+        let source = catalog.iter().find(|source| source.id == "keyui").unwrap();
+        let package =
+            packages::inspect(keyui_release(), &root, Client::Retail, source, &catalog).unwrap();
+        let result = install_with_archive(
+            &package,
+            "KeyUI",
+            ("2", ""),
+            Some(&preferences),
+            || Ok(()),
+            |_, _| Err(io::Error::other("Injected swap failure")),
+        );
+        assert!(result.unwrap_err().contains("Previous files were restored"));
+        assert_eq!(
+            fs::read_to_string(root.join("Interface/AddOns/KeyUI/old.lua")).unwrap(),
+            "-- original"
+        );
+        assert!(list(&root, Client::Retail).unwrap().is_empty());
+        let saved = list_saved(&temp.path().join("app/backups"), None).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(
+            fs::read_to_string(saved[0].0.path.join("previous/KeyUI/old.lua")).unwrap(),
+            "-- original"
+        );
+    }
+
+    #[test]
+    fn legacy_backup_preservation_is_idempotent_and_does_not_move_recovery_files() {
+        let (temp, root, catalog) = game();
+        let source = catalog.iter().find(|source| source.id == "keyui").unwrap();
+        let package =
+            packages::inspect(keyui_release(), &root, Client::Retail, source, &catalog).unwrap();
+        let legacy = install_with(
+            &package,
+            "KeyUI",
+            ("2", ""),
+            || Ok(()),
+            |a, b| fs::rename(a, b),
+        )
+        .unwrap();
+        let preferences = temp.path().join("app/preferences.json");
+        for _ in 0..2 {
+            preserve_backups(&root, Client::Retail, &preferences).unwrap();
+            assert_eq!(
+                list_saved(&temp.path().join("app/backups"), None)
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(legacy.join(MANIFEST).is_file());
+            assert_eq!(
+                fs::read_to_string(legacy.join("previous/KeyUI/old.lua")).unwrap(),
+                "-- original"
+            );
+        }
+        fs::remove_dir_all(&root).unwrap();
+        let records = list_saved(&temp.path().join("app/backups"), None).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            fs::read_to_string(records[0].0.path.join("previous/KeyUI/old.lua")).unwrap(),
+            "-- original"
+        );
+    }
+
+    #[test]
+    fn uninstall_uses_the_central_store_and_can_restore_without_changing_settings() {
+        let (temp, root, catalog) = game();
+        fs::write(
+            root.join("Interface/AddOns/KeyUI/KeyUI.toc"),
+            "## Interface: 120105\n## Version: 1\n",
+        )
+        .unwrap();
+        let addon = library::scan(&root, Client::Retail, &catalog)
+            .unwrap()
+            .into_iter()
+            .find(|addon| addon.folder == "KeyUI")
+            .unwrap();
+        let preferences = temp.path().join("app/preferences.json");
+        let saved = remove_with_archive(
+            &root,
+            Client::Retail,
+            &addon,
+            &catalog,
+            Some(&preferences),
+            || Ok(()),
+        )
+        .unwrap();
+        assert!(!root.join("Interface/AddOns/KeyUI").exists());
+        assert!(list(&root, Client::Retail).unwrap().is_empty());
+        restore_with_archive(&root, Client::Retail, &saved, Some(&preferences), || Ok(())).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("Interface/AddOns/KeyUI/old.lua")).unwrap(),
+            "-- original"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("WTF/config.wtf")).unwrap(),
+            "settings"
+        );
+    }
+
+    #[test]
     fn profile_package_batch_rolls_back_all_modules_when_profile_apply_fails() {
         let (_temp, root, mut catalog) = game();
         for folder in ["FixtureCore", "FixtureBar"] {
@@ -1229,6 +1665,7 @@ mod tests {
             &root,
             Client::Retail,
             &packages,
+            &root.parent().unwrap().join("app/preferences.json"),
             operation.clone(),
             || Ok(()),
             || {
@@ -1248,6 +1685,7 @@ mod tests {
             &root,
             Client::Retail,
             &packages,
+            &root.parent().unwrap().join("app/preferences.json"),
             operation,
             || Ok(()),
             || Ok(()),

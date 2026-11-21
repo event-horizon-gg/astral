@@ -225,7 +225,7 @@ impl Astral {
         let client = package.client;
         let package = package.clone();
         let task = cx.background_executor().spawn(async move {
-            let result = installer::install(&package, &name, &tag, &notes);
+            let result = installer::install(&package, &name, &tag, &notes, preferences.as_deref());
             crate::activity::record(
                 preferences.as_deref(),
                 crate::activity::Action {

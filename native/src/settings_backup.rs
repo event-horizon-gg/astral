@@ -341,6 +341,7 @@ pub fn accounts(root: &Path) -> io::Result<Vec<String>> {
 }
 
 pub struct Store {
+    preferences: PathBuf,
     root: PathBuf,
     client: Client,
     lock_file: PathBuf,
@@ -364,6 +365,10 @@ pub struct Backup {
 }
 
 impl Store {
+    pub(crate) fn preferences_path(&self) -> &Path {
+        &self.preferences
+    }
+
     pub fn open(data: &Path, root: &Path, client: Client, account: &str) -> io::Result<Self> {
         if !safe_component(account) {
             return Err(invalid("Invalid WoW account."));
@@ -377,6 +382,7 @@ impl Store {
         let storage = data.join("settings-backups");
         let installation = hash(root.as_os_str().as_encoded_bytes());
         Ok(Self {
+            preferences: data.join("preferences.json"),
             root,
             client,
             lock_file: storage.join(format!("{installation}.lock")),
@@ -949,6 +955,7 @@ impl Store {
                     &self.root,
                     self.client,
                     &packages,
+                    &self.preferences,
                     operation,
                     check_game,
                     finish,

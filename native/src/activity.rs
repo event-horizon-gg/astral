@@ -252,6 +252,17 @@ fn earlier_actions(
     Ok(actions)
 }
 
+fn preserve_history(preferences: Option<&Path>, roots: &[(Client, PathBuf)]) -> Option<String> {
+    let preferences = preferences?;
+    let mut warning = None;
+    for (client, root) in roots {
+        if let Err(error) = installer::preserve_backups(root, *client, preferences) {
+            warning = Some(error);
+        }
+    }
+    warning
+}
+
 fn backup_history(
     root: Option<&Path>,
     client: Client,
@@ -284,6 +295,15 @@ fn backup_history(
             };
             match earlier {
                 Ok(found) => records.extend(found),
+                Err(error) => archive_error = Some(error),
+            }
+            match installer::list_saved(archive, root.map(|root| (root, client))) {
+                Ok(found) => {
+                    let journals: std::collections::HashSet<_> =
+                        found.iter().map(|(_, path)| path.clone()).collect();
+                    records.retain(|record| record.interrupted || !journals.contains(&record.path));
+                    records.extend(found.into_iter().map(|(record, _)| record));
+                }
                 Err(error) => archive_error = Some(error),
             }
         }
@@ -504,7 +524,6 @@ impl Astral {
             .as_deref()
             .and_then(Path::parent)
             .map(|folder| folder.join("backups"))
-            && folder.is_dir()
             && !archives.iter().any(|(_, path)| path == &folder)
         {
             archives.push(("Earlier Astral backups", folder));
@@ -527,6 +546,7 @@ impl Astral {
             let preferences = preferences.ok_or("Astral storage is unavailable.")?;
             let (roots, roots_error) =
                 crate::backup_roots::discover(Some(&preferences), &known_roots);
+            let preserve_error = preserve_history(Some(&preferences), &roots);
             let (records, scan_error) =
                 backup_history(None, Client::Retail, &roots, &archives, &catalog);
             let folders = records?
@@ -543,7 +563,7 @@ impl Astral {
                     path: backup.path,
                 })
                 .collect();
-            let warning = roots_error.or(scan_error);
+            let warning = roots_error.or(preserve_error).or(scan_error);
             match crate::backup_collection::update(preferences.clone(), folders, warning.is_none())
             {
                 Ok(path) => Ok(PreparedCollection { path, warning }),
@@ -667,9 +687,10 @@ impl Astral {
             } else {
                 (known_roots, None)
             };
+            let preserve_error = preserve_history(preferences.as_deref(), &known_roots);
             let (records, archive_error) =
                 backup_history(root.as_deref(), client, &known_roots, &archives, &catalog);
-            let archive_error = roots_error.or(archive_error);
+            let archive_error = roots_error.or(preserve_error).or(archive_error);
             (records, archive_error, recent)
         });
         cx.spawn(async move |this, cx| {
@@ -732,9 +753,9 @@ impl Astral {
             } else if interrupted {
                 installer::recover(&root, client, &path)
             } else if electron {
-                installer::restore_electron(&root, client, &path, &catalog)
+                installer::restore_electron(&root, client, &path, &catalog, prefs.as_deref())
             } else {
-                installer::restore(&root, client, &path)
+                installer::restore(&root, client, &path, prefs.as_deref())
             };
             record(
                 prefs.as_deref(),
@@ -2019,6 +2040,60 @@ mod global_history_ui_tests {
     use super::*;
     use crate::{Page, ui_tests::press};
     use gpui::{TestAppContext, size};
+
+    #[gpui::test]
+    fn activity_reads_central_native_backups_after_the_game_folder_is_removed(
+        cx: &mut TestAppContext,
+    ) {
+        for light in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("game/_retail_");
+            fs::create_dir_all(root.join("Interface/AddOns")).unwrap();
+            let root = root.canonicalize().unwrap();
+            let data = temp.path().join("app");
+            let backup = data.join("backups/native-1c46cb04-349d-4a58-a620-676144b42c12");
+            fs::create_dir_all(backup.join("previous/Fixture")).unwrap();
+            fs::write(backup.join("previous/Fixture/old.lua"), "preserved addon").unwrap();
+            preferences::save_json(
+                &backup.join("native-manifest.json"),
+                &serde_json::json!({
+                    "root": root,
+                    "client": "retail",
+                    "journal": root.join("Interface/.astral-native-backups/release-fixture"),
+                    "transaction": {
+                        "addon": "Fixture", "release": "2", "created": 1_700_000_000,
+                        "folders": ["Fixture"], "previous": ["Fixture"]
+                    }
+                }),
+            )
+            .unwrap();
+            fs::remove_dir_all(&root).unwrap();
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                let mut app =
+                    Astral::new([None, None], Some(&data), Some(Client::Retail), light, cx);
+                app.page = Page::Backups;
+                app.load_backups(cx);
+                app
+            });
+            cx.simulate_resize(size(px(1250.), px(1000.)));
+            cx.run_until_parked();
+            view.read_with(cx, |app, _| {
+                assert!(app.activity.archive_error.is_none());
+                let records = app.activity.entries.as_ref().unwrap().as_ref().unwrap();
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].path, backup.canonicalize().unwrap());
+                assert_eq!(records[0].transaction.addon, "Fixture");
+            });
+            assert!(
+                cx.debug_bounds("restore-backup:native-1c46cb04-349d-4a58-a620-676144b42c12")
+                    .is_some()
+            );
+            assert_eq!(
+                fs::read_to_string(backup.join("previous/Fixture/old.lua")).unwrap(),
+                "preserved addon"
+            );
+        }
+    }
 
     #[gpui::test]
     fn rootless_activity_finishes_loading_and_keeps_folder_and_library_actions(

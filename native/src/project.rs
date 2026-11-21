@@ -390,8 +390,10 @@ impl Astral {
         let (request, tag) = (review.request, release.tag.clone());
         let notes = release.notes.clone();
         let (source, package) = (source.clone(), package.clone());
+        let preferences = self.preferences_path.clone();
         let task = cx.background_executor().spawn(async move {
-            installer::install(&package, &source.name, &tag, &notes).map(|_| source)
+            installer::install(&package, &source.name, &tag, &notes, preferences.as_deref())
+                .map(|_| source)
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
