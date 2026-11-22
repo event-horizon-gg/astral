@@ -1,31 +1,17 @@
+const { definitions, register, inventory, validDefinition } = require('./addon-inventory.cjs');
+const github = require('./github.cjs');
+const { toc, allowedFolder, targetInterface, inspectPackage } = require('./addon-metadata.cjs');
 const fs = require('node:fs/promises'),
-  path = require('node:path'),
-  os = require('node:os');
+  path = require('node:path');
 const crypto = require('node:crypto'),
   { execFile } = require('node:child_process'),
   { promisify } = require('node:util');
 const run = promisify(execFile),
   yauzl = require('yauzl');
 const catalog = require('./catalog.cjs');
-const { icon: addonIcon } = require('./icons.cjs');
-const { flavor, interfaceFor, allowed: allowedFlavor } = require('./flavors.cjs');
-const exists = async (p) => !!(await fs.stat(p).catch(() => null));
-const json = async (p, fallback = {}) =>
-  JSON.parse(await fs.readFile(p, 'utf8').catch(() => JSON.stringify(fallback)));
-async function save(file, value) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const temp = file + '.' + crypto.randomUUID() + '.tmp';
-  await fs.writeFile(temp, JSON.stringify(value, null, 2));
-  await fs.rename(temp, file);
-}
-function toc(text) {
-  const result = {};
-  for (const line of text.split(/\r?\n/)) {
-    const m = line.match(/^##\s*([^:]+):\s*(.*)/);
-    if (m) result[m[1].trim()] = m[2].trim();
-  }
-  return result;
-}
+const { flavor, allowed: allowedFlavor } = require('./flavors.cjs');
+const { exists, json, save } = require('./storage.cjs');
+const { newer, needsUpdate } = require('./addon-versions.cjs');
 async function gameRunning() {
   if (process.platform === 'win32') {
     const { stdout } = await run('tasklist', ['/FO', 'CSV', '/NH'], { windowsHide: true });
@@ -49,153 +35,15 @@ async function defaultRoot() {
   }
   return '';
 }
-function validDefinition(a) {
-  return (
-    a &&
-    /^gh-[a-f0-9]{16}$/.test(a.id) &&
-    /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/.test(a.repo || '') &&
-    !['.', '..'].includes(a.repo.split('/')[1]) &&
-    /^[A-Za-z0-9_-]+$/.test(a.folder || '') &&
-    Array.isArray(a.folders) &&
-    a.folders.length > 0 &&
-    a.folders.length <= 64 &&
-    a.folders.includes(a.folder) &&
-    a.folders.every((n) => /^[A-Za-z0-9_-]+$/.test(n))
-  );
-}
-function registryPath(root, data) {
-  return path.join(
-    data,
-    'managed',
-    crypto.createHash('sha256').update(path.resolve(root)).digest('hex').slice(0, 16) + '.json',
-  );
-}
-async function definitions(root, data) {
-  if (!data) return catalog;
-  const extra = await json(registryPath(root, data), []);
-  return [...catalog, ...(Array.isArray(extra) ? extra.filter(validDefinition) : [])];
-}
-async function register(root, data, definition) {
-  if (!validDefinition(definition)) throw Error('Invalid addon source definition.');
-  const file = registryPath(root, data),
-    prior = await json(file, []);
-  await save(file, [...prior.filter((a) => a.id !== definition.id), definition]);
-}
-function allowedFolder(addon, n) {
-  if (addon.folders) return addon.folders.includes(n);
-  if (addon.id === 'ellesmere') return n.startsWith('EllesmereUI');
-  if (addon.id === 'rio') return /^RaiderIO(?:_DB_(?:EU|US|KR|TW|CN)_[MRF])?$/.test(n);
-  return n === addon.folder || (!!addon.prefix && n.startsWith(addon.prefix + '_'));
-}
-async function targetInterface(root) {
-  const build = await fs.readFile(path.join(root, '..', '.build.info'), 'utf8').catch(() => null);
-  if (!build) return interfaceFor(flavor(root));
-  const lines = build.trim().split(/\r?\n/),
-    keys = lines[0].split('|').map((h) => h.split('!')[0]);
-  const version = lines
-    .slice(1)
-    .map((l) => Object.fromEntries(keys.map((k, i) => [k, l.split('|')[i]])))
-    .find(
-      (r) => r.Product === (flavor(root) === 'forever' ? 'wowf' : 'wow') && r.Active === '1',
-    )?.Version;
-  if (!version) throw Error('Could not identify the active WoW build.');
-  const p = version.split('.').map(Number);
-  return String(p[0] * 10000 + p[1] * 100 + p[2]);
-}
-async function inventory(root, data) {
-  const dir = path.join(root, 'Interface', 'AddOns');
-  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
-  const folders = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-  const groups = [];
-  const claimed = new Set();
-  for (const item of await definitions(root, data)) {
-    if (!folders.includes(item.folder)) continue;
-    const family = folders.filter(
-      (n) =>
-        item.folders?.includes(n) ||
-        n === item.folder ||
-        (item.prefix && n.startsWith(item.prefix + '_')) ||
-        (item.id === 'ellesmere' && n.startsWith('EllesmereUI')),
-    );
-    family.forEach((n) => claimed.add(n));
-    const files = await fs.readdir(path.join(dir, item.folder));
-    const file =
-      [
-        ...(flavor(root) === 'forever' ? [item.folder + '_Camelot.toc'] : []),
-        item.folder + '_Mainline.toc',
-        item.folder + '.toc',
-      ].find((f) => files.includes(f)) || files.find((f) => f.endsWith('.toc'));
-    const meta = file ? toc(await fs.readFile(path.join(dir, item.folder, file), 'utf8')) : {};
-    if (item.versionCompanion) {
-      const companion = path.join(dir, item.versionCompanion);
-      let companionToc;
-      for (const name of [item.versionCompanion + '_Camelot.toc', item.versionCompanion + '.toc']) {
-        if (await exists(path.join(companion, name))) {
-          companionToc = name;
-          break;
-        }
-      }
-      const companionMeta = companionToc
-        ? toc(await fs.readFile(path.join(companion, companionToc), 'utf8'))
-        : {};
-      meta.Version = (meta.Version || 'Unknown') + '+v' + (companionMeta.Version || '0');
-    }
-    groups.push({
-      ...item,
-      installed: true,
-      canImport: !item.local && !item.bundled && allowedFlavor(item, flavor(root)),
-      version: meta.Version || 'Unknown',
-      author: meta.Author || '',
-      icon: await addonIcon(root, meta.IconTexture),
-      modules: family,
-      source: item.bundled
-        ? 'Astral'
-        : item.repo
-          ? 'GitHub'
-          : item.local
-            ? 'Local development'
-            : 'Manual',
-      status: item.repo || item.bundled ? 'unchecked' : item.local ? 'local' : 'manual',
-    });
-  }
-  for (const name of folders.filter((f) => !claimed.has(f))) {
-    const files = await fs.readdir(path.join(dir, name));
-    const file = files.find((f) => f === name + '.toc') || files.find((f) => f.endsWith('.toc'));
-    const meta = file ? toc(await fs.readFile(path.join(dir, name, file), 'utf8')) : {};
-    groups.push({
-      id: 'local:' + name,
-      name: (meta.Title || name).replace(/\|c[0-9a-f]{8}|\|r/gi, ''),
-      folder: name,
-      icon: await addonIcon(root, meta.IconTexture),
-      version: meta.Version || 'Unknown',
-      installed: true,
-      modules: [name],
-      source: 'Manual',
-      status: 'manual',
-      category: 'Other',
-      mark: name.slice(0, 2),
-      color: 'slate',
-    });
-  }
-  return { addons: groups, folderCount: folders.length };
-}
 async function getRelease(addon, data, force = false) {
   if (addon.bundled) return require('./bundled.cjs').release(addon);
   if (!addon.repo) throw Error('Automatic downloads are not connected for this source.');
   const file = path.join(data, 'releases', addon.id + '.json');
   const cached = await json(file, null);
   if (cached && !force && Date.now() - cached.checked < 15 * 60e3) return cached;
-  const response = await fetch('https://api.github.com/repos/' + addon.repo + '/releases/latest', {
-    headers: { 'User-Agent': 'Astral-Companion/0.3', Accept: 'application/vnd.github+json' },
-    signal: AbortSignal.timeout(30000),
+  const r = await github.latest(addon.repo, {
+    unavailableMessage: (status) => 'Could not check ' + addon.name + ' (' + status + ').',
   });
-  if (!response.ok)
-    throw Error(
-      response.status === 403 || response.status === 429
-        ? 'GitHub rate limit reached. Try again later.'
-        : 'Could not check ' + addon.name + ' (' + response.status + ').',
-    );
-  const r = await response.json();
   const matching = r.assets?.filter((a) => new RegExp(addon.asset, 'i').test(a.name)) || [];
   if (addon.dynamic && matching.length !== 1)
     throw Error('Review this project’s release packages in Discover before updating.');
@@ -219,64 +67,6 @@ async function getRelease(addon, data, force = false) {
   };
   await save(file, result);
   return result;
-}
-function newer(addon, release) {
-  if (addon.versionScheme === 'questie-bundle') {
-    const parse = (value) => String(value || '').match(/^(\d+(?:\.\d+)*)\+v(\d+(?:\.\d+)*)$/);
-    const a = parse(addon.version),
-      b = parse(release.version);
-    if (!a || !b) return null;
-    const main = newer({ version: a[1] }, { version: b[1] });
-    if (main) return true;
-    if (newer({ version: b[1] }, { version: a[1] })) return false;
-    return newer({ version: a[2] }, { version: b[2] });
-  }
-  if (addon.versionScheme === 'revision') {
-    const a = String(addon.version || '').match(/^r?(\d+)$/)?.[1];
-    const b = String(release.version || '').match(/^r?(\d+)$/)?.[1];
-    return a && b ? Number(b) > Number(a) : null;
-  }
-  if (addon.versionScheme === 'letter-patch') {
-    // These authors use letter patches, e.g. TOC "1.8.7 b" and tag "v1.8.7-b".
-    // Do not interpret arbitrary prerelease labels as stable letter patches.
-    const parse = (value) => {
-      const match = String(value || '')
-        .trim()
-        .match(/^v?(\d+(?:\.\d+)*)(?:[ -]?([a-z]))?$/i);
-      return (
-        match && { numbers: match[1].split('.').map(Number), patch: match[2]?.toLowerCase() || '' }
-      );
-    };
-    const a = parse(addon.version),
-      b = parse(release.version);
-    if (!a || !b) return null;
-    for (let i = 0; i < Math.max(a.numbers.length, b.numbers.length); i++) {
-      if ((b.numbers[i] || 0) !== (a.numbers[i] || 0))
-        return (b.numbers[i] || 0) > (a.numbers[i] || 0);
-    }
-    return b.patch > a.patch;
-  }
-  const clean = (value) =>
-    String(value || '')
-      .replace(/^v\.?\s*/, '')
-      .match(/^(\d+(?:\.\d+)*)(?:[-+].*)?$/)?.[1]
-      ?.split('.')
-      .map(Number);
-  if (addon.id === 'rio') {
-    const a = String(addon.version).match(/v(\d{12})/)?.[1],
-      b = String(release.tag).match(/v(\d{12})/)?.[1];
-    return a && b ? b > a : null;
-  }
-  const a = clean(addon.version),
-    b = clean(release.version);
-  if (!a || !b) return null;
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    if ((b[i] || 0) !== (a[i] || 0)) return (b[i] || 0) > (a[i] || 0);
-  }
-  return false;
-}
-function needsUpdate(addon, release) {
-  return newer(addon, release) === true;
 }
 async function unzip(archive, destination, allowed) {
   await fs.mkdir(destination, { recursive: true });
@@ -356,7 +146,10 @@ async function install(addon, root, data, release, onProgress = () => {}, option
   const running = options.running || gameRunning;
   if (!allowedFlavor(addon, flavor(root)))
     throw Error('This addon is not supported for the selected game client.');
-  if (await running()) throw Error('Close World of Warcraft before changing addon files.');
+  if (await running())
+    throw Object.assign(Error('Close World of Warcraft before changing addon files.'), {
+      code: 'WOW_RUNNING',
+    });
   if (addon.requires) {
     for (const folder of addon.requires)
       if (!(await exists(path.join(root, 'Interface', 'AddOns', folder))))
@@ -385,77 +178,18 @@ async function install(addon, root, data, release, onProgress = () => {}, option
     let names = (await fs.readdir(unpacked, { withFileTypes: true }))
       .filter((e) => e.isDirectory())
       .map((e) => e.name);
-    if (addon.id === 'ellesmere')
-      names = names.filter((n) =>
-        flavor(root) === 'forever'
-          ? ![
-              'EllesmereUIMythicTimer',
-              'EllesmereUIFriends',
-              'EllesmereUILoadoutManager',
-              'EllesmereUIGroupFinder',
-            ].includes(n)
-          : n !== 'EllesmereUIForeverEssentials',
-      );
-    if (addon.id === 'rio')
-      names = names.filter(
-        (n) =>
-          ['RaiderIO', 'RaiderIO_DB_EU_M', 'RaiderIO_DB_EU_R', 'RaiderIO_DB_EU_F'].includes(n) ||
-          addon.modules?.includes(n),
-      );
-    if (!names.includes(addon.folder)) throw Error('Main addon folder missing from release.');
+    names = (await inspectPackage({ unpacked, root, addon, folders: names })).names;
     for (const n of names) {
-      const files = await fs.readdir(path.join(unpacked, n));
-      if (!files.some((f) => f.endsWith('.toc'))) throw Error('Invalid addon package: ' + n);
       const old = path.join(addons, n);
       if ((await fs.lstat(old).catch(() => null))?.isSymbolicLink())
         throw Error('Linked addon folders need manual review.');
     }
 
-    const build = await fs.readFile(path.join(root, '..', '.build.info'), 'utf8').catch(() => null);
-    let targetInterface = interfaceFor(flavor(root));
-    if (build) {
-      const lines = build.trim().split(/\r?\n/);
-      const keys = lines[0].split('|').map((h) => h.split('!')[0]);
-      const version = lines
-        .slice(1)
-        .map((l) => Object.fromEntries(keys.map((k, i) => [k, l.split('|')[i]])))
-        .find(
-          (r) => r.Product === (flavor(root) === 'forever' ? 'wowf' : 'wow') && r.Active === '1',
-        )?.Version;
-      if (!version) throw Error('Could not identify the active WoW build.');
-      const p = version.split('.').map(Number);
-      targetInterface = String(p[0] * 10000 + p[1] * 100 + p[2]);
-    }
-    const compatible = [];
-    for (const n of names) {
-      const dir = path.join(unpacked, n);
-      const files = await fs.readdir(dir);
-      const file = [
-        ...(flavor(root) === 'forever' ? [n + '_Camelot.toc'] : []),
-        n + '_Mainline.toc',
-        n + '.toc',
-      ].find((f) => files.includes(f));
-      if (!file) throw Error('Client addon metadata missing: ' + n);
-      const content = await fs.readFile(path.join(dir, file), 'utf8');
-      const meta = toc(content);
-      const interfaces = (meta.Interface || '').split(/[,\s]+/);
-      // HandyNotes uses the base Retail patch number for its packaged release.
-      const compatiblePatch =
-        addon.allowRetailPatchMismatch &&
-        flavor(root) === 'retail' &&
-        interfaces.some(
-          (value) => /^\d{6}$/.test(value) && value.slice(0, -2) === targetInterface.slice(0, -2),
-        );
-      if (!interfaces.includes(targetInterface) && !compatiblePatch) {
-        if (n === addon.folder) throw Error(n + ' does not list the selected client build.');
-        continue;
-      }
-      compatible.push(n);
-      await require('./toc-files.cjs').validateFiles(content, dir, unpacked, flavor(root));
-    }
-    names = compatible;
     onProgress(90);
-    if (await running()) throw Error('WoW started during preparation. Update deferred.');
+    if (await running())
+      throw Object.assign(Error('WoW started during preparation. Update deferred.'), {
+        code: 'WOW_RUNNING',
+      });
     const id = Date.now() + '-' + addon.id;
     const backup = path.join(data, 'backups', id);
     await fs.mkdir(backup, { recursive: true });

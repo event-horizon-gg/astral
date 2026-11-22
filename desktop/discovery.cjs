@@ -1,5 +1,5 @@
 const cache = new Map();
-const headers = { 'User-Agent': 'Astral-Companion/0.3', Accept: 'application/vnd.github+json' };
+const github = require('./github.cjs');
 function cleanQuery(value) {
   if (typeof value !== 'string') throw Error('Enter an addon name.');
   const query = value
@@ -11,9 +11,7 @@ function cleanQuery(value) {
   return query;
 }
 function project(repo) {
-  if (!repo || !/^[a-zA-Z0-9][a-zA-Z0-9-]*\/[a-zA-Z0-9_.-]+$/.test(repo.full_name || ''))
-    return null;
-  if (['.', '..'].includes(repo.full_name.split('/')[1])) return null;
+  if (!repo || !github.validRepo(repo.full_name)) return null;
   if (repo.archived || repo.disabled || repo.fork) return null;
   return {
     id: 'github:' + repo.full_name.toLowerCase(),
@@ -41,14 +39,13 @@ async function search(value, request = fetch) {
         query + ' in:name,description ' + topic + ' fork:false archived:false',
       );
       url.searchParams.set('per_page', '20');
-      const response = await request(url, { headers, signal: AbortSignal.timeout(25000) });
-      if (!response.ok)
-        throw Error(
-          response.status === 403 || response.status === 429
-            ? 'GitHub search limit reached. Wait a minute and try again. Recent searches are cached.'
-            : 'GitHub search is unavailable (' + response.status + ').',
-        );
-      const body = await response.json();
+      const body = await github.apiJson(url, {
+        request,
+        timeout: 25000,
+        rateMessage:
+          'GitHub search limit reached. Wait a minute and try again. Recent searches are cached.',
+        unavailableMessage: (status) => 'GitHub search is unavailable (' + status + ').',
+      });
       if (!Array.isArray(body.items)) throw Error('Unexpected GitHub search response.');
       return body.items.map(project).filter(Boolean);
     }),

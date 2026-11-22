@@ -1,0 +1,18 @@
+{
+  "defaults": [
+    {
+      "id": "regular",
+      "name": "Regular",
+      "preset": true
+    },
+    {
+      "id": "handheld",
+      "name": "Handheld",
+      "preset": true,
+      "reviewSetup": true
+    }
+  ],
+  "customIdPattern": "^[a-f0-9]{32}$",
+  "maxNameLength": 40,
+  "maxProfiles": 8
+}

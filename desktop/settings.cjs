@@ -1,36 +1,11 @@
 const fs = require('node:fs/promises'),
   path = require('node:path'),
   crypto = require('node:crypto'),
-  zlib = require('node:zlib');
-const { exists, save, catalog } = require('./engine.cjs');
+  { allowed, decode, inspect, encode } = require('./setup-format.cjs');
+const { exists, save } = require('./storage.cjs');
 const selections = require('./addon-selection.cjs');
-const library = require('./library-sync.cjs');
+const library = require('./library-inventory.cjs');
 const gamepad = require('./gamepad-settings.cjs');
-const names = new Set(catalog.flatMap((a) => a.folders || [a.folder]));
-const layoutNames = new Set([
-  'bindings-cache.wtf',
-  'layout-local.txt',
-  'edit-mode-cache-account.txt',
-  'edit-mode-cache-character.txt',
-]);
-function allowed(relative) {
-  const parts = relative.split('/');
-  if (
-    parts.some((p) => !p || p === '.' || p === '..' || p.includes('\\') || p.includes(':')) ||
-    parts.length > 5
-  )
-    return false;
-  const name = parts.at(-1);
-  if (layoutNames.has(name)) return parts.length === 1 || parts.length === 3;
-  return (
-    name.endsWith('.lua') &&
-    parts.at(-2) === 'SavedVariables' &&
-    (names.has(name.slice(0, -4)) ||
-      name.startsWith('EllesmereUI') ||
-      name.startsWith('Blizzard_')) &&
-    (parts.length === 2 || parts.length === 4)
-  );
-}
 async function accounts(root) {
   return (
     await fs.readdir(path.join(root, 'WTF', 'Account'), { withFileTypes: true }).catch(() => [])
@@ -45,7 +20,7 @@ async function accountRoot(root, account) {
     throw Error('The selected WoW account was not found.');
   return dir;
 }
-async function capture(root, account, data) {
+async function capture(root, account, data, { selectFile = () => true } = {}) {
   const base = await accountRoot(root, account),
     files = [];
   async function walk(dir, prefix = '', depth = 0) {
@@ -55,7 +30,7 @@ async function capture(root, account, data) {
         p = path.join(dir, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) await walk(p, rel + '/', depth + 1);
-      else if (allowed(rel)) {
+      else if (allowed(rel) && selectFile(rel)) {
         const content = await fs.readFile(p);
         if (content.length > 8 * 1024 ** 2)
           throw Error('One settings file exceeds the 8 MB preview limit.');
@@ -70,54 +45,15 @@ async function capture(root, account, data) {
   await walk(base);
   files.sort((a, b) => a.path.localeCompare(b.path));
   const addonSelection = await selections.capture(root, base);
-  const payload = JSON.stringify({
+  return encode({
     schema: 2,
     files,
     addonSelection,
     library: await library.installed(root, data),
     input: gamepad.parse(await gamepad.read(root)),
   });
-  const raw = Buffer.from(payload);
-  if (raw.length > 24 * 1024 ** 2) throw Error('This setup exceeds the 24 MB preview limit.');
-  return {
-    files: files.length + 1,
-    bytes: raw.length,
-    hash: crypto.createHash('sha256').update(raw).digest('hex'),
-    payload: zlib.gzipSync(raw).toString('base64'),
-  };
 }
-function decode(payload) {
-  const raw = zlib.gunzipSync(Buffer.from(payload, 'base64'), { maxOutputLength: 24 * 1024 ** 2 });
-  const bundle = JSON.parse(raw);
-  if (![1, 2].includes(bundle.schema) || !Array.isArray(bundle.files) || bundle.files.length > 2000)
-    throw Error('Unsupported settings format.');
-  if (bundle.schema === 2) selections.validate(bundle.addonSelection);
-  else if (bundle.addonSelection !== undefined) throw Error('Unsupported settings format.');
-  if (bundle.library !== undefined) {
-    if (bundle.schema !== 2) throw Error('Unsupported settings format.');
-    library.validate(bundle.library);
-  }
-  if (bundle.input !== undefined) {
-    if (bundle.schema !== 2) throw Error('Unsupported settings format.');
-    gamepad.validate(bundle.input);
-  }
-  const seen = new Set();
-  for (const f of bundle.files) {
-    if (
-      typeof f.path !== 'string' ||
-      !allowed(f.path) ||
-      seen.has(f.path) ||
-      typeof f.content !== 'string'
-    )
-      throw Error('Invalid file in settings snapshot.');
-    seen.add(f.path);
-    const bytes = Buffer.from(f.content, 'base64');
-    if (crypto.createHash('sha256').update(bytes).digest('hex') !== f.sha256)
-      throw Error('Settings checksum mismatch.');
-  }
-  return bundle;
-}
-async function apply(root, account, payload, data, running) {
+async function apply(root, account, payload, data, running, commit = async () => {}) {
   const bundle = decode(payload);
   if (await running()) throw Error('Close WoW before applying settings.');
   const base = await accountRoot(root, account);
@@ -173,6 +109,7 @@ async function apply(root, account, payload, data, running) {
       files: changed,
       time: new Date().toISOString(),
     });
+    await commit();
     return files.length;
   } catch (e) {
     for (const f of changed.reverse()) {
@@ -184,14 +121,5 @@ async function apply(root, account, payload, data, running) {
     }
     throw e;
   }
-}
-function inspect(payload) {
-  const bundle = decode(payload);
-  const raw = zlib.gunzipSync(Buffer.from(payload, 'base64'), { maxOutputLength: 24 * 1024 ** 2 });
-  return {
-    hash: crypto.createHash('sha256').update(raw).digest('hex'),
-    files: bundle.files.length + (bundle.schema === 2 ? 1 : 0),
-    bytes: raw.length,
-  };
 }
 module.exports = { inspect, allowed, accounts, accountRoot, capture, decode, apply };

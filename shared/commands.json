@@ -1,0 +1,194 @@
+{
+  "state": {
+    "mutates": false,
+    "result": "state"
+  },
+  "checkAppUpdate": {
+    "mutates": false,
+    "result": "state"
+  },
+  "downloadAppUpdate": {
+    "mutates": false,
+    "result": "state"
+  },
+  "installAppUpdate": {
+    "mutates": true,
+    "result": "data"
+  },
+  "appUpdateChecks": {
+    "mutates": true,
+    "result": "state"
+  },
+  "cloudInfo": {
+    "mutates": false,
+    "result": "data"
+  },
+  "sharedLibrary": {
+    "mutates": false,
+    "result": "data"
+  },
+  "shareLibrary": {
+    "mutates": true,
+    "result": "data"
+  },
+  "setSyncProfile": {
+    "mutates": true,
+    "result": "state"
+  },
+  "previewProfile": {
+    "mutates": false,
+    "result": "data"
+  },
+  "applyProfile": {
+    "mutates": true,
+    "result": "state"
+  },
+  "syncProfiles": {
+    "mutates": false,
+    "result": "data"
+  },
+  "createSyncProfile": {
+    "mutates": true,
+    "result": "data"
+  },
+  "renameSyncProfile": {
+    "mutates": true,
+    "result": "data"
+  },
+  "deleteSyncProfile": {
+    "mutates": true,
+    "result": "data"
+  },
+  "revokeDevice": {
+    "mutates": false,
+    "result": "state"
+  },
+  "restoreCloud": {
+    "mutates": true,
+    "result": "state"
+  },
+  "deleteCloud": {
+    "mutates": true,
+    "result": "state"
+  },
+  "projectRelease": {
+    "mutates": false,
+    "result": "data"
+  },
+  "inspectProject": {
+    "mutates": false,
+    "result": "data"
+  },
+  "installProject": {
+    "mutates": true,
+    "result": "state"
+  },
+  "autoUpdates": {
+    "mutates": true,
+    "result": "state"
+  },
+  "autoIgnore": {
+    "mutates": true,
+    "result": "state"
+  },
+  "runDailyUpdates": {
+    "mutates": false,
+    "result": "state"
+  },
+  "discover": {
+    "mutates": false,
+    "result": "data"
+  },
+  "openProject": {
+    "mutates": false,
+    "result": "data"
+  },
+  "openProvider": {
+    "mutates": false,
+    "result": "data"
+  },
+  "startup": {
+    "mutates": true,
+    "result": "state"
+  },
+  "client": {
+    "mutates": true,
+    "result": "state"
+  },
+  "check": {
+    "mutates": true,
+    "result": "state"
+  },
+  "update": {
+    "mutates": true,
+    "result": "state"
+  },
+  "installSuite": {
+    "mutates": true,
+    "result": "state"
+  },
+  "importZip": {
+    "mutates": true,
+    "result": "state"
+  },
+  "restore": {
+    "mutates": true,
+    "result": "state"
+  },
+  "chooseRoot": {
+    "mutates": true,
+    "result": "state"
+  },
+  "setAccount": {
+    "mutates": true,
+    "result": "state"
+  },
+  "snapshot": {
+    "mutates": false,
+    "result": "data"
+  },
+  "setupExportInfo": {
+    "mutates": false,
+    "result": "data"
+  },
+  "exportSetup": {
+    "mutates": true,
+    "result": "data"
+  },
+  "openSetupImport": {
+    "mutates": false,
+    "result": "data"
+  },
+  "reviewSetupImport": {
+    "mutates": false,
+    "result": "data"
+  },
+  "applySetupImport": {
+    "mutates": true,
+    "result": "state"
+  },
+  "connect": {
+    "mutates": false,
+    "result": "state"
+  },
+  "sync": {
+    "mutates": true,
+    "result": "sync"
+  },
+  "disconnect": {
+    "mutates": false,
+    "result": "state"
+  },
+  "openSource": {
+    "mutates": false,
+    "result": "data"
+  },
+  "openBackups": {
+    "mutates": false,
+    "result": "data"
+  },
+  "openLegacyBackups": {
+    "mutates": false,
+    "result": "data"
+  }
+}

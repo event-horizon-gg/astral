@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import updater from '../desktop/updater.cjs';
+import { newer } from '../desktop/addon-versions.cjs';
 import engine from '../desktop/engine.cjs';
 const engineCatalog = (id) => engine.catalog.find((addon) => addon.id === id);
 async function fixture(t) {
@@ -12,12 +13,12 @@ async function fixture(t) {
   return data;
 }
 test('daily updates avoid downgrades and uncertain versions', () => {
-  assert.equal(updater.newer({ version: '1.2.3' }, { version: '1.2.2' }), false);
-  assert.equal(updater.newer({ version: 'v1.2.3-release' }, { version: '1.3' }), true);
-  assert.equal(updater.newer({ version: '1.2' }, { version: '1.2.0' }), false);
-  assert.equal(updater.newer({ version: 'development' }, { version: '2' }), null);
+  assert.equal(newer({ version: '1.2.3' }, { version: '1.2.2' }), false);
+  assert.equal(newer({ version: 'v1.2.3-release' }, { version: '1.3' }), true);
+  assert.equal(newer({ version: '1.2' }, { version: '1.2.0' }), false);
+  assert.equal(newer({ version: 'development' }, { version: '2' }), null);
   assert.equal(
-    updater.newer({ id: 'rio', version: '12.1 (v202610310600)' }, { tag: 'v202611010600' }),
+    newer({ id: 'rio', version: '12.1 (v202610310600)' }, { tag: 'v202611010600' }),
     true,
   );
 });
@@ -108,7 +109,7 @@ test('unified daily runner updates Raider.IO with the shared installer', async (
 test('author letter patches update correctly without confusing prereleases or downgrades', () => {
   const definition = engineCatalog('narcissus');
   const compare = (installed, available) =>
-    updater.newer({ ...definition, version: installed }, { version: available });
+    newer({ ...definition, version: installed }, { version: available });
   assert.equal(compare('1.8.7 b', '1.8.7-b'), false);
   assert.equal(compare('1.8.7', '1.8.7-b'), true);
   assert.equal(compare('1.8.7 b', '1.8.7-c'), true);

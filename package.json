@@ -1,6 +1,6 @@
 {
   "name": "astral-companion",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -8,12 +8,13 @@
   "main": "desktop/main.cjs",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build",
+    "build": "npm run lint && vite build",
     "start": "electron .",
-    "test": "node --test tests/*.test.mjs",
+    "test": "npm run lint && node --test tests/*.test.mjs",
     "package:mac": "npm run build && node scripts/package-mac.mjs",
-    "package:windows": "npm run build && electron-builder --win nsis --x64 --publish never",
-    "addons:suite": "node scripts/install-suite.mjs"
+    "package:windows": "npm run build && electron-builder --config electron-builder.config.cjs --win nsis --x64 --publish never",
+    "addons:suite": "node scripts/install-suite.mjs",
+    "lint": "eslint src"
   },
   "dependencies": {
     "@wowserhq/format": "^0.28.0",
@@ -25,39 +26,12 @@
   "devDependencies": {
     "electron": "45.1.0",
     "electron-builder": "26.18.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react": "^7.37.5",
+    "fengari": "^0.1.5",
+    "jsdom": "^27.4.0",
     "prettier": "^3.9.10",
     "vite": "8.3.5"
-  },
-  "build": {
-    "appId": "com.joaoseixas.astral",
-    "productName": "Astral",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "desktop/**/*",
-      "package.json",
-      "assets/**/*",
-      "addons/**/*"
-    ],
-    "mac": {
-      "category": "public.app-category.utilities",
-      "hardenedRuntime": false,
-      "identity": "-",
-      "icon": "assets/icon.png"
-    },
-    "win": {
-      "target": "nsis",
-      "icon": "assets/icon.png"
-    },
-    "artifactName": "Astral-${version}-${os}-${arch}.${ext}",
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "artifactName": "Astral-${version}-win-${arch}.exe"
-    }
   },
   "author": "Joao Seixas"
 }

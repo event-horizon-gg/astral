@@ -5,6 +5,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import releaseContract from '../shared/release-contract.cjs';
+const { REPOSITORY, RELEASE_TARGETS, MAX_INSTALLER_BYTES, installerName } = releaseContract;
 const run = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const keyFile = process.argv[2];
@@ -14,15 +16,15 @@ if (process.platform !== 'win32' && keyInfo.mode & 0o077)
   throw Error('The release key must be readable only by its owner (chmod 600).');
 const { version } = JSON.parse(await fs.readFile(path.join(root, 'package.json')));
 const tag = 'v' + version,
-  repo = 'theedward/astral';
+  repo = REPOSITORY;
 const gh = async (args) =>
   (await run('gh', [...args, '--repo', repo], { maxBuffer: 1024 * 1024 })).stdout;
 const release = JSON.parse(await gh(['release', 'view', tag, '--json', 'tagName,isDraft,assets']));
 if (release.tagName !== tag || !release.isDraft)
   throw Error('Only the matching draft release may be signed and published.');
-const names = [`Astral-${version}-mac-arm64.zip`, `Astral-${version}-win-x64.exe`];
+const names = RELEASE_TARGETS.map(({ platform, arch }) => installerName(version, platform, arch));
 for (const name of names)
-  if (!release.assets.some((a) => a.name === name && a.size > 0 && a.size <= 600 * 1024 * 1024))
+  if (!release.assets.some((a) => a.name === name && a.size > 0 && a.size <= MAX_INSTALLER_BYTES))
     throw Error('Both platform installers must be present before publication.');
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'astral-publish-'));
 try {

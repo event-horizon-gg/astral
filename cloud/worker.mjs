@@ -1,59 +1,9 @@
 import { controls, requestBudget, saveSnapshot } from './controls.mjs';
 import { page } from './page.mjs';
-import { FONT_BASE64, FONT_LICENSE } from './font.mjs';
-// Astral's free-tier Cloudflare Worker. OAuth secrets are Worker secrets only.
+import { now, random, b64, unb64, json, query, body } from './runtime.mjs';
 const encoder = new TextEncoder();
-const now = () => Math.floor(Date.now() / 1000);
-const random = () => b64(crypto.getRandomValues(new Uint8Array(32)));
-function b64(bytes) {
-  return btoa(String.fromCharCode(...bytes))
-    .replaceAll('+', '-')
-    .replaceAll('/', '_')
-    .replaceAll('=', '');
-}
-function unb64(s) {
-  return Uint8Array.from(
-    atob(s.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - (s.length % 4)) % 4)),
-    (c) => c.charCodeAt(0),
-  );
-}
 export async function hash(value) {
   return b64(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(value))));
-}
-const json = (value, status = 200) =>
-  Response.json(value, {
-    status,
-    headers: {
-      'Cache-Control': 'no-store',
-      'X-Content-Type-Options': 'nosniff',
-      'Referrer-Policy': 'no-referrer',
-    },
-  });
-const query = (env, sql, ...args) => env.DB.prepare(sql).bind(...args);
-async function body(request, limit = 4096) {
-  const size = Number(request.headers.get('content-length') || 0);
-  if (size > limit) throw Error('Request too large.');
-  const reader = request.body?.getReader();
-  if (!reader) throw Error('Missing request.');
-  let total = 0;
-  const blocks = [];
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.length;
-    if (total > limit) {
-      await reader.cancel();
-      throw Error('Request too large.');
-    }
-    blocks.push(value);
-  }
-  const buffer = new Uint8Array(total);
-  let at = 0;
-  for (const b of blocks) {
-    buffer.set(b, at);
-    at += b.length;
-  }
-  return JSON.parse(new TextDecoder().decode(buffer));
 }
 async function wrappingKey(env) {
   return crypto.subtle.importKey(
@@ -108,25 +58,7 @@ async function session(request, env) {
 export async function route(request, env) {
   const url = new URL(request.url),
     p = url.pathname;
-  if (p === '/') return page('', true);
-  if (p === '/assets/cinzel-decorative.ttf')
-    return new Response(
-      Uint8Array.from(atob(FONT_BASE64), (c) => c.charCodeAt(0)),
-      {
-        headers: {
-          'Content-Type': 'font/ttf',
-          'Cache-Control': 'public,max-age=86400',
-          'X-Content-Type-Options': 'nosniff',
-        },
-      },
-    );
-  if (p === '/assets/fonts/OFL.txt')
-    return new Response(FONT_LICENSE, {
-      headers: {
-        'Content-Type': 'text/plain;charset=utf-8',
-        'Cache-Control': 'public,max-age=86400',
-      },
-    });
+  if (p === '/') return page({ kind: 'home' });
   const profileMatch = p.match(
     /^\/profiles\/((?:retail|forever)(?:-handheld|-[a-f0-9]{32})?)\/current$/,
   );
@@ -177,7 +109,7 @@ export async function route(request, env) {
         id,
         now(),
       ).first();
-    if (!pair) return page('This sign-in has expired.');
+    if (!pair) return page({ kind: 'error', message: 'This sign-in has expired.' });
     const state = random();
     await query(env, 'UPDATE pairs SET state_hash=? WHERE id=?', await hash(state), id).run();
     const auth = new URL('https://oauth.battle.net/authorize');
@@ -202,7 +134,7 @@ export async function route(request, env) {
     const state = url.searchParams.get('state'),
       cookie = request.headers.get('Cookie')?.match(/(?:^|;\s*)astral_oauth=([A-Za-z0-9_-]+)/)?.[1];
     if (!state || cookie !== state || !url.searchParams.get('code'))
-      return page('Sign-in was cancelled or could not be verified.');
+      return page({ kind: 'error', message: 'Sign-in was cancelled or could not be verified.' });
     // Consume browser state atomically without removing the device pairing.
     // Polls must remain pending while the external identity requests are in flight.
     const pair = await query(
@@ -211,7 +143,7 @@ export async function route(request, env) {
       await hash(state),
       now(),
     ).first();
-    if (!pair) return page('This sign-in has expired.');
+    if (!pair) return page({ kind: 'error', message: 'This sign-in has expired.' });
     const tokenResponse = await fetch('https://oauth.battle.net/token', {
       method: 'POST',
       headers: {
@@ -224,15 +156,17 @@ export async function route(request, env) {
         redirect_uri: env.PUBLIC_ORIGIN + '/auth/callback',
       }),
     });
-    if (!tokenResponse.ok) return page('Battle.net could not complete sign-in.');
+    if (!tokenResponse.ok)
+      return page({ kind: 'error', message: 'Battle.net could not complete sign-in.' });
     const grant = await tokenResponse.json();
     const infoResponse = await fetch('https://oauth.battle.net/userinfo', {
       headers: { Authorization: 'Bearer ' + grant.access_token },
     });
-    if (!infoResponse.ok) return page('Battle.net identity could not be verified.');
+    if (!infoResponse.ok)
+      return page({ kind: 'error', message: 'Battle.net identity could not be verified.' });
     const user = await infoResponse.json();
     if (!user.sub || typeof user.sub !== 'string')
-      return page('Battle.net identity could not be verified.');
+      return page({ kind: 'error', message: 'Battle.net identity could not be verified.' });
     const id = 'bnet:' + user.sub,
       name = typeof user.battletag === 'string' ? user.battletag : 'Battle.net player',
       token = random();
@@ -264,7 +198,7 @@ export async function route(request, env) {
         now(),
       ),
     ]);
-    return page('You’re connected. Welcome home.');
+    return page({ kind: 'success' });
   }
   if (p === '/auth/device/poll' && request.method === 'POST') {
     const b = await body(request);
@@ -299,7 +233,7 @@ export async function route(request, env) {
       who.id,
       who.user_id,
     ).run();
-  const control = await controls(request, env, who, body, random);
+  const control = await controls(request, env, who);
   if (control) return control;
   if (p === '/auth/logout' && request.method === 'POST') {
     await query(
@@ -332,7 +266,7 @@ export async function route(request, env) {
     });
   }
   if ((profileMatch || p === '/profiles/current') && request.method === 'PUT') {
-    return saveSnapshot(env, who, flavor, await body(request, 1500000), random);
+    return saveSnapshot(env, who, flavor, await body(request, 1500000));
   }
   return json({ error: 'Not found.' }, 404);
 }

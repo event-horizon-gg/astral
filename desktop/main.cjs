@@ -15,22 +15,19 @@ const path = require('node:path'),
   crypto = require('node:crypto');
 const engine = require('./engine.cjs'),
   settings = require('./settings.cjs');
+const storage = require('./storage.cjs');
 const flavors = require('./flavors.cjs');
 const updater = require('./updater.cjs'),
   projects = require('./projects.cjs');
 const scheduler = require('./scheduler.cjs');
 const addonActivity = require('./addon-activity.cjs');
 const suites = require('./suites.cjs');
-const localProfiles = require('./local-profiles.cjs');
-const setupSync = require('./sync.cjs');
-const syncedPackages = require('./library-sync.cjs');
-const profilePolicy = require('./profile-policy.cjs');
-const addonSelection = require('./addon-selection.cjs');
-const profilePreviews = new Map();
+const profileContext = require('./profile-context.cjs');
+const reviews = require('./reviews.cjs');
 const clients = require('./clients.cjs');
 const credentials = require('./credentials.cjs').create(safeStorage);
 const { AppUpdates } = require('./app-updates.cjs');
-let appUpdates;
+let appUpdates, backgroundJobs;
 const ackArgument = process.argv.indexOf('--astral-update-ack');
 let updateAck = ackArgument >= 0 ? process.argv[ackArgument + 1] : null;
 async function acknowledgeUpdate() {
@@ -44,29 +41,13 @@ let backgroundUpdates = {
   enabled: false,
   supported: ['darwin', 'win32'].includes(process.platform),
 };
-const previews = new Map();
+const previews = reviews.create({
+  context: () => ({ root: path.resolve(config.root) }),
+  ttl: 600000,
+  message: 'This package review expired or belongs to another game client. Review it again.',
+  dispose: (preview) => fs.rm(preview.temp, { recursive: true, force: true }),
+});
 let taskActive = false;
-const mutations = new Set([
-  'update',
-  'installSuite',
-  'importZip',
-  'restore',
-  'sync',
-  'shareLibrary',
-  'setSyncProfile',
-  'applyProfile',
-  'createSyncProfile',
-  'renameSyncProfile',
-  'deleteSyncProfile',
-  'setAccount',
-  'restoreCloud',
-  'deleteCloud',
-  'installProject',
-  'installAppUpdate',
-  'client',
-  'chooseRoot',
-  'check',
-]);
 async function exclusive(fn) {
   if (taskActive) throw Error('Wait until the current operation finishes.');
   taskActive = true;
@@ -88,49 +69,25 @@ const send = (value) => {
   win?.webContents.send('astral:progress', value);
 };
 async function persist() {
-  await engine.save(path.join(data, 'config.json'), config);
+  await storage.save(path.join(data, 'config.json'), config);
 }
-async function request(route, { method = 'GET', body, token = true } = {}) {
-  if (!config.service) throw Error('Sign-in is temporarily unavailable. Please try again later.');
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) {
-    const stored = await engine.json(path.join(data, 'session.json'), null);
-    if (!stored) throw Error('Sign in with Battle.net first.');
-    headers.Authorization = 'Bearer ' + (await credentials.decrypt(stored.token));
-  }
-  const r = await fetch(config.service + route, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30000),
-  });
-  const result = await r.json().catch(() => ({ error: 'Unexpected service response.' }));
-  if (!r.ok) {
-    if (r.status === 401 && token) {
-      await fs.rm(path.join(data, 'session.json'), { force: true });
-      win?.webContents.send('astral:changed');
-    }
-    if (r.status === 409) {
-      const e = Error(
-        result.error || 'Both computers have changed. Review both versions before syncing.',
-      );
-      e.conflict = true;
-      throw e;
-    }
-    throw Error(result.error || 'The sync service could not complete the request.');
-  }
-  return result;
-}
-function validSyncProfile(value) {
-  return typeof value === 'string' && /^(regular|handheld|[a-f0-9]{32})$/.test(value);
-}
-function syncProfile() {
-  return validSyncProfile(config.syncProfile) ? config.syncProfile : 'regular';
-}
-function syncScope() {
-  const client = flavors.flavor(config.root);
-  return syncProfile() === 'regular' ? client : client + '-' + syncProfile();
-}
+const runtime = {
+  get config() {
+    return config;
+  },
+  set config(value) {
+    config = value;
+  },
+  get data() {
+    return data;
+  },
+};
+const session = require('./cloud-session.cjs').create({
+  configuration: () => config,
+  directory: () => data,
+  credentials,
+  changed: () => win?.webContents.send('astral:changed'),
+});
 async function signalSyncReady(message) {
   if (config.syncProfilePending) return;
   try {
@@ -140,141 +97,45 @@ async function signalSyncReady(message) {
     send({ kind: 'sync-paused', message: error.message });
   }
 }
-async function state() {
-  const inventory = await engine.inventory(config.root, data);
-  const acc = await settings.accounts(config.root);
-  if (!config.account && acc.length === 1) {
-    config.account = acc[0];
+async function reconcileAccount() {
+  const accounts = await settings.accounts(config.root);
+  if (!config.account && accounts.length === 1) {
+    config = profileContext.accountChanged(config, accounts[0]);
     await persist();
   }
-  const session = await engine.json(path.join(data, 'session.json'), null);
-  const type = flavors.flavor(config.root);
-  const parent = path.dirname(config.root);
-  const clients = [];
-  for (const [id, folder, label] of [
-    ['retail', '_retail_', 'Retail'],
-    ['forever', '_forever_', 'Forever'],
-  ]) {
-    const root = path.join(parent, folder);
-    if (await engine.exists(root)) clients.push({ id, root, label });
-  }
-  const artwork = new Map(inventory.addons.filter((a) => a.icon).map((a) => [a.id, a.icon]));
-  let addonChoices = { rows: [] };
-  if (config.account) {
-    try {
-      const base = await settings.accountRoot(config.root, config.account);
-      addonChoices.rows = addonSelection.rows(
-        await addonSelection.capture(config.root, base),
-        inventory.addons,
-      );
-    } catch (error) {
-      addonChoices.error = error.message;
-    }
-  }
-  for (const client of clients.filter((c) => c.root !== config.root)) {
-    const other = await engine.inventory(client.root, data);
-    for (const addon of other.addons)
-      if (addon.icon && !artwork.has(addon.id)) artwork.set(addon.id, addon.icon);
-  }
-  return {
-    ...inventory,
-    addonChoices,
-    flavor: type,
-    clients,
-    catalog: engine.catalog
-      .filter((a) => !a.local && flavors.allowed(a, type))
-      .map((a) => ({
-        ...a,
-        icon: artwork.get(a.id) || null,
-        installed: inventory.addons.some((i) => i.id === a.id),
-      })),
-    root: config.root,
-    account: config.account,
-    accounts: acc,
-    cloudConfigured: !!config.service,
-    signedIn: !!session,
-    startup: !!config.startup,
-    autoUpdates: config.autoUpdates !== false,
+  return accounts;
+}
+async function state() {
+  const accounts = await reconcileAccount();
+  return require('./app-state.cjs').collect({
+    config,
+    data,
+    accounts,
+    identity: await session.identity(),
     backgroundUpdates,
     appVersion: app.getVersion(),
-    appUpdates: { ...appUpdates?.status, enabled: config.appUpdateChecks !== false },
-    legacyBackups: await engine.exists(
-      path.join(
-        process.platform === 'win32'
-          ? process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
-          : path.join(os.homedir(), 'Library', 'Application Support'),
-        'Astral RaiderIO',
-        'Backups',
-      ),
-    ),
-    updateIgnored: config.updateIgnored?.[type] || [],
-    dailyUpdates: await updater.status(data),
-    suite: type === 'forever' ? { id: 'forever', addons: suites.FOREVER } : null,
-    addonActivity: await addonActivity.list(data, config.root),
-    legacyRio: await engine.exists(
-      path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.joaoseixas.astral-raiderio.plist'),
-    ),
-    accountName: session?.name || '',
-    machine: os.hostname(),
-    platform: process.platform,
-    running: await engine.gameRunning().catch(() => null),
-    backups: await engine.backups(data, config.root),
+    appUpdates,
+    releases,
     progress,
     lastError,
-    lastSync: config.lastSync || null,
-    syncRevision: config.syncRevision || 0,
-    syncProfile: syncProfile(),
-    syncProfilePending: !!config.syncProfilePending,
-    providers: [
-      {
-        name: 'GitHub',
-        status: 'Connected',
-        detail: 'Official packaged releases',
-        available: true,
-      },
-      {
-        name: 'Wago',
-        status: 'Access pending',
-        detail: 'Manager API access has not been granted',
-        available: false,
-      },
-      {
-        name: 'CurseForge',
-        status: 'Access pending',
-        detail: 'Requires an approved third-party key',
-        available: false,
-      },
-    ],
-    addons: inventory.addons.map((a) => ({
-      ...a,
-      release: releases[a.id] || null,
-      status:
-        releases[a.id] && !releases[a.id].error
-          ? engine.needsUpdate(a, releases[a.id])
-            ? 'update'
-            : 'current'
-          : a.status,
-    })),
-  };
-}
-function handle(name, fn) {
-  ipcMain.handle('astral:' + name, async (event, ...args) => {
-    if (event.sender !== win?.webContents || event.senderFrame !== win?.webContents.mainFrame)
-      throw Error('Untrusted caller.');
-    try {
-      lastError = null;
-      return await (mutations.has(name) ? exclusive(() => fn(...args)) : fn(...args));
-    } catch (e) {
-      lastError = e.message;
-      throw Error(e.message);
-    }
   });
 }
+const handle = require('./ipc.cjs').register({
+  ipcMain,
+  window: () => win,
+  exclusive,
+  clearError: () => {
+    lastError = null;
+  },
+  failed: (error) => {
+    lastError = error.message;
+  },
+});
 async function initialize() {
   if (config) return;
   data = app.getPath('userData');
   await fs.mkdir(data, { recursive: true });
-  config = await engine.json(path.join(data, 'config.json'), {});
+  config = await storage.json(path.join(data, 'config.json'), {});
   if (!config.service) config.service = 'https://astral-sync.astral-joaoseixas.workers.dev';
   if (!config.root) config.root = await engine.defaultRoot();
   if (!config.device) config.device = crypto.randomUUID();
@@ -311,9 +172,13 @@ async function daily(force = false) {
   }
   return exclusive(async () => {
     const roots = [];
-    for (const folder of ['_retail_', '_forever_']) {
-      const root = path.join(path.dirname(config.root), folder);
-      if (await engine.exists(path.join(root, 'Interface', 'AddOns'))) roots.push(root);
+    const selectedType = flavors.flavor(config.root);
+    for (const type of ['retail', 'forever']) {
+      const root =
+        type === selectedType
+          ? config.root
+          : config.spaces?.[type]?.root || path.join(path.dirname(config.root), '_' + type + '_');
+      if (await storage.exists(path.join(root, 'Interface', 'AddOns'))) roots.push(root);
     }
     try {
       await updater.run({
@@ -323,7 +188,7 @@ async function daily(force = false) {
         ignored: config.updateIgnored,
         legacyRio:
           process.platform === 'darwin' &&
-          (await engine.exists(
+          (await storage.exists(
             path.join(
               os.homedir(),
               'Library',
@@ -406,7 +271,7 @@ async function main() {
         ? process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
         : path.join(os.homedir(), 'Library', 'Application Support');
     const folder = path.join(root, 'Astral RaiderIO', 'Backups');
-    if (!(await engine.exists(folder))) throw Error('No earlier Raider.IO backups were found.');
+    if (!(await storage.exists(folder))) throw Error('No earlier Raider.IO backups were found.');
     return shell.openPath(folder);
   });
   handle('openProvider', async (name) => {
@@ -419,220 +284,30 @@ async function main() {
     return shell.openExternal(urls[name]);
   });
   handle('openProject', async (repo) => {
-    if (!projects.validRepo(repo)) throw Error('Invalid GitHub project.');
+    if (!require('./github.cjs').validRepo(repo)) throw Error('Invalid GitHub project.');
     return shell.openExternal('https://github.com/' + repo + '/releases');
   });
-  handle('cloudInfo', async () => request('/cloud/' + syncScope()));
-  const libraryPath = () => '/profiles/' + flavors.flavor(config.root) + '/library';
-  handle('sharedLibrary', () => request(libraryPath()));
-  handle('shareLibrary', async (revision) => {
-    if (!(await engine.exists(path.join(config.root, 'Interface', 'AddOns'))))
-      throw Error('Select your WoW installation folder first.');
-    const { addons } = await engine.inventory(config.root, data);
-    const seen = new Set();
-    const library = [];
-    for (const addon of addons) {
-      const key = addon.folder.toLowerCase();
-      if (seen.has(key) || !/^[a-z0-9_-]{1,100}$/.test(key)) continue;
-      seen.add(key);
-      library.push({ folder: addon.folder, name: addon.name.trim().slice(0, 100) || addon.folder });
-    }
-    return request(libraryPath(), { method: 'PUT', body: { addons: library, revision } });
-  });
-  const syncProfilesPath = () => '/sync-profiles/' + flavors.flavor(config.root);
-  handle('syncProfiles', () => request(syncProfilesPath()));
-  handle('createSyncProfile', (name) =>
-    request(syncProfilesPath(), { method: 'POST', body: { name } }),
-  );
-  handle('renameSyncProfile', (id, name) => {
-    if (!validSyncProfile(id)) throw Error('Unknown sync profile.');
-    return request(syncProfilesPath() + '/' + id, { method: 'PATCH', body: { name } });
-  });
-  handle('deleteSyncProfile', (id) => {
-    if (typeof id !== 'string' || !/^[a-f0-9]{32}$/.test(id))
-      throw Error('Unknown custom profile.');
-    if (id === syncProfile()) throw Error('Switch to another profile before deleting this one.');
-    return request(syncProfilesPath() + '/' + id, { method: 'DELETE', body: { confirm: id } });
-  });
-  handle('setSyncProfile', async (value) => {
-    if (!validSyncProfile(value)) throw Error('Unknown sync profile.');
-    if (value === syncProfile()) return state();
-    throw Error('Review the profile change before switching.');
-  });
-  handle('previewProfile', async (value, edits = {}) => {
-    if (taskActive) throw Error('Wait until the current operation finishes.');
-    if (!validSyncProfile(value)) throw Error('Unknown sync profile.');
-    if (await engine.gameRunning()) throw Error('Close WoW before changing profiles.');
-    if (
-      !['regular', 'handheld'].includes(value) &&
-      value !== syncProfile() &&
-      !(await localProfiles.read(data, config.root, config.account, value))
-    ) {
-      const { profiles } = await request(syncProfilesPath());
-      if (!profiles.some((p) => p.id === value)) throw Error('Unknown sync profile.');
-    }
-    const from = syncProfile(),
-      root = config.root,
-      account = config.account;
-    const plan = await localProfiles.prepare({ data, root, account, from, to: value, edits });
-    if (config.root !== root || config.account !== account || syncProfile() !== from)
-      throw Error('The selected setup changed. Review the profile again.');
-    const token = crypto.randomBytes(24).toString('hex');
-    profilePreviews.clear();
-    profilePreviews.set(token, {
-      root,
-      account,
-      from,
-      to: value,
-      edits,
-      fingerprint: plan.fingerprint,
-      expires: Date.now() + 300000,
-    });
-    return {
-      token,
-      target: value,
-      initialized: plan.initialized,
-      changes: plan.changes,
-      changedSettings: plan.changedSettings,
-      packages: plan.packages.queue,
-      handheld: value === 'handheld' ? flavors.flavor(config.root) : null,
-      missing: plan.packages.manual,
-    };
-  });
-  handle('applyProfile', async (token) => {
-    const preview = profilePreviews.get(token);
-    profilePreviews.delete(token);
-    if (
-      !preview ||
-      preview.expires < Date.now() ||
-      preview.root !== config.root ||
-      preview.account !== config.account ||
-      preview.from !== syncProfile()
-    )
-      throw Error('The setup changed. Review the profile again.');
-    const previous = structuredClone(config);
-    await localProfiles.apply({
-      data,
-      ...preview,
-      expected: preview.fingerprint,
-      onProgress: send,
-      running: engine.gameRunning,
-      commit: async () => {
-        if (preview.to !== preview.from) {
-          config.syncProfile = preview.to;
-          config.syncProfilePending = true;
-          config.lastHash = null;
-          config.lastRemoteHash = null;
-          config.lastSync = null;
-          config.syncRevision = 0;
-        }
-        try {
-          await persist();
-        } catch (error) {
-          config = previous;
-          throw error;
-        }
-      },
-    });
-    return state();
-  });
-  handle('revokeDevice', async (id) => {
-    if (typeof id !== 'string' || !id.match(/^[A-Za-z0-9_-]{32,64}$/))
-      throw Error('Invalid device.');
-    const result = await request('/devices/' + id, { method: 'DELETE' });
-    if (result.current) await fs.rm(path.join(data, 'session.json'), { force: true });
-    return state();
-  });
-  handle('restoreCloud', async (id, revision) => {
-    if (await engine.gameRunning()) throw Error('Close WoW before restoring settings.');
-    if (
-      typeof id !== 'string' ||
-      !id.match(/^[A-Za-z0-9_-]{43}$/) ||
-      !Number.isSafeInteger(revision)
-    )
-      throw Error('Invalid cloud backup.');
-    const root = config.root,
-      account = config.account,
-      type = syncScope();
-    const old = await request('/profiles/' + type + '/history/' + id);
-    const verified = settings.inspect(old.payload);
-    if (old.hash && old.hash !== verified.hash)
-      throw Error('The cloud backup checksum does not match.');
-    const current = settings.decode((await settings.capture(root, account, data)).payload);
-    const target = profilePolicy.apply(settings.decode(old.payload), {
-      root,
-      profile: syncProfile(),
-      inventory: await engine.inventory(root, data),
-      currentInput: current.input,
-    });
-    const plan = await syncedPackages.plan({
-      root,
-      data,
-      target: syncedPackages.required(target.library || [], target.addonSelection),
-    });
-    if (plan.manual.length)
-      throw Error(
-        'Connect or install these addons before restoring: ' +
-          plan.manual.map((a) => a.name).join(', '),
-      );
-    const preserve = profilePolicy.encode({
-      schema: 2,
-      files: [],
-      addonSelection: current.addonSelection,
-    });
-    await syncedPackages.install({
-      root,
-      data,
-      plan,
-      onProgress: send,
-      afterInstall: () => settings.apply(root, account, preserve.payload, data, engine.gameRunning),
-    });
-    send({});
-    if (await engine.gameRunning()) throw Error('WoW started. Restore deferred.');
-    const result = await request('/profiles/' + type + '/history/' + id + '/restore', {
-      method: 'POST',
-      body: { revision, hash: verified.hash },
-    });
-    await settings.apply(
-      root,
-      account,
-      profilePolicy.encode(target).payload,
-      data,
-      engine.gameRunning,
-    );
-    config.syncProfilePending = false;
-    config.lastHash = (await settings.capture(root, account, data)).hash;
-    config.lastRemoteHash = verified.hash;
-    config.syncRevision = result.revision;
-    config.lastSync = new Date().toISOString();
-    await persist();
-    return state();
-  });
-  handle('deleteCloud', async (confirm) => {
-    if (confirm !== 'DELETE') throw Error('Type DELETE to remove your cloud data.');
-    await request('/account/data', { method: 'DELETE', body: { confirm } });
-    await fs.rm(path.join(data, 'session.json'), { force: true });
-    config = clients.resetSync(config);
-    await persist();
-    return state();
+  require('./cloud-handlers.cjs').register({
+    handle,
+    runtime,
+    state,
+    persist,
+    send,
+    session,
+    shell,
+    busy: () => taskActive,
   });
   handle('projectRelease', async (repo) => projects.releases(repo));
   handle('inspectProject', async (repo, assetId) => {
     if (taskActive) throw Error('Wait until the current operation finishes.');
-    for (const p of previews.values()) await fs.rm(p.temp, { recursive: true, force: true });
-    previews.clear();
+    const reviewContext = previews.capture();
+    await previews.clear();
     if (!Number.isSafeInteger(assetId)) throw Error('Invalid release package.');
     const preview = await projects.inspect(repo, assetId, config.root, data);
-    const token = crypto.randomUUID();
-    previews.set(token, preview);
-    for (const [key, p] of previews)
-      if (Date.now() - p.created > 10 * 60000) {
-        await fs.rm(p.temp, { recursive: true, force: true });
-        previews.delete(key);
-      }
+    const token = await previews.replace(preview, reviewContext);
     const missing = [];
     for (const folder of preview.definition.requires || [])
-      if (!(await engine.exists(path.join(config.root, 'Interface', 'AddOns', folder))))
+      if (!(await storage.exists(path.join(config.root, 'Interface', 'AddOns', folder))))
         missing.push(folder);
     return {
       token,
@@ -644,31 +319,29 @@ async function main() {
       missing,
     };
   });
-  handle('installProject', async (token) => {
-    const preview = previews.get(token);
-    if (!preview) throw Error('Review the release package again before installing.');
-    try {
-      send({
-        kind: 'update',
-        id: preview.definition.id,
-        percent: 0,
-        message: 'Installing ' + preview.definition.name,
-      });
-      await projects.install(preview, config.root, data, (p) =>
+  handle('installProject', (token) =>
+    previews.run(token, async (preview) => {
+      try {
         send({
           kind: 'update',
           id: preview.definition.id,
-          percent: p,
+          percent: 0,
           message: 'Installing ' + preview.definition.name,
-        }),
-      );
-      return await state();
-    } finally {
-      previews.delete(token);
-      await fs.rm(preview.temp, { recursive: true, force: true });
-      send({});
-    }
-  });
+        });
+        await projects.install(preview, config.root, data, (p) =>
+          send({
+            kind: 'update',
+            id: preview.definition.id,
+            percent: p,
+            message: 'Installing ' + preview.definition.name,
+          }),
+        );
+        return await state();
+      } finally {
+        send({});
+      }
+    }),
+  );
   handle('autoUpdates', async (enabled) => {
     config.autoUpdates = !!enabled;
     await persist();
@@ -728,24 +401,23 @@ async function main() {
     return state();
   });
   handle('update', async (id) => {
-    const a = (await engine.definitions(config.root, data)).find((a) => a.id === id);
-    if (!a?.repo && !a?.bundled) throw Error('This addon needs a connected official source.');
-    const inv = await engine.inventory(config.root, data);
-    const addon = inv.addons.find((x) => x.id === id) || a;
+    const definition = (await engine.definitions(config.root, data)).find(
+      (addon) => addon.id === id,
+    );
+    if (!definition?.repo && !definition?.bundled)
+      throw Error('This addon needs a connected official source.');
+    const inventory = await engine.inventory(config.root, data);
+    const addon = inventory.addons.find((item) => item.id === id) || definition;
     try {
-      await addonActivity.track(data, config.root, addon, 'update', async () => {
-        const release = await engine.getRelease(a, data);
-        if (addon.installed && updater.newer(addon, release) === false) {
-          releases[id] = release;
-          return { version: addon.version, unchanged: true };
-        }
-        send({ id, kind: 'update', percent: 0, message: 'Preparing ' + a.name });
-        const result = await engine.install(addon, config.root, data, release, (percent) =>
-          send({ id, kind: 'update', percent, message: 'Updating ' + a.name }),
-        );
-        releases[id] = release;
-        return result;
+      const outcome = await require('./addon-operations.cjs').execute({
+        addon,
+        root: config.root,
+        data,
+        fresh: false,
+        versionPolicy: addon.installed ? 'never-downgrade' : 'replace',
+        onProgress: send,
       });
+      releases[id] = outcome.release;
       return await state();
     } finally {
       send({});
@@ -825,130 +497,25 @@ async function main() {
   handle('setAccount', async (value) => {
     if (!(await settings.accounts(config.root)).includes(value))
       throw Error('Unknown local account.');
-    config.account = value;
-    config.syncRevision = 0;
-    config.lastHash = null;
-    config.lastRemoteHash = null;
+    config = profileContext.accountChanged(config, value);
     await persist();
     return state();
+  });
+  require('./sharing-handlers.cjs').register({
+    handle,
+    runtime,
+    state,
+    persist,
+    send,
+    dialog,
+    window: () => win,
+    busy: () => taskActive,
   });
   handle('snapshot', async () => {
     if (await engine.gameRunning())
       throw Error('Close WoW so its latest settings are saved first.');
     const s = await settings.capture(config.root, config.account, data);
     return { files: s.files, bytes: s.bytes, hash: s.hash };
-  });
-  handle('connect', async () => {
-    await credentials.available();
-    const verifier = crypto.randomBytes(32).toString('base64url');
-    const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
-    const pair = await request('/auth/device', {
-      method: 'POST',
-      body: { challenge, label: os.hostname() },
-      token: false,
-    });
-    if (!pair.url?.startsWith(config.service + '/auth/')) throw Error('Invalid sign-in address.');
-    await shell.openExternal(pair.url);
-    for (let i = 0; i < 120; i++) {
-      await new Promise((r) => setTimeout(r, 2000));
-      const result = await request('/auth/device/poll', {
-        method: 'POST',
-        body: { id: pair.id, verifier },
-        token: false,
-      });
-      if (result.token) {
-        await engine.save(path.join(data, 'session.json'), {
-          token: await credentials.encrypt(result.token),
-          name: result.name,
-        });
-        if (!config.syncProfilePending && !(await engine.gameRunning()))
-          setTimeout(
-            () =>
-              send({ kind: 'sync-ready', message: 'Battle.net connected. Preparing your setup.' }),
-            250,
-          );
-        return state();
-      }
-    }
-    throw Error('Sign-in expired. Try connecting again.');
-  });
-  handle('sync', async (choice, expectedScope, expectedRevision) => {
-    const scope = syncScope();
-    if (expectedScope && expectedScope !== scope)
-      throw Error('The sync profile changed. Try again.');
-    if (choice === 'auto' && config.syncProfilePending) return state();
-    if (await engine.gameRunning()) throw Error('Settings sync waits until WoW is closed.');
-    try {
-      // Both installed clients share packages, even when the other is selected.
-      for (const type of ['retail', 'forever']) {
-        const otherRoot = path.join(
-          path.dirname(config.root),
-          type === 'retail' ? '_retail_' : '_forever_',
-        );
-        if (
-          otherRoot === config.root ||
-          !(await engine.exists(path.join(otherRoot, 'Interface', 'AddOns')))
-        )
-          continue;
-        const saved = config.spaces?.[type];
-        const accounts = await settings.accounts(otherRoot);
-        const account =
-          saved?.root === otherRoot && accounts.includes(saved.account)
-            ? saved.account
-            : accounts.length === 1
-              ? accounts[0]
-              : null;
-        const result = await setupSync.collection({
-          root: otherRoot,
-          account,
-          data,
-          request,
-          onProgress: send,
-        });
-        if (
-          saved?.root === otherRoot &&
-          saved.account === account &&
-          saved.lastHash === result.beforeHash
-        )
-          saved.lastHash = result.afterHash;
-      }
-      const result = await setupSync.run({
-        root: config.root,
-        account: config.account,
-        data,
-        scope,
-        profile: syncProfile(),
-        lastHash: config.lastHash,
-        lastRemoteHash: config.lastRemoteHash,
-        choice,
-        expectedRevision,
-        device: config.device,
-        request,
-        onProgress: send,
-      });
-      if (result.conflict) return result;
-      if (result.incomplete) return { ...result, state: await state() };
-      if (result.libraryOnly)
-        return {
-          ...(await state()),
-          syncMessage:
-            'Addon collection shared. Open WoW once, then close it to sync this client’s settings.',
-        };
-      const { installed, ...updates } = result;
-      Object.assign(config, updates);
-      await persist();
-    } finally {
-      send({});
-    }
-    return state();
-  });
-  handle('disconnect', async () => {
-    try {
-      await request('/auth/logout', { method: 'POST' });
-    } finally {
-      await fs.rm(path.join(data, 'session.json'), { force: true });
-    }
-    return state();
   });
   handle('openSource', async (id) => {
     const a = (await engine.definitions(config.root, data)).find((a) => a.id === id);
@@ -975,6 +542,10 @@ async function main() {
     titleBarStyle: 'hiddenInset',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
+      additionalArguments: [
+        '--astral-commands=' +
+          encodeURIComponent(JSON.stringify(Object.keys(require('../shared/commands.json')))),
+      ],
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -1016,54 +587,22 @@ async function main() {
   if (process.argv.includes('--dev')) await win.loadURL('http://127.0.0.1:5173');
   else await win.loadFile(path.join(__dirname, '../dist/index.html'));
   await acknowledgeUpdate();
-  const checkApp = () => {
-    if (
-      config.appUpdateChecks !== false &&
-      !appUpdates.active &&
-      Date.now() - (appUpdates.status.checkedAt || 0) > 86400000
-    )
-      appUpdates.check().catch(() => {});
-  };
-  const appUpdateTimer = setInterval(checkApp, 3600000);
-  appUpdateTimer.unref();
-  setTimeout(checkApp, 10000).unref();
-  if ((await engine.exists(path.join(data, 'session.json'))) && !(await engine.gameRunning()))
-    setTimeout(() => signalSyncReady('Checking your connected setup.'), 750);
-  // Device agent: includes the first upload after signing in while WoW is open.
-  let wasRunning = await engine.gameRunning().catch(() => false);
-  const timer = setInterval(async () => {
-    try {
-      const running = await engine.gameRunning();
-      if (wasRunning !== running) win?.webContents.send('astral:changed');
-      if (wasRunning && !running) {
-        const s = await state();
-        if (s.signedIn) await signalSyncReady('WoW closed. Your settings are ready to sync.');
-      }
-      wasRunning = running;
-    } catch {}
-  }, 15000);
-  timer.unref();
-  const syncTimer = setInterval(async () => {
-    if (taskActive || config.syncProfilePending) return;
-    try {
-      if ((await engine.exists(path.join(data, 'session.json'))) && !(await engine.gameRunning()))
-        await signalSyncReady('Checking your connected setup.');
-    } catch {}
-  }, 300000);
-  syncTimer.unref();
-  const dailyTimer = setInterval(() => {
-    if (!taskActive)
-      daily().catch((e) => {
-        lastError = e.message;
-      });
-  }, 60000);
-  dailyTimer.unref();
-  setTimeout(() => {
-    if (!taskActive)
-      daily().catch((e) => {
-        lastError = e.message;
-      });
-  }, 15000);
+  backgroundJobs = require('./background-jobs.cjs').create({
+    configuration: () => config,
+    updates: appUpdates,
+    gameRunning: engine.gameRunning,
+    hasSession: session.exists,
+    state,
+    changed: () => win?.webContents.send('astral:changed'),
+    syncReady: signalSyncReady,
+    daily,
+    busy: () => taskActive,
+    failed: (job, error) => {
+      if (job === 'daily') lastError = error.message;
+      else console.warn('Astral background ' + job + ':', error.message);
+    },
+  });
+  await backgroundJobs.start();
 }
 if (!app.requestSingleInstanceLock({ scheduled: scheduledLaunch, updateAck })) app.quit();
 else {
@@ -1107,6 +646,7 @@ else {
     });
   app.on('before-quit', () => {
     app.isQuitting = true;
+    backgroundJobs?.stop();
   });
   app.on('activate', () => {
     win?.show();

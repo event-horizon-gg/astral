@@ -33,6 +33,8 @@ Choose the game client in the header. Check for updates, inspect an addon or use
 
 Astral now owns the daily addon job, including Raider.IO. The packaged app schedules its own `--daily-update` entry point hourly, without opening a window. Successful checks wait 24 hours; failures retry after an hour and open games defer writes. When Astral is already running, the single-instance handoff uses its existing updater. Both paths use the same installer, per-client exclusions, backups and Activity history. Mac uses a user LaunchAgent; Windows uses a user scheduled task (cross-built, not runtime tested). Earlier Raider.IO helper backups remain accessible from Activity.
 
+On Retail, install **Astral Talents** from Discover and type `/astraltalents` in WoW. It shows Wowhead's Mythic+, Raid, and Delve builds for your current Druid spec. **Import** fills Blizzard's loadout dialog for you to review and confirm. With automatic addon updates enabled, Astral checks the guides daily while WoW is closed. If a check fails, the last verified builds stay in place.
+
 ## Develop
 
 Use Node.js 24+:

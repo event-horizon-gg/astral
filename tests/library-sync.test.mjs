@@ -7,7 +7,7 @@ import library from '../desktop/library-sync.cjs';
 import sync from '../desktop/sync.cjs';
 import engine from '../desktop/engine.cjs';
 import settings from '../desktop/settings.cjs';
-import policy from '../desktop/profile-policy.cjs';
+import format from '../desktop/setup-format.cjs';
 import gamepad from '../desktop/gamepad-settings.cjs';
 import profiles from '../desktop/local-profiles.cjs';
 const item = (folder) => ({ folder, name: folder });
@@ -155,7 +155,7 @@ test('missing target packages keep current bindings and never report successful 
     .createHash('sha256')
     .update('cloud bindings')
     .digest('hex');
-  const snapshot = policy.encode(cloud);
+  const snapshot = format.encode(cloud);
   const server = service({ '/profiles/retail/current': { ...snapshot, revision: 2 } });
   const result = await sync.run({ ...f, ...server, choice: 'cloud', api: apiFor(f) });
   assert.equal(result.incomplete, true);
@@ -338,7 +338,7 @@ test('disabled manual addons do not block profile sync', async (t) => {
   const cloud = settings.decode((await settings.capture(f.root, f.account, f.data)).payload);
   cloud.library.push(item('UnknownAddon'));
   cloud.addonSelection.scopes[''].UnknownAddon = false;
-  const server = service({ '/profiles/retail/current': { ...policy.encode(cloud), revision: 2 } });
+  const server = service({ '/profiles/retail/current': { ...format.encode(cloud), revision: 2 } });
   const result = await sync.run({ ...f, ...server, choice: 'cloud', api: apiFor(f) });
   assert.equal(result.incomplete, undefined);
   assert.equal(result.syncProfilePending, false);
@@ -357,7 +357,7 @@ test('controller Config.wtf and account settings roll back together if WoW start
     settings.apply(
       f.root,
       f.account,
-      policy.encode(bundle).payload,
+      format.encode(bundle).payload,
       f.data,
       async () => ++checks >= finalCheck,
     ),
@@ -376,6 +376,6 @@ test('remote file metadata cannot opt an account file into Config.wtf writes', a
   const before = await gamepad.read(f.root);
   const bundle = settings.decode((await settings.capture(f.root, f.account, f.data)).payload);
   bundle.files[0].installation = true;
-  await settings.apply(f.root, f.account, policy.encode(bundle).payload, f.data, async () => false);
+  await settings.apply(f.root, f.account, format.encode(bundle).payload, f.data, async () => false);
   assert.equal(await gamepad.read(f.root), before);
 });

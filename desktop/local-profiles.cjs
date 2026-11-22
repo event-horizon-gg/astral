@@ -1,13 +1,15 @@
 const path = require('node:path');
 const crypto = require('node:crypto');
-const zlib = require('node:zlib');
 const fs = require('node:fs/promises');
 const engine = require('./engine.cjs');
+const storage = require('./storage.cjs');
+const format = require('./setup-format.cjs');
 const settings = require('./settings.cjs');
 const selection = require('./addon-selection.cjs');
 const policy = require('./profile-policy.cjs');
 const packages = require('./library-sync.cjs');
-const validId = (id) => typeof id === 'string' && /^(regular|handheld|[a-f0-9]{32})$/.test(id);
+const setup = require('./setup-application.cjs');
+const { validId } = require('../shared/profiles.cjs');
 function location(data, root, account, id) {
   if (!validId(id)) throw Error('Unknown profile.');
   const key = crypto
@@ -17,40 +19,35 @@ function location(data, root, account, id) {
   return path.join(data, 'local-profiles', key, id + '.json');
 }
 async function read(data, root, account, id) {
-  const saved = await engine.json(location(data, root, account, id), null);
-  if (saved && settings.inspect(saved.payload).hash !== saved.hash)
+  const saved = await storage.json(location(data, root, account, id), null);
+  if (saved && format.inspect(saved.payload).hash !== saved.hash)
     throw Error('The saved local profile checksum does not match.');
   return saved;
 }
-const encode = (bundle) => {
-  const payload = zlib.gzipSync(Buffer.from(JSON.stringify(bundle))).toString('base64');
-  return { payload, ...settings.inspect(payload) };
-};
 async function prepare({ data, root, account, from, to, edits = {} }) {
   if (!validId(from) || !validId(to)) throw Error('Unknown profile.');
   if (!edits || typeof edits !== 'object' || Array.isArray(edits))
     throw Error('Invalid addon choices.');
   const current = await settings.capture(root, account, data);
   const saved = from === to ? current : await read(data, root, account, to);
-  let target = saved || current;
-  let bundle = settings.decode(target.payload);
+  const currentBundle = format.decode(current.payload);
+  let bundle = format.decode((saved || current).payload);
   const inventory = await engine.inventory(root, data);
   if (Object.keys(edits).length) {
     bundle.schema = 2;
     bundle.addonSelection = selection.edit(
-      bundle.addonSelection || settings.decode(current.payload).addonSelection,
+      bundle.addonSelection || currentBundle.addonSelection,
       inventory.addons,
       edits,
     );
-    target = encode(bundle);
   }
   bundle = policy.apply(bundle, {
     root,
     profile: to,
     inventory,
-    currentInput: settings.decode(current.payload).input,
+    currentInput: currentBundle.input,
   });
-  target = encode(bundle);
+  const target = format.encode(bundle);
   const packagePlan = await packages.plan({
     root,
     data,
@@ -58,21 +55,19 @@ async function prepare({ data, root, account, from, to, edits = {} }) {
   });
   const base = await settings.accountRoot(root, account);
   if (bundle.addonSelection) await selection.plan(root, base, bundle.addonSelection);
-  const before = selection.rows(settings.decode(current.payload).addonSelection, inventory.addons);
+  const before = selection.rows(currentBundle.addonSelection, inventory.addons);
   const after = selection.rows(
-    bundle.addonSelection || settings.decode(current.payload).addonSelection,
+    bundle.addonSelection || currentBundle.addonSelection,
     inventory.addons,
   );
   const changes = after
     .filter((row) => before.find((old) => old.id === row.id)?.enabled !== row.enabled)
     .map((row) => ({ ...row, before: before.find((old) => old.id === row.id)?.enabled }));
-  const oldFiles = new Map(
-    settings.decode(current.payload).files.map((file) => [file.path, file.sha256]),
-  );
+  const oldFiles = new Map(currentBundle.files.map((file) => [file.path, file.sha256]));
   const changedSettings = bundle.files
     .filter((file) => oldFiles.get(file.path) !== file.sha256)
     .map((file) => file.path);
-  if (JSON.stringify(bundle.input) !== JSON.stringify(settings.decode(current.payload).input))
+  if (JSON.stringify(bundle.input) !== JSON.stringify(currentBundle.input))
     changedSettings.push('Controller settings');
   const fingerprint = crypto
     .createHash('sha256')
@@ -118,37 +113,28 @@ async function apply({
     );
   const sourceFile = location(data, root, account, from),
     targetFile = location(data, root, account, to);
-  const previousTarget = await fs.readFile(targetFile).catch(() => null);
-  await engine.save(sourceFile, plan.current);
-  let applied = false;
+  const previousTarget = await fs.readFile(targetFile).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  await storage.save(sourceFile, plan.current);
   try {
-    await installPackages({
+    await setup.installPackages({
       root,
+      account,
       data,
       plan: plan.packages,
+      current: plan.current,
+      running,
       onProgress,
-      afterInstall: () =>
-        settings.apply(
-          root,
-          account,
-          encode({
-            schema: 2,
-            files: [],
-            addonSelection: settings.decode(plan.current.payload).addonSelection,
-          }).payload,
-          data,
-          running,
-        ),
+      library: { install: installPackages },
     });
-    await settings.apply(root, account, plan.target.payload, data, running);
-    applied = true;
-    await engine.save(targetFile, plan.target);
-    await commit();
+    await settings.apply(root, account, plan.target.payload, data, running, async () => {
+      await storage.save(targetFile, plan.target);
+      await commit();
+    });
   } catch (error) {
-    // The installer already restores partial writes; also undo a completed apply
-    // if saving the active profile or preferences failed afterwards.
-    if (applied) await settings.apply(root, account, plan.current.payload, data, running);
-    if (from === to) await engine.save(targetFile, plan.current);
+    if (from === to) await storage.save(targetFile, plan.current);
     else if (previousTarget) await fs.writeFile(targetFile, previousTarget);
     else if (from !== to) await fs.rm(targetFile, { force: true });
     throw error;

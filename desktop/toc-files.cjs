@@ -34,7 +34,8 @@ async function validateFiles(content, directory, packageRoot, client) {
       .replace(/(?:\s*\[(?:Allow|Exclude)Load(?:GameType|TextLocale)\s+[^\]]+\])+\s*$/, '')
       .trim()
       .replaceAll('\\', '/')
-      .replaceAll('[Family]', client === 'retail' ? 'Mainline' : 'Classic');
+      .replaceAll('[Family]', client === 'retail' ? 'Mainline' : 'Classic')
+      .replaceAll('[Game]', client === 'retail' ? 'Standard' : 'Camelot');
     const locale = conditions.find((condition) => condition[1] === 'AllowLoadTextLocale');
     let variants = filename.includes('[TextLocale]')
       ? locale

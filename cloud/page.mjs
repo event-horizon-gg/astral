@@ -3,8 +3,9 @@ const escape = (s) =>
     /[&<>"']/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
   );
-export function page(message, home = false) {
-  const success = message === 'You’re connected. Welcome home.';
+export function page({ kind, message = '' }) {
+  const home = kind === 'home';
+  const success = kind === 'success';
   const title = home ? 'Astral' : success ? 'You’re signed in.' : message;
   const detail = home
     ? 'Open Astral to connect your Battle.net account.'
@@ -36,7 +37,7 @@ p{margin:0;color:var(--muted);font-size:17px;line-height:1.6;max-width:480px}
         'Content-Type': 'text/html;charset=utf-8',
         'Cache-Control': 'no-store',
         'Content-Security-Policy':
-          "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+          "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
         'Referrer-Policy': 'no-referrer',
         'X-Content-Type-Options': 'nosniff',
       },

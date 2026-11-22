@@ -1,8 +1,11 @@
 const engine = require('./engine.cjs');
 const settings = require('./settings.cjs');
 const packages = require('./library-sync.cjs');
+const setup = require('./setup-application.cjs');
 const policy = require('./profile-policy.cjs');
-const { flavor, syncAction } = require('./flavors.cjs');
+const { encode } = require('./setup-format.cjs');
+const { flavor } = require('./flavors.cjs');
+const { syncAction } = require('./sync-state.cjs');
 async function run({
   root,
   account,
@@ -67,18 +70,17 @@ async function run({
     target: library.required(target.library || [], target.addonSelection),
     api,
   });
-  const original = store.decode(local.payload);
-  const preserve = policy.encode({ schema: 2, files: [], addonSelection: original.addonSelection });
-  await library.install({
+  await setup.installPackages({
     root,
+    account,
     data,
     plan,
+    current: local,
     api,
+    store,
+    library,
     onProgress,
-    afterInstall: () => store.apply(root, account, preserve.payload, data, api.gameRunning),
   });
-  // Don't apply a half-installed profile. Keep its current UI/bindings and
-  // report packages for which this device has no connected, reviewed source.
   if (plan.manual.length)
     return {
       incomplete: true,
@@ -88,14 +90,11 @@ async function run({
     };
   if (await api.gameRunning()) throw Error('WoW started. Settings sync is paused.');
   if (remote.revision) {
-    // Avoid applying a stale selection after a potentially long download.
     const latest = await request(route);
     if (latest.revision !== remote.revision || latest.hash !== remote.hash)
       throw Error('The cloud backup changed during installation. Sync again.');
   }
-  const encoded = policy.encode(target);
-  // This also keeps newly installed shared addons disabled in profiles that
-  // never opted into them. The Handheld policy opts into ConsolePort explicitly.
+  const encoded = encode(target);
   if (encoded.hash !== local.hash || plan.queue.length || action === 'download')
     await store.apply(root, account, encoded.payload, data, api.gameRunning);
   local = await store.capture(root, account, data);
@@ -136,17 +135,8 @@ async function collection({ root, account, data, request, onProgress = () => {},
   });
   if (!account) return { libraryOnly: true };
   const before = await settings.capture(root, account, data);
-  const selection = settings.decode(before.payload).addonSelection;
-  const preserve = policy.encode({ schema: 2, files: [], addonSelection: selection });
   const plan = await packages.plan({ root, data, shared: shared.addons || [], api });
-  await packages.install({
-    root,
-    data,
-    plan,
-    api,
-    onProgress,
-    afterInstall: () => settings.apply(root, account, preserve.payload, data, api.gameRunning),
-  });
+  await setup.installPackages({ root, account, data, plan, current: before, api, onProgress });
   await packages.publish({ request, route, local: await packages.shareable(root, data, api) });
   return { beforeHash: before.hash, afterHash: (await settings.capture(root, account, data)).hash };
 }

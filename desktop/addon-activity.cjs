@@ -1,9 +1,9 @@
+const storage = require('./storage.cjs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const engine = require('./engine.cjs');
 
 async function list(data, root) {
-  const entries = await engine.json(path.join(data, 'addon-activity.json'), []);
+  const entries = await storage.json(path.join(data, 'addon-activity.json'), []);
   return (Array.isArray(entries) ? entries : []).filter(
     (entry) => entry.root === path.resolve(root),
   );
@@ -35,8 +35,8 @@ async function track(data, root, addon, action, operation) {
   }
   try {
     const file = path.join(data, 'addon-activity.json');
-    const entries = await engine.json(file, []);
-    await engine.save(file, [entry, ...(Array.isArray(entries) ? entries : [])].slice(0, 100));
+    const entries = await storage.json(file, []);
+    await storage.save(file, [entry, ...(Array.isArray(entries) ? entries : [])].slice(0, 100));
   } catch (error) {
     // An activity write must not turn a completed installation into a failed one,
     // or hide the original installer error.

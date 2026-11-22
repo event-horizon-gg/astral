@@ -1,6 +1,7 @@
 const path = require('node:path');
 const engine = require('./engine.cjs');
 const activity = require('./addon-activity.cjs');
+const operations = require('./addon-operations.cjs');
 const { flavor } = require('./flavors.cjs');
 const FOREVER = [
   'ellesmere',
@@ -39,14 +40,7 @@ async function install({
     const addon = api.catalog.find((addon) => addon.id === id);
     try {
       if (!addon?.repo) throw Error('The suite contains an unavailable source.');
-      await track(data, root, addon, 'update', async () => {
-        if (await api.gameRunning())
-          throw Error('WoW started. Close it before continuing installation.');
-        const release = await api.getRelease(addon, data, true);
-        return api.install(addon, root, data, release, (percent) =>
-          onProgress({ id, kind: 'update', percent, message: 'Installing ' + addon.name }),
-        );
-      });
+      await operations.execute({ addon, root, data, api, track, onProgress, verb: 'Installing' });
       result.installed.push(id);
     } catch (error) {
       result.failed = { id, name: addon?.name || id, message: error.message };

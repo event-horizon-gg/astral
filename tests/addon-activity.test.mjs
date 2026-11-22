@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import activity from '../desktop/addon-activity.cjs';
-import { runUpdateQueue } from '../src/update-queue.js';
+import { runUpdateQueue } from '../src/features/library/update-queue.js';
 
 const addon = { id: 'test', name: 'Test addon', version: '1' };
 test('manual outcomes survive reload, preserve installer errors, and stay scoped to the game installation', async (t) => {

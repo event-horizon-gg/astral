@@ -1,17 +1,7 @@
 const crypto = require('node:crypto');
-const zlib = require('node:zlib');
 const { flavor } = require('./flavors.cjs');
 const catalog = require('./catalog.cjs');
-const library = require('./library-sync.cjs');
-function encode(bundle) {
-  const raw = Buffer.from(JSON.stringify(bundle));
-  return {
-    payload: zlib.gzipSync(raw).toString('base64'),
-    hash: crypto.createHash('sha256').update(raw).digest('hex'),
-    files: bundle.files.length + 1,
-    bytes: raw.length,
-  };
-}
+const library = require('./library-data.cjs');
 function apply(bundle, { root, profile, inventory, currentInput }) {
   if (!['handheld', 'regular'].includes(profile)) return bundle;
   const result = structuredClone(bundle);
@@ -64,4 +54,8 @@ function apply(bundle, { root, profile, inventory, currentInput }) {
   }
   return result;
 }
-module.exports = { apply, encode };
+function choiceCapability(id, profile) {
+  const managed = id === 'consoleport' && ['regular', 'handheld'].includes(profile);
+  return { managed, ...(managed ? { managedReason: 'Enabled in Handheld only' } : {}) };
+}
+module.exports = { apply, choiceCapability };

@@ -55,7 +55,7 @@ test('folder selection supports Forever and preserves the client being left', as
   assert.equal(back.root, f.retail);
   assert.equal(back.account, 'RetailAccount');
   assert.equal(back.syncRevision, 3);
-  assert.equal(await clients.select(f.config, { root: f.retail }), f.config);
+  assert.deepEqual(await clients.select(f.config, { root: f.retail }), f.config);
 });
 test('invalid folder selection leaves the setup unchanged', async (t) => {
   const f = await fixture(t),

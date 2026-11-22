@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0
+
+- Share Retail and Forever setups as `.astral` files, including supported addon settings, keybindings and optional controller settings. Preview imports, map characters and back up current settings before applying.
+- Keep canceled file choosers and late responses from replacing the current library, account or profile view. Pin cloud restore confirmations to the revision originally reviewed.
+- Unify addon compatibility checks, update operations, profile installation and snapshot handling while retaining the existing interface.
+- Add the Astral Talents entry point and Druid build updates, and keep BigWigs release-file validation compatible with current game placeholders.
+- Strengthen rollback, release packaging, desktop bridge, renderer interactions and first-party addon checks.
+
 ## 0.8.0
 
 - Automatically share and install supported addon packages for Retail and Forever, across Regular and Handheld profiles and both installed clients.

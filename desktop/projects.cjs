@@ -3,27 +3,15 @@ const fs = require('node:fs/promises'),
   crypto = require('node:crypto');
 const engine = require('./engine.cjs'),
   { flavor } = require('./flavors.cjs');
-function validRepo(repo) {
-  return (
-    typeof repo === 'string' &&
-    /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/.test(repo) &&
-    !['.', '..'].includes(repo.split('/')[1])
-  );
-}
-const headers = { 'User-Agent': 'Astral-Companion/0.3', Accept: 'application/vnd.github+json' };
+const storage = require('./storage.cjs');
+const metadata = require('./addon-metadata.cjs');
+const github = require('./github.cjs');
 async function releases(repo, request = fetch) {
-  if (!validRepo(repo)) throw Error('Invalid GitHub project.');
-  const r = await request('https://api.github.com/repos/' + repo + '/releases/latest', {
-    headers,
-    signal: AbortSignal.timeout(25000),
+  const release = await github.latest(repo, {
+    request,
+    timeout: 25000,
+    unavailableMessage: 'No published packaged release is available for this project.',
   });
-  if (!r.ok)
-    throw Error(
-      r.status === 403 || r.status === 429
-        ? 'GitHub rate limit reached. Try again later.'
-        : 'No published packaged release is available for this project.',
-    );
-  const release = await r.json();
   if (release.draft || release.prerelease) throw Error('A stable packaged release is required.');
   return {
     repo,
@@ -72,56 +60,35 @@ async function inspect(repo, assetId, root, data, options = {}) {
     const curated = engine.catalog.find(
       (a) => a.repo?.toLowerCase() === repo.toLowerCase() && names.includes(a.folder),
     );
-    if (curated?.id === 'ellesmere')
-      names = names.filter((n) =>
-        flavor(root) === 'forever'
-          ? ![
-              'EllesmereUIMythicTimer',
-              'EllesmereUIFriends',
-              'EllesmereUILoadoutManager',
-              'EllesmereUIGroupFinder',
-            ].includes(n)
-          : n !== 'EllesmereUIForeverEssentials',
-      );
-    if (curated?.id === 'rio')
-      names = names.filter((n) =>
-        ['RaiderIO', 'RaiderIO_DB_EU_M', 'RaiderIO_DB_EU_R', 'RaiderIO_DB_EU_F'].includes(n),
-      );
-    const target = await engine.targetInterface(root),
-      details = [];
+    names = metadata.packageNames(curated, names, flavor(root));
     for (const name of names) {
-      const known = engine.catalog.find((a) => engine.allowedFolder(a, name));
+      const known = engine.catalog.find((addon) => metadata.allowedFolder(addon, name));
       if (known && known.repo?.toLowerCase() !== repo.toLowerCase())
         throw Error('This package would replace ' + known.name + ' from a different source.');
-      const dir = path.join(unpacked, name),
-        files = await fs.readdir(dir);
-      const toc = [
-        ...(flavor(root) === 'forever' ? [name + '_Camelot.toc'] : []),
-        name + '_Mainline.toc',
-        name + '.toc',
-      ].find((n) => files.includes(n));
-      if (!toc) throw Error('Client addon metadata missing: ' + name);
-      const content = await fs.readFile(path.join(dir, toc), 'utf8'),
-        meta = engine.toc(content);
-      if (!(meta.Interface || '').split(/[,\s]+/).includes(target)) {
-        if (curated && name !== curated.folder) continue;
-        throw Error(name + ' does not declare support for this ' + flavor(root) + ' build.');
-      }
-      await require('./toc-files.cjs').validateFiles(content, dir, unpacked, flavor(root));
-      details.push({
-        folder: name,
-        name: (meta.Title || name).replace(/\|c[0-9a-f]{8}|\|r/gi, ''),
-        version: meta.Version || release.tag,
-        requires: (meta.Dependencies || meta.RequiredDeps || '').split(/[,\s]+/).filter(Boolean),
-        replaces: await engine.exists(path.join(root, 'Interface', 'AddOns', name)),
-      });
     }
+    let inspected;
+    try {
+      inspected = await metadata.inspectPackage({ unpacked, root, addon: curated, folders: names });
+    } catch (error) {
+      if (error.code === 'INCOMPATIBLE_ADDON')
+        throw Error(
+          error.folder + ' does not declare support for this ' + error.client + ' build.',
+        );
+      throw error;
+    }
+    const target = inspected.interface;
+    names = inspected.names;
+    const details = await Promise.all(
+      inspected.details.map(async (detail) => ({
+        ...detail,
+        version: detail.version || release.tag,
+        replaces: await storage.exists(path.join(root, 'Interface', 'AddOns', detail.folder)),
+      })),
+    );
     const normalized = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
     const primary =
       details.find((a) => normalized(a.folder) === normalized(repo.split('/')[1])) || details[0];
-    const known = engine.catalog.find(
-      (a) => a.repo?.toLowerCase() === repo.toLowerCase() && names.includes(a.folder),
-    );
+    const known = curated;
     const versionPart = release.tag.replace(/^v/i, '');
     const pattern = escape(asset.name)
       .replace(escape(release.tag), '.*')
@@ -182,4 +149,4 @@ async function install(preview, root, data, onProgress = () => {}, options = {})
   if (preview.definition.dynamic) await engine.register(root, data, preview.definition);
   return result;
 }
-module.exports = { validRepo, releases, inspect, install };
+module.exports = { releases, inspect, install };

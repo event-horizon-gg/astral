@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import worker, { hash } from '../cloud/worker.mjs';
+import profileDefinition from '../shared/profiles.cjs';
 class DB {
   constructor(sql) {
     this.db = new DatabaseSync(':memory:');
@@ -239,18 +240,14 @@ test('Retail and Forever settings are isolated for the same account', async (t) 
 
 test('sign-in pages escape content and block embedded scripts', async () => {
   const { page } = await import('../cloud/page.mjs');
-  const response = page('<script>alert(1)</script>');
+  const response = page({ kind: 'error', message: '<script>alert(1)</script>' });
   const html = await response.text();
   assert.ok(html.includes('&lt;script&gt;'));
   assert.ok(!html.includes('<script>'));
   assert.match(response.headers.get('Content-Security-Policy'), /default-src 'none'/);
-  assert.match(response.headers.get('Content-Security-Policy'), /font-src 'self'/);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
   const home = await worker.fetch(req('/'), {});
   assert.equal(home.status, 200);
-  const font = await worker.fetch(req('/assets/cinzel-decorative.ttf'), {});
-  assert.equal(font.headers.get('Content-Type'), 'font/ttf');
-  assert.ok((await font.arrayBuffer()).byteLength > 50000);
 });
 
 test('device polls stay pending while the OAuth callback checks Battle.net', async (t) => {
@@ -502,4 +499,39 @@ test('shared libraries stay separate from settings revisions and other devices c
   ])
     assert.deepEqual(await remote.json(), { addons: null, revision: 0 });
   assert.equal((await (await send('/profiles/retail/current')).json()).revision, 1);
+});
+
+test('cloud profile names and capacity follow the shared product limits for each client', async (t) => {
+  const env = await fixture(t),
+    token = await login(env);
+  const send = (url, method = 'GET', data = null) =>
+    worker.fetch(req(url, method, data, token), env);
+  for (const client of ['retail', 'forever']) {
+    const route = '/sync-profiles/' + client;
+    const initial = (await (await send(route)).json()).profiles;
+    assert.deepEqual(
+      initial.map(({ id, name }) => ({ id, name })),
+      profileDefinition.defaults.map(({ id, name }) => ({ id, name })),
+    );
+    assert.equal(
+      (await send(route, 'POST', { name: 'N'.repeat(profileDefinition.maxNameLength + 1) })).status,
+      400,
+    );
+    const created = [];
+    for (let i = profileDefinition.defaults.length; i < profileDefinition.maxProfiles; i++) {
+      const response = await send(route, 'POST', {
+        name: 'N'.repeat(profileDefinition.maxNameLength),
+      });
+      assert.equal(response.status, 201);
+      created.push((await response.json()).id);
+    }
+    assert.equal((await send(route, 'POST', { name: 'Over capacity' })).status, 400);
+    assert.equal((await (await send(route)).json()).profiles.length, profileDefinition.maxProfiles);
+    assert.equal((await send(route + '/' + created[0], 'PATCH', { name: 'Renamed' })).status, 200);
+    assert.equal(
+      (await send(route + '/' + created[0], 'DELETE', { confirm: created[0] })).status,
+      200,
+    );
+    assert.equal((await send(route, 'POST', { name: 'Replacement' })).status, 201);
+  }
 });

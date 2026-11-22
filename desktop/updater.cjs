@@ -1,10 +1,12 @@
+const storage = require('./storage.cjs');
 const path = require('node:path');
 const engine = require('./engine.cjs');
+const talentBuilds = require('./talent-builds.cjs');
 const { allowed, flavor } = require('./flavors.cjs');
 const DAY = 24 * 60 * 60 * 1000;
-const { newer } = engine;
+const operations = require('./addon-operations.cjs');
 async function status(data) {
-  return engine.json(path.join(data, 'daily-updates.json'), { nextAt: 0, runs: [] });
+  return storage.json(path.join(data, 'daily-updates.json'), { nextAt: 0, runs: [] });
 }
 async function run({
   data,
@@ -15,12 +17,14 @@ async function run({
   now = Date.now(),
   onProgress = () => {},
   api = engine,
+  refreshTalents = talentBuilds.refresh,
 }) {
   const previous = await status(data);
   if (!force && now < (previous.nextAt || 0)) return previous;
   if (await api.gameRunning())
     return { ...previous, deferred: true, reason: 'Waiting for WoW to close.' };
   const report = { time: new Date(now).toISOString(), results: [], status: 'complete' };
+  let talentRefreshFailed = false;
   for (const root of [...new Set(roots)]) {
     const type = flavor(root),
       inv = await api.inventory(root, data);
@@ -46,10 +50,20 @@ async function run({
         break;
       }
       try {
-        onProgress({ id: addon.id, kind: 'update', percent: 0, message: 'Checking ' + addon.name });
-        const release = await api.getRelease(addon, data, true),
-          upgrade = newer(addon, release);
-        if (upgrade === null) {
+        const outcome = await operations.execute({
+          addon,
+          root,
+          data,
+          api,
+          onProgress,
+          versionPolicy: 'newer',
+          refreshTalents,
+          now,
+          // Daily outcomes already have their own retained report.
+          track: (_data, _root, _addon, _action, operation) => operation(),
+        });
+        const release = outcome.release;
+        if (outcome.status === 'review') {
           report.results.push({
             id: addon.id,
             name: addon.name,
@@ -59,13 +73,17 @@ async function run({
           });
           continue;
         }
-        if (!upgrade) {
-          report.results.push({ id: addon.id, name: addon.name, client: type, status: 'current' });
+        if (outcome.status === 'current' || outcome.refreshed) {
+          const refreshed = outcome.refreshed;
+          report.results.push({
+            id: addon.id,
+            name: addon.name,
+            client: type,
+            status: refreshed ? 'updated' : 'current',
+            ...(refreshed ? { message: 'Druid talent builds refreshed.' } : {}),
+          });
           continue;
         }
-        await api.install(addon, root, data, release, (percent) =>
-          onProgress({ id: addon.id, kind: 'update', percent, message: 'Updating ' + addon.name }),
-        );
         report.results.push({
           id: addon.id,
           name: addon.name,
@@ -76,7 +94,6 @@ async function run({
           notes: release.notes || '',
         });
       } catch (e) {
-        report.status = 'attention';
         report.results.push({
           id: addon.id,
           name: addon.name,
@@ -84,11 +101,16 @@ async function run({
           status: 'error',
           message: e.message,
         });
-        if (/WoW started|Close World of Warcraft/.test(e.message)) {
+        if (e.code === 'WOW_RUNNING') {
           report.status = 'deferred';
           break;
         }
-        if (/rate limit/i.test(e.message)) {
+        if (addon.id === 'talents') {
+          talentRefreshFailed = true;
+          continue;
+        }
+        report.status = 'attention';
+        if (e.code === 'RATE_LIMIT') {
           report.status = 'attention';
           break;
         }
@@ -96,12 +118,13 @@ async function run({
     }
     if (report.status !== 'complete') break;
   }
+  if (talentRefreshFailed && report.status === 'complete') report.status = 'attention';
   const result = {
     nextAt:
       now + (report.status === 'deferred' ? 60000 : report.status === 'attention' ? 3600000 : DAY),
     runs: [report, ...(previous.runs || [])].slice(0, 14),
   };
-  await engine.save(path.join(data, 'daily-updates.json'), result);
+  await storage.save(path.join(data, 'daily-updates.json'), result);
   return result;
 }
-module.exports = { newer, status, run };
+module.exports = { status, run };

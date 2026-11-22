@@ -1,49 +1,14 @@
 const { contextBridge, ipcRenderer } = require('electron');
-const actions = [
-  'state',
-  'checkAppUpdate',
-  'downloadAppUpdate',
-  'installAppUpdate',
-  'appUpdateChecks',
-  'cloudInfo',
-  'sharedLibrary',
-  'shareLibrary',
-  'setSyncProfile',
-  'previewProfile',
-  'applyProfile',
-  'syncProfiles',
-  'createSyncProfile',
-  'renameSyncProfile',
-  'deleteSyncProfile',
-  'revokeDevice',
-  'restoreCloud',
-  'deleteCloud',
-  'projectRelease',
-  'inspectProject',
-  'installProject',
-  'autoUpdates',
-  'autoIgnore',
-  'runDailyUpdates',
-  'discover',
-  'openProject',
-  'openProvider',
-  'startup',
-  'client',
-  'check',
-  'update',
-  'installSuite',
-  'importZip',
-  'restore',
-  'chooseRoot',
-  'setAccount',
-  'snapshot',
-  'connect',
-  'sync',
-  'disconnect',
-  'openSource',
-  'openBackups',
-  'openLegacyBackups',
-];
+const argument = process.argv.findLast((value) => value.startsWith('--astral-commands='));
+const actions = JSON.parse(
+  decodeURIComponent(argument?.slice('--astral-commands='.length) || '[]'),
+);
+if (
+  !Array.isArray(actions) ||
+  !actions.length ||
+  actions.some((name) => typeof name !== 'string' || !/^[a-z][A-Za-z]*$/.test(name))
+)
+  throw Error('Astral command contract is missing.');
 const api = Object.fromEntries(
   actions.map((name) => [name, (...args) => ipcRenderer.invoke('astral:' + name, ...args)]),
 );

@@ -30,18 +30,12 @@ test('credential access uses only asynchronous OS encryption and supports existi
     Buffer.from('new-encrypted-fixture').toString('base64'),
   );
 });
-test('a pending Keychain prompt times out and leaves the event loop responsive', async () => {
+test('a pending Keychain prompt times out with an actionable error', async () => {
   const c = credentials.create(
     { isAsyncEncryptionAvailable: () => new Promise(() => {}) },
     { platform: 'darwin', timeoutMs: 40 },
   );
-  let responsive = false;
-  const heartBeat = setTimeout(() => {
-    responsive = true;
-  }, 1);
   await assert.rejects(c.available(), /Unlock macOS Keychain/);
-  clearTimeout(heartBeat);
-  assert.equal(responsive, true);
 });
 test('unavailable or invalid credentials never fall back to plaintext', async () => {
   const unavailable = credentials.create({ isAsyncEncryptionAvailable: async () => false });

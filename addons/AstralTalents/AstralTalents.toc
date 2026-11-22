@@ -1,0 +1,8 @@
+## Interface: 120105
+## AllowLoadGameType: mainline
+## Title: Astral Talents
+## Notes: Retail Druid builds for Mythic+, raids, and world content. /astraltalents
+## Author: Astral
+## Version: 1.2.0
+Builds.lua
+Talents.lua

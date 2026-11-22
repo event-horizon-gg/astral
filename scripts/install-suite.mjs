@@ -1,4 +1,3 @@
-// The same deterministic suite installer used by Astral's Discover page.
 import path from 'node:path';
 import os from 'node:os';
 import suites from '../desktop/suites.cjs';

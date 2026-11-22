@@ -1,20 +1,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { flavor } = require('./flavors.cjs');
-const context = (config) =>
-  Object.fromEntries(
-    [
-      'root',
-      'account',
-      'lastHash',
-      'lastRemoteHash',
-      'lastSync',
-      'syncRevision',
-      'syncProfile',
-      'syncProfilePending',
-    ].map((key) => [key, config[key]]),
-  );
-// Plan first; a bad or cancelled selection must not alter the active setup.
+const { savedContext: context, localChanges } = require('./profile-context.cjs');
 async function select(
   config,
   { type, root },
@@ -53,18 +40,10 @@ async function select(
   return next;
 }
 function resetSync(config) {
-  const reset = (value) => ({
-    ...value,
-    lastHash: null,
-    lastRemoteHash: null,
-    lastSync: null,
-    syncRevision: 0,
-    syncProfilePending: true,
-  });
   return {
-    ...reset(config),
+    ...localChanges(config),
     spaces: Object.fromEntries(
-      Object.entries(config.spaces || {}).map(([id, value]) => [id, reset(value)]),
+      Object.entries(config.spaces || {}).map(([id, value]) => [id, localChanges(value)]),
     ),
   };
 }

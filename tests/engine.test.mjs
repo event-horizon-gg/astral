@@ -180,19 +180,20 @@ test('snapshot rejects unsafe paths and corrupted content', () => {
 });
 test('Retail and Forever are separate clients with separate sync decisions', async () => {
   const f = (await import('../desktop/flavors.cjs')).default;
+  const { syncAction } = await import('../desktop/sync-state.cjs');
   assert.equal(f.flavor('/WoW/_forever_'), 'forever');
   assert.equal(f.interfaceFor('forever'), '16001');
   assert.equal(f.allowed({ flavors: ['retail'] }, 'forever'), false);
   assert.equal(
-    f.syncAction({ hash: 'same', files: 1 }, { hash: 'same', revision: 1 }, null),
+    syncAction({ hash: 'same', files: 1 }, { hash: 'same', revision: 1 }, null),
     'unchanged',
   );
   assert.equal(
-    f.syncAction({ hash: 'empty', files: 0 }, { hash: 'remote', revision: 1 }, null),
+    syncAction({ hash: 'empty', files: 0 }, { hash: 'remote', revision: 1 }, null),
     'download',
   );
   assert.equal(
-    f.syncAction({ hash: 'local', files: 1 }, { hash: 'remote', revision: 1 }, 'old'),
+    syncAction({ hash: 'local', files: 1 }, { hash: 'remote', revision: 1 }, 'old'),
     'conflict',
   );
 });
@@ -462,4 +463,19 @@ test('native Family file placeholders validate only the selected client family',
   );
   await fs.writeFile(path.join(dir, 'AurasClassic.lua'), '-- classic');
   await validateFiles('Auras[Family].lua', dir, temp, 'forever');
+});
+
+test('BigWigs Game placeholders require the init file for the selected client', async (t) => {
+  const f = await fixture(t);
+  const { validateFiles } = await import('../desktop/toc-files.cjs');
+  const folder = path.join(f.base, 'BigWigs');
+  await fs.mkdir(folder);
+  await fs.writeFile(path.join(folder, 'Init_Standard.lua'), '');
+  await validateFiles('Init_[Game].lua', folder, f.base, 'retail');
+  await assert.rejects(
+    validateFiles('Init_[Game].lua', folder, f.base, 'forever'),
+    /Missing or invalid release file/,
+  );
+  await fs.writeFile(path.join(folder, 'Init_Camelot.lua'), '');
+  await validateFiles('Init_[Game].lua', folder, f.base, 'forever');
 });

@@ -1,5 +1,5 @@
 -- Run from the repository root with a Lua 5.1+ interpreter.
-local source = 'addons/AstralProfiles/Profiles.lua'
+local source = (ASTRAL_SOURCE_ROOT or '.') .. '/addons/AstralProfiles/Profiles.lua'
 local function copy(value)
     if type(value) ~= 'table' then return value end
     local result = {}

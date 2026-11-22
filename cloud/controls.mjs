@@ -1,10 +1,6 @@
-const now = () => Math.floor(Date.now() / 1000);
-const q = (env, sql, ...args) => env.DB.prepare(sql).bind(...args);
-const json = (data, status = 200) =>
-  Response.json(data, {
-    status,
-    headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' },
-  });
+import { now, query as q, json, body, random } from './runtime.mjs';
+import profiles from '../shared/profiles.cjs';
+const maxCustomProfiles = profiles.maxProfiles - profiles.defaults.length;
 const bounded = (value, max) =>
   value === undefined ? max : Math.max(0, Math.min(max, Number(value) || 0));
 export function limits(env) {
@@ -74,7 +70,7 @@ async function payload(env, id) {
   ).all();
   return rows.results.map((r) => r.content).join('');
 }
-export async function saveSnapshot(env, who, flavor, b, random) {
+export async function saveSnapshot(env, who, flavor, b) {
   if (
     !Number.isSafeInteger(b.revision) ||
     b.revision < 0 ||
@@ -200,7 +196,7 @@ export async function saveSnapshot(env, who, flavor, b, random) {
   ]);
   return json({ revision, updated });
 }
-async function manageProfiles(request, env, who, body, client, id) {
+async function manageProfiles(request, env, who, client, id) {
   const method = request.method;
   const scope = id === 'regular' ? client : client + '-' + id;
   if (!id && method === 'GET') {
@@ -217,10 +213,7 @@ async function manageProfiles(request, env, who, body, client, id) {
         { name, revision },
       ]),
     );
-    const result = [
-      ['regular', 'Regular'],
-      ['handheld', 'Handheld'],
-    ].map(([key, label]) => ({
+    const result = profiles.defaults.map(({ id: key, name: label }) => ({
       id: key,
       name: entries.get(key)?.name || label,
       revision: entries.get(key)?.revision || 0,
@@ -253,23 +246,30 @@ async function manageProfiles(request, env, who, body, client, id) {
   if ((!id && method === 'POST') || (id && method === 'PATCH')) {
     const b = await body(request);
     const name = typeof b.name === 'string' ? b.name.trim() : '';
-    if (!name || name.length > 40 || /[\u0000-\u001f\u007f]/.test(name))
-      return json({ error: 'Enter a profile name between 1 and 40 characters.' }, 400);
+    if (!name || name.length > profiles.maxNameLength || /[\u0000-\u001f\u007f]/.test(name))
+      return json(
+        { error: `Enter a profile name between 1 and ${profiles.maxNameLength} characters.` },
+        400,
+      );
     if (!id) {
       const key = crypto.randomUUID().replaceAll('-', '');
       const result = await q(
         env,
-        'INSERT INTO profiles(user_id,flavor,revision,name) SELECT ?,?,0,? WHERE (SELECT COUNT(*) FROM profiles WHERE user_id=? AND flavor LIKE ? AND flavor<>?)<6',
+        'INSERT INTO profiles(user_id,flavor,revision,name) SELECT ?,?,0,? WHERE (SELECT COUNT(*) FROM profiles WHERE user_id=? AND flavor LIKE ? AND flavor<>?)<?',
         who.user_id,
         client + '-' + key,
         name,
         who.user_id,
         client + '-%',
         client + '-handheld',
+        maxCustomProfiles,
       ).run();
       return result.meta.changes
         ? json({ id: key, name, revision: 0 }, 201)
-        : json({ error: 'You can add up to six custom profiles per game client.' }, 400);
+        : json(
+            { error: `You can add up to ${maxCustomProfiles} custom profiles per game client.` },
+            400,
+          );
     }
     const result =
       id === 'regular' || id === 'handheld'
@@ -291,7 +291,7 @@ async function manageProfiles(request, env, who, body, client, id) {
   }
   return null;
 }
-async function profileLibrary(request, env, who, body, scope) {
+async function profileLibrary(request, env, who, scope) {
   const custom = /-[a-f0-9]{32}$/.test(scope);
   if (request.method === 'GET') {
     const row = await q(
@@ -353,16 +353,16 @@ async function profileLibrary(request, env, who, body, scope) {
   return json({ addons: library, revision: revision + 1 });
 }
 
-export async function controls(request, env, who, body, random) {
+export async function controls(request, env, who) {
   const path = new URL(request.url).pathname;
   const library = path.match(
     /^\/profiles\/((?:retail|forever)(?:-handheld|-[a-f0-9]{32})?)\/library$/,
   );
-  if (library) return profileLibrary(request, env, who, body, library[1]);
+  if (library) return profileLibrary(request, env, who, library[1]);
   const manager = path.match(
     /^\/sync-profiles\/(retail|forever)(?:\/(regular|handheld|[a-f0-9]{32}))?$/,
   );
-  if (manager) return manageProfiles(request, env, who, body, manager[1], manager[2]);
+  if (manager) return manageProfiles(request, env, who, manager[1], manager[2]);
   const cloud = path.match(/^\/cloud\/((?:retail|forever)(?:-handheld|-[a-f0-9]{32})?)$/);
   if (cloud && request.method === 'GET') {
     const flavor = cloud[1];
@@ -423,18 +423,12 @@ export async function controls(request, env, who, body, random) {
       const b = await body(request);
       if (!snapshot.hash && (!b.hash || !String(b.hash).match(/^[0-9a-f]{64}$/)))
         return json({ error: 'The old backup must be verified before restoration.' }, 400);
-      return saveSnapshot(
-        env,
-        { ...who, label: 'Restored cloud backup' },
-        flavor,
-        {
-          revision: b.revision,
-          payload: await payload(env, id),
-          hash: snapshot.hash || b.hash,
-          files: snapshot.files,
-        },
-        random,
-      );
+      return saveSnapshot(env, { ...who, label: 'Restored cloud backup' }, flavor, {
+        revision: b.revision,
+        payload: await payload(env, id),
+        hash: snapshot.hash || b.hash,
+        files: snapshot.files,
+      });
     }
   }
   if (path === '/account/data' && request.method === 'DELETE') {

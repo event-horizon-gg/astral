@@ -5,9 +5,12 @@ const crypto = require('node:crypto');
 const { execFile, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
 const run = promisify(execFile);
-const REPO = 'theedward/astral';
-const BASE = `https://github.com/${REPO}/releases/download/`;
-const MAX = 600 * 1024 * 1024;
+const {
+  REPOSITORY: REPO,
+  DOWNLOAD_BASE: BASE,
+  MAX_INSTALLER_BYTES: MAX,
+  installerName,
+} = require('../shared/release-contract.cjs');
 function version(v) {
   if (!/^\d+\.\d+\.\d+$/.test(v)) throw Error('Invalid release version.');
   return v.split('.').map(Number);
@@ -34,10 +37,7 @@ function verify(envelope, key, platform, arch) {
     throw Error('Unexpected update publisher.');
   const asset = manifest.assets?.[`${platform}-${arch}`];
   if (!asset) throw Error('There is no update for this computer yet.');
-  const expected =
-    platform === 'darwin'
-      ? `Astral-${manifest.version}-mac-${arch}.zip`
-      : `Astral-${manifest.version}-win-${arch}.exe`;
+  const expected = installerName(manifest.version, platform, arch);
   if (
     asset.url !== BASE + `v${manifest.version}/` + expected ||
     !/^[a-f0-9]{64}$/.test(asset.sha256) ||

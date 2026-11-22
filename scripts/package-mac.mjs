@@ -5,21 +5,32 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { macSigningIdentity } from './mac-signing.mjs';
+import releaseContract from '../shared/release-contract.cjs';
+const { installerName } = releaseContract;
 const run = promisify(execFile);
 if (process.platform !== 'darwin') throw Error('Build macOS packages on macOS.');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+if (process.argv.slice(2).some((arg) => arg !== '--persistent'))
+  throw Error('Unexpected packaging argument.');
+const identity = macSigningIdentity(process.env, {
+  release: process.argv.includes('--persistent'),
+});
 const output = await fs.mkdtemp(path.join(os.tmpdir(), 'astral-mac-build-'));
 try {
   const result = await run(
     process.execPath,
     [
       path.join(root, 'node_modules/electron-builder/cli.js'),
+      '--config',
+      path.join(root, 'electron-builder.config.cjs'),
       '--mac',
       'dir',
       'zip',
       '--arm64',
       '--publish',
       'never',
+      `--config.mac.identity=${identity}`,
       `--config.directories.output=${output}`,
     ],
     { cwd: root, maxBuffer: 10 * 1024 * 1024 },
@@ -33,7 +44,7 @@ try {
     path.join(output, 'mac-arm64/Astral.app'),
   ]);
   const { version } = JSON.parse(await fs.readFile(path.join(root, 'package.json')));
-  const name = `Astral-${version}-mac-arm64.zip`;
+  const name = installerName(version, 'darwin', 'arm64');
   await fs.mkdir(path.join(root, 'release'), { recursive: true });
   await fs.copyFile(path.join(output, name), path.join(root, 'release', name));
   console.log(`Verified macOS archive: release/${name}`);
