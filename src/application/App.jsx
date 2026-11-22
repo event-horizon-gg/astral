@@ -211,6 +211,7 @@ export default function App({ api = globalThis.window?.astral }) {
           {sharing.share && (
             <ShareSetup
               share={sharing.share}
+              onChoose={sharing.open}
               s={s}
               busy={busy}
               call={call}

@@ -14,6 +14,10 @@ export default function useSharing(s, call) {
       setShare(null);
     },
     async open(mode, action) {
+      if (!mode) {
+        setShare({ mode: 'choose' });
+        return;
+      }
       const info = await scope.run(() => call(action));
       if (info) setShare({ mode, info });
     },

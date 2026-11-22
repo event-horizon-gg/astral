@@ -10,6 +10,7 @@ export function registerDialog(window, element, onClose) {
       const current = owner.dialogs.at(-1);
       if (!current) return;
       if (event.key === 'Escape') {
+        if (event.target.closest?.('[aria-haspopup="listbox"][aria-expanded="true"]')) return;
         event.preventDefault();
         event.stopImmediatePropagation();
         current.onClose();

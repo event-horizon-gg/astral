@@ -1,8 +1,47 @@
+import Select from '../../components/Select.jsx';
 import React, { useState } from 'react';
 import Dialog from '../../components/Dialog.jsx';
 import { defaultProfiles } from '../account/profile-cache.js';
 
-export default function ShareSetup({ share, s, busy, call, notify, onClose }) {
+export default function ShareSetup(props) {
+  if (props.share.mode !== 'choose') return <SetupFileForm {...props} />;
+  return (
+    <Dialog
+      className="modal share-setup"
+      busy={props.busy}
+      onClose={props.onClose}
+      labelledBy="share-setup-title"
+      feedbackCommands={['setupExportInfo', 'openSetupImport']}
+    >
+      <h2 id="share-setup-title">Share setup</h2>
+      <div className="share-choices">
+        <button
+          className="share-choice"
+          disabled={props.busy}
+          onClick={() => props.onChoose('export', 'setupExportInfo')}
+        >
+          <strong>Save setup file</strong>
+          <span>Share your addons, UI and keybindings.</span>
+        </button>
+        <button
+          className="share-choice"
+          disabled={props.busy}
+          onClick={() => props.onChoose('import', 'openSetupImport')}
+        >
+          <strong>Open setup file</strong>
+          <span>Review a shared setup before applying it.</span>
+        </button>
+      </div>
+      <div className="modal-actions">
+        <button className="button secondary" disabled={props.busy} onClick={props.onClose}>
+          Close
+        </button>
+      </div>
+    </Dialog>
+  );
+}
+
+function SetupFileForm({ share, s, busy, call, notify, onClose }) {
   const importing = share.mode === 'import';
   const [name, setName] = useState(
     'My ' +
@@ -61,9 +100,7 @@ export default function ShareSetup({ share, s, busy, call, notify, onClose }) {
         }
       }}
     >
-      <h2 id="share-setup-title">
-        {importing ? `Import ${share.info.name}?` : 'Export setup'}
-      </h2>
+      <h2 id="share-setup-title">{importing ? `Import ${share.info.name}?` : 'Export setup'}</h2>
       <div className="share-context">
         <span>{s.flavor === 'forever' ? 'WoW Forever' : 'WoW Retail'}</span>
         <span>
@@ -88,7 +125,7 @@ export default function ShareSetup({ share, s, busy, call, notify, onClose }) {
           {(!importing || share.info.character) && (
             <label className="share-field">
               {importing ? 'Apply character settings to' : 'Character'}
-              <select
+              <Select
                 value={character}
                 disabled={busy}
                 required={importing && !!share.info.character}
@@ -105,7 +142,7 @@ export default function ShareSetup({ share, s, busy, call, notify, onClose }) {
                     {item.label}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
           )}
           <fieldset disabled={busy} className="share-options">
@@ -147,8 +184,8 @@ export default function ShareSetup({ share, s, busy, call, notify, onClose }) {
       {plan && (
         <>
           <p>
-            {plan.changedSettings.length} settings files will change. Your current settings will
-            be backed up.
+            {plan.changedSettings.length} settings files will change. Your current settings will be
+            backed up.
           </p>
           {include.settings && <p>Account-wide addon settings will also be replaced.</p>}
           {plan.packages.length > 0 && (

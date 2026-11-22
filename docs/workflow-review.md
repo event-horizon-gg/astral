@@ -1,6 +1,6 @@
 # Collection workflow review
 
-Branch: `feat/collection-workflows`. Keep unmerged and unpublished until the owner approves the UI at home. Do not replace the installed app or deploy the cloud change as part of review.
+Branch: `feat/collection-workflows`. Owner approved merging to main and continuing development on 22 November 2026. Local installation is authorized; no public release or cloud deployment is part of this change.
 
 The branch contains a separate baseline commit for the previously queued Electron refactor and setup sharing (`e44248a`). Subsequent changes implement the approved workflow prototype.
 
@@ -36,3 +36,13 @@ Review evidence is in the task workspace's `work/design-skills/implementation/` 
 5. Review the failed-download and failed-profile screenshots, including the mobile action controls.
 
 Installed-app and live-account checks remain pending owner approval. These automated checks never opened or modified live WoW, the installed Astral app, or deployed sync data.
+
+## Follow-up fixes
+
+- Replaced OS-native selects across game selection, Discover, account and setup sharing with one app-owned keyboard-accessible listbox. Popup uses the browser top layer to remain inside the viewport and above dialogs; Escape closes the list before the dialog.
+- Consolidated Import/Export under Share setup and removed the duplicate Tools entry for selecting the WoW folder. Settings retains the folder control.
+- Replaced high-contrast top dividers with the standard separator token.
+- Persisted the existing local certificate fingerprint (ignored local file); packaging normalizes it for Electron Builder's certificate lookup.
+- Added installed-release receipts: successful installs retain the release version even if an author ships stale TOC metadata. Receipts bind to game root, repository and the installed files' metadata; external replacement invalidates them. DialogueUI v1.0.7-d still ships a 1.0.7 c TOC, confirmed by inspection of the official ZIP. All 408 existing installed files matched that ZIP; its installed release was reconciled without modifying addon files.
+
+Validation: 150 tests pass, build/lint pass. Headless interaction checks cover custom select keyboard/pointer choice, focus, Escape/Tab/outside dismissal, light/dark, Share setup chooser/form, and removing the duplicate folder menu. Independent UI critique scored 27/40; it is a usability assessment, not a claim that all backend workflows passed live testing.

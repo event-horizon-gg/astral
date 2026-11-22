@@ -228,6 +228,7 @@ async function install(addon, root, data, release, onProgress = () => {}, option
         previousFolders: moved,
         time: new Date().toISOString(),
       });
+      await require('./installation-receipts.cjs').record(root, data, addon, release, names);
     } catch (e) {
       for (const n of added) await fs.rm(path.join(addons, n), { recursive: true, force: true });
       for (const n of moved) await fs.rename(path.join(temp, 'old-' + n), path.join(addons, n));

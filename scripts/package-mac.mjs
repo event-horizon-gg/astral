@@ -30,7 +30,7 @@ try {
       '--arm64',
       '--publish',
       'never',
-      `--config.mac.identity=${identity}`,
+      `--config.mac.identity=${identity === '-' ? identity : identity.toUpperCase()}`,
       `--config.directories.output=${output}`,
     ],
     { cwd: root, maxBuffer: 10 * 1024 * 1024 },

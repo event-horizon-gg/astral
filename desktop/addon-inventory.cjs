@@ -6,6 +6,7 @@ const github = require('./github.cjs');
 const { exists, json, save } = require('./storage.cjs');
 const { toc, preferredToc } = require('./addon-metadata.cjs');
 const { flavor, allowed: allowedFlavor } = require('./flavors.cjs');
+const receipts = require('./installation-receipts.cjs');
 const { icon: addonIcon } = require('./icons.cjs');
 function validDefinition(a) {
   return (
@@ -43,6 +44,7 @@ async function inventory(root, data) {
   const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
   const folders = entries.filter((e) => e.isDirectory()).map((e) => e.name);
   const groups = [];
+  const installedReleases = await receipts.read(root, data);
   const claimed = new Set();
   for (const item of await definitions(root, data)) {
     if (!folders.includes(item.folder)) continue;
@@ -76,7 +78,8 @@ async function inventory(root, data) {
       ...item,
       installed: true,
       canImport: !item.local && !item.bundled && allowedFlavor(item, flavor(root)),
-      version: meta.Version || 'Unknown',
+      version: (await receipts.installedVersion(root, item, installedReleases)) || meta.Version || 'Unknown',
+      tocVersion: meta.Version || 'Unknown',
       author: meta.Author || '',
       icon: await addonIcon(root, meta.IconTexture),
       modules: family,

@@ -1,3 +1,4 @@
+import Select from '../../components/Select.jsx';
 import ProviderMark from '../../components/ProviderMark.jsx';
 import Dialog from '../../components/Dialog.jsx';
 import { useRequestScope } from '../../application/useResource.js';
@@ -144,7 +145,7 @@ export default function DiscoveryPanel({ s, busy, call, notify, AddonIcon, onLib
       </form>
       <div className="finder-filters">
         <label>
-          <select
+          <Select
             aria-label="Addon source filter"
             value={source}
             onChange={(e) => setSource(e.target.value)}
@@ -153,7 +154,7 @@ export default function DiscoveryPanel({ s, busy, call, notify, AddonIcon, onLib
             <option value="github">GitHub</option>
             <option value="astral">Astral</option>
             <option value="manual">Manual sources</option>
-          </select>
+          </Select>
         </label>
         <span>{searching ? 'Searching…' : list.length + ' results'}</span>
       </div>
@@ -245,7 +246,7 @@ export default function DiscoveryPanel({ s, busy, call, notify, AddonIcon, onLib
             <>
               <label className="setting-label">
                 Release package
-                <select
+                <Select
                   aria-label="Release ZIP package"
                   value={asset}
                   disabled={busy}
@@ -257,7 +258,7 @@ export default function DiscoveryPanel({ s, busy, call, notify, AddonIcon, onLib
                       {a.name} · {(a.size / 1024 ** 2).toFixed(1)} MB
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
               {!review.assets.length && (
                 <p className="inline-note warning">

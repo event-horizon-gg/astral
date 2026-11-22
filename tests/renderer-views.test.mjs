@@ -290,8 +290,7 @@ test('the actual app starts with no dialog, navigates all screens, and runs draw
   const pendingSearch = deferred(),
     pendingPreview = deferred();
   const bridge = {
-    state: () =>
-      firstRead ? ((firstRead = false), initial.promise) : Promise.resolve(snapshot()),
+    state: () => (firstRead ? ((firstRead = false), initial.promise) : Promise.resolve(snapshot())),
     onProgress(callback) {
       events.progress = callback;
       return noop;
@@ -426,9 +425,7 @@ test('the actual app starts with no dialog, navigates all screens, and runs draw
     usage: { paused: false },
     devices: [],
     revision: 10,
-    history: [
-      { id: 'backup', revision: 2, created: '2026-01-01T12:00:00Z', bytes: 20, files: 1 },
-    ],
+    history: [{ id: 'backup', revision: 2, created: '2026-01-01T12:00:00Z', bytes: 20, files: 1 }],
   });
   current.syncRevision = 1;
   await act(async () => events.changed());
@@ -448,7 +445,9 @@ test('the actual app starts with no dialog, navigates all screens, and runs draw
   await act(async () => events.changed());
   assert.equal(get('[role="dialog"]'), null);
 
-  await tools('Export setup');
+  await tools('Share setup');
+  assert.equal(get('[role="dialog"] h2').textContent, 'Share setup');
+  await act(() => get('.share-choice').click());
   assert.equal(get('[role="dialog"] h2').textContent, 'Export setup');
   const form = get('form.share-setup');
   await act(async () =>

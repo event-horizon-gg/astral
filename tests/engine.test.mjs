@@ -479,3 +479,39 @@ test('BigWigs Game placeholders require the init file for the selected client', 
   await fs.writeFile(path.join(folder, 'Init_Camelot.lua'), '');
   await validateFiles('Init_[Game].lua', folder, f.base, 'forever');
 });
+
+test('installed release receipts resolve stale author TOCs and expire after external replacement', async (t) => {
+  const f = await fixture(t);
+  const definition = (await engine.definitions(f.root, f.data)).find((a) => a.id === 'keyui');
+  const metadata = { ...definition, version: '1.0.7 c' };
+  const published = {
+    tag: 'v1.0.7-d',
+    version: '1.0.7-d',
+    url: 'https://github.com/example/KeyUI/releases/download/v1.0.7-d/KeyUI.zip',
+  };
+  const payload = {
+    'KeyUI/KeyUI.toc': '## Interface: 120105\n## Version: 1.0.7 c\nnew.lua\n',
+    'KeyUI/new.lua': 'new code',
+  };
+  await engine.install(metadata, f.root, f.data, published, () => {}, {
+    running: async () => false,
+    download: download(payload),
+  });
+  let installed = (await engine.inventory(f.root, f.data)).addons.find((a) => a.id === 'keyui');
+  assert.equal(installed.version, '1.0.7-d');
+  assert.equal(installed.tocVersion, '1.0.7 c');
+  assert.equal(
+    engine.needsUpdate({ ...installed, versionScheme: 'letter-patch' }, published),
+    false,
+  );
+  await fs.writeFile(
+    path.join(f.root, 'Interface', 'AddOns', 'KeyUI', 'new.lua'),
+    'manually replaced addon',
+  );
+  installed = (await engine.inventory(f.root, f.data)).addons.find((a) => a.id === 'keyui');
+  assert.equal(installed.version, '1.0.7 c');
+  assert.equal(
+    engine.needsUpdate({ ...installed, versionScheme: 'letter-patch' }, published),
+    true,
+  );
+});

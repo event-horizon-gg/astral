@@ -1,3 +1,4 @@
+import Select from '../../components/Select.jsx';
 import React from 'react';
 import { localTime as time } from '../../application/format.js';
 import { Check, FolderOpen } from 'lucide-react';
@@ -15,14 +16,14 @@ export default function SettingsPage({ s, busy, call, notify }) {
         </div>
         <label className="setting-label">
           Local WoW account
-          <select value={s.account || ''} onChange={(e) => call('setAccount', e.target.value)}>
+          <Select value={s.account || ''} onChange={(e) => call('setAccount', e.target.value)}>
             <option value="" disabled>
               Select account
             </option>
             {s.accounts.map((a) => (
               <option key={a}>{a}</option>
             ))}
-          </select>
+          </Select>
         </label>
       </section>
       <section>

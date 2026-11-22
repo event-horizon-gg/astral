@@ -1,3 +1,4 @@
+import Select from './Select.jsx';
 import React from 'react';
 import {
   FileInput,
@@ -49,10 +50,7 @@ export default function AppHeader({
   };
   useEffect(() => {
     const dismiss = (event) => {
-      if (
-        !accountRef.current?.contains(event.target) &&
-        !toolsRef.current?.contains(event.target)
-      )
+      if (!accountRef.current?.contains(event.target) && !toolsRef.current?.contains(event.target))
         setPopover(null);
     };
     const escape = (event) => {
@@ -99,7 +97,7 @@ export default function AppHeader({
             src={s.flavor === 'forever' ? wowForeverIcon : wowRetailIcon}
             alt=""
           />
-          <select
+          <Select
             className="client-select"
             aria-label="Game client"
             value={s.flavor || 'retail'}
@@ -115,7 +113,7 @@ export default function AppHeader({
                 {c.label}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
         <ProfilePicker onManage={() => navigate('Your setup')} overlayOpen={overlayOpen} />
         <button
@@ -158,31 +156,16 @@ export default function AppHeader({
                     </button>
                   );
                 })}
-              {[
-                ['export', 'Export setup', FileOutput, 'setupExportInfo'],
-                ['import', 'Import setup', FileInput, 'openSetupImport'],
-              ].map(([mode, label, Icon, action]) => (
-                <button
-                  key={mode}
-                  disabled={busy || !s.account}
-                  title={!s.account ? 'Select a local WoW account in Settings.' : undefined}
-                  onClick={async () => {
-                    setPopover(null);
-                    onShare(mode, action);
-                  }}
-                >
-                  <Icon size={16} />
-                  {label}
-                </button>
-              ))}
               <button
+                disabled={busy || !s.account}
+                title={!s.account ? 'Select a local WoW account in Settings.' : undefined}
                 onClick={() => {
                   setPopover(null);
-                  call('chooseRoot');
+                  onShare();
                 }}
               >
-                <FolderOpen size={16} />
-                Choose WoW folder
+                <FileOutput size={16} />
+                Share setup
               </button>
             </div>
           )}
