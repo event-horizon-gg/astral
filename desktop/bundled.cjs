@@ -1,7 +1,13 @@
 // Only first-party folders shipped inside this signed Astral release are eligible.
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const folders = new Set(['AstralProfiles', 'AstralClock', 'AstralForeverStyle', 'AstralTalents']);
+const folders = new Set([
+  'AstralProfiles',
+  'AstralClock',
+  'AstralForeverStyle',
+  'AstralTalents',
+  'AstralInfo',
+]);
 function source(addon) {
   if (!addon.bundled || !folders.has(addon.folder)) throw Error('Unknown bundled addon.');
   return path.join(__dirname, '..', 'addons', addon.folder);

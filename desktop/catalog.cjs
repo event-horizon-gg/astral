@@ -157,6 +157,17 @@ module.exports = [
     color: 'violet',
   },
   {
+    id: 'info',
+    name: 'Astral Info',
+    folder: 'AstralInfo',
+    bundled: true,
+    category: 'Interface',
+    description:
+      'Movable FPS and latency display, plus mount names and sources in player tooltips. /ainfo',
+    mark: 'A',
+    color: 'slate',
+  },
+  {
     id: 'clock',
     name: 'Astral Clock',
     folder: 'AstralClock',
