@@ -281,11 +281,17 @@ test('the actual app starts with no dialog, navigates all screens, and runs draw
     events = {};
   let firstRead = true;
   const snapshot = () => structuredClone(current);
-  let cloudInfo = async () => ({ usage: { paused: false }, devices: [], history: [], revision: 0 });
+  let cloudInfo = async () => ({
+    usage: { paused: false },
+    devices: [],
+    history: [],
+    revision: 0,
+  });
   const pendingSearch = deferred(),
     pendingPreview = deferred();
   const bridge = {
-    state: () => (firstRead ? ((firstRead = false), initial.promise) : Promise.resolve(snapshot())),
+    state: () =>
+      firstRead ? ((firstRead = false), initial.promise) : Promise.resolve(snapshot()),
     onProgress(callback) {
       events.progress = callback;
       return noop;
@@ -350,7 +356,7 @@ test('the actual app starts with no dialog, navigates all screens, and runs draw
   assert.deepEqual(calls.at(-1), ['importZip', addon.id]);
   assert.equal(heading(), 'Library');
   assert.ok(get('aside[aria-label="Addon details"]'));
-  await click('Quick find');
+  await click('Go to');
   await click('Settings');
   assert.equal(heading(), 'Settings');
   assert.equal(get('aside[aria-label="Addon details"]'), null);
@@ -420,7 +426,9 @@ test('the actual app starts with no dialog, navigates all screens, and runs draw
     usage: { paused: false },
     devices: [],
     revision: 10,
-    history: [{ id: 'backup', revision: 2, created: '2026-01-01T12:00:00Z', bytes: 20, files: 1 }],
+    history: [
+      { id: 'backup', revision: 2, created: '2026-01-01T12:00:00Z', bytes: 20, files: 1 },
+    ],
   });
   current.syncRevision = 1;
   await act(async () => events.changed());

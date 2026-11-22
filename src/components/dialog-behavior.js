@@ -1,6 +1,6 @@
 const windows = new WeakMap();
 const selector =
-  'button:not(:disabled),input:not(:disabled),select:not(:disabled),a[href],[tabindex="0"]';
+  'button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,a[href],[tabindex="0"]';
 
 export function registerDialog(window, element, onClose) {
   let owner = windows.get(window);

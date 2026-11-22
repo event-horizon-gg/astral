@@ -4,6 +4,7 @@ import Dialog from './Dialog.jsx';
 import { pages, pageLabel } from '../application/navigation.js';
 import { navigationIcons } from './navigation-icons.js';
 import { localTime as time } from '../application/format.js';
+import ConflictReview from '../features/account/ConflictReview.jsx';
 export default function AppDialogs({
   dialog,
   command,
@@ -24,8 +25,11 @@ export default function AppDialogs({
       open={!!dialog || command}
       busy={busy && !command}
       onClose={close}
-      className={'modal ' + (command ? 'command-modal' : '')}
-      label={command ? 'Quick find' : 'Review change'}
+      className={
+        'modal ' + (command ? 'command-modal' : dialog?.conflict ? 'conflict-modal' : '')
+      }
+      label={command ? 'Go to' : 'Review change'}
+      feedbackCommands={dialog?.conflict ? ['sync'] : ['restore']}
     >
       {command ? (
         <>
@@ -76,41 +80,14 @@ export default function AppDialogs({
           </div>
         </>
       ) : dialog?.conflict ? (
-        <>
-          <Layers size={26} />
-          <h2>Choose which setup to keep</h2>
-          <p>
-            Choose what to sync with the selected profile. Astral saves a local backup before
-            applying cloud settings.
-          </p>
-          <div className="modal-actions">
-            <button
-              className="button secondary"
-              onClick={async () => {
-                setDialog(null);
-                await call('sync', 'cloud', dialog.scope, dialog.revision);
-              }}
-            >
-              Use cloud setup
-            </button>
-            <button
-              className="button primary"
-              onClick={async () => {
-                setDialog(null);
-                await call('sync', 'local', dialog.scope, dialog.revision);
-              }}
-            >
-              Use this computer
-            </button>
-          </div>
-        </>
+        <ConflictReview dialog={dialog} busy={busy} call={call} onClose={close} />
       ) : (
         <>
           <History size={26} />
           <h2>Restore {dialog.restore?.name}?</h2>
           <p>
-            Restore the previous addon files from {time(dialog.restore?.time)}. Your saved settings
-            stay in place.
+            Restore the previous addon files from {time(dialog.restore?.time)}. Your saved
+            settings stay in place.
           </p>
           <div className="modal-actions">
             <button className="button secondary" onClick={() => setDialog(null)}>

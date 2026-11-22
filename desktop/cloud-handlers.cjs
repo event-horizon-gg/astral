@@ -35,7 +35,10 @@ function register({ handle, runtime, state, persist, send, session, shell, busy 
       const key = addon.folder.toLowerCase();
       if (seen.has(key) || !/^[a-z0-9_-]{1,100}$/.test(key)) continue;
       seen.add(key);
-      library.push({ folder: addon.folder, name: addon.name.trim().slice(0, 100) || addon.folder });
+      library.push({
+        folder: addon.folder,
+        name: addon.name.trim().slice(0, 100) || addon.folder,
+      });
     }
     return request(libraryPath(), { method: 'PUT', body: { addons: library, revision } });
   });
@@ -50,7 +53,8 @@ function register({ handle, runtime, state, persist, send, session, shell, busy 
   });
   handle('deleteSyncProfile', (id) => {
     if (!profileContext.isCustom(id)) throw Error('Unknown custom profile.');
-    if (id === syncProfile()) throw Error('Switch to another profile before deleting this one.');
+    if (id === syncProfile())
+      throw Error('Switch to another profile before deleting this one.');
     return request(syncProfilesPath() + '/' + id, { method: 'DELETE', body: { confirm: id } });
   });
   handle('setSyncProfile', async (value) => {
@@ -91,6 +95,8 @@ function register({ handle, runtime, state, persist, send, session, shell, busy 
       initialized: plan.initialized,
       changes: plan.changes,
       changedSettings: plan.changedSettings,
+      comparison: plan.comparison,
+      from,
       packages: plan.packages.queue,
       handheld: value === 'handheld' ? flavors.flavor(runtime.config.root) : null,
       missing: plan.packages.manual,
@@ -174,7 +180,13 @@ function register({ handle, runtime, state, persist, send, session, shell, busy 
       method: 'POST',
       body: { revision, hash: verified.hash },
     });
-    await settings.apply(root, account, format.encode(target).payload, data, engine.gameRunning);
+    await settings.apply(
+      root,
+      account,
+      format.encode(target).payload,
+      data,
+      engine.gameRunning,
+    );
     runtime.config.syncProfilePending = false;
     runtime.config.lastHash = (await settings.capture(root, account, data)).hash;
     runtime.config.lastRemoteHash = verified.hash;
@@ -197,75 +209,86 @@ function register({ handle, runtime, state, persist, send, session, shell, busy 
       send({ kind: 'sync-ready', message: 'Battle.net connected. Preparing your setup.' });
     return state();
   });
-  handle('sync', async (choice, expectedScope, expectedRevision) => {
-    const scope = syncScope();
-    if (expectedScope && expectedScope !== scope)
-      throw Error('The sync profile changed. Try again.');
-    if (choice === 'auto' && runtime.config.syncProfilePending) return state();
-    if (await engine.gameRunning()) throw Error('Settings sync waits until WoW is closed.');
-    try {
-      for (const type of ['retail', 'forever']) {
-        const otherRoot = path.join(
-          path.dirname(runtime.config.root),
-          type === 'retail' ? '_retail_' : '_forever_',
-        );
-        if (
-          otherRoot === runtime.config.root ||
-          !(await storage.exists(path.join(otherRoot, 'Interface', 'AddOns')))
-        )
-          continue;
-        const saved = runtime.config.spaces?.[type];
-        const accounts = await settings.accounts(otherRoot);
-        const account =
-          saved?.root === otherRoot && accounts.includes(saved.account)
-            ? saved.account
-            : accounts.length === 1
-              ? accounts[0]
-              : null;
-        const result = await setupSync.collection({
-          root: otherRoot,
-          account,
+  handle(
+    'sync',
+    async (choice, expectedScope, expectedRevision, expectedLocalHash, expectedContext) => {
+      const scope = syncScope();
+      if (expectedScope && expectedScope !== scope)
+        throw Error('The sync profile changed. Try again.');
+      if (
+        expectedContext &&
+        (expectedContext.root !== runtime.config.root ||
+          expectedContext.account !== runtime.config.account ||
+          expectedContext.profile !== syncProfile())
+      )
+        throw Error('The selected setup changed. Sync again to review it.');
+      if (choice === 'auto' && runtime.config.syncProfilePending) return state();
+      if (await engine.gameRunning()) throw Error('Settings sync waits until WoW is closed.');
+      try {
+        for (const type of ['retail', 'forever']) {
+          const otherRoot = path.join(
+            path.dirname(runtime.config.root),
+            type === 'retail' ? '_retail_' : '_forever_',
+          );
+          if (
+            otherRoot === runtime.config.root ||
+            !(await storage.exists(path.join(otherRoot, 'Interface', 'AddOns')))
+          )
+            continue;
+          const saved = runtime.config.spaces?.[type];
+          const accounts = await settings.accounts(otherRoot);
+          const account =
+            saved?.root === otherRoot && accounts.includes(saved.account)
+              ? saved.account
+              : accounts.length === 1
+                ? accounts[0]
+                : null;
+          const result = await setupSync.collection({
+            root: otherRoot,
+            account,
+            data,
+            request,
+            onProgress: send,
+          });
+          if (
+            saved?.root === otherRoot &&
+            saved.account === account &&
+            saved.lastHash === result.beforeHash
+          )
+            saved.lastHash = result.afterHash;
+        }
+        const result = await setupSync.run({
+          root: runtime.config.root,
+          account: runtime.config.account,
           data,
+          scope,
+          profile: syncProfile(),
+          lastHash: runtime.config.lastHash,
+          lastRemoteHash: runtime.config.lastRemoteHash,
+          choice,
+          expectedRevision,
+          expectedLocalHash,
+          device: runtime.config.device,
           request,
           onProgress: send,
         });
-        if (
-          saved?.root === otherRoot &&
-          saved.account === account &&
-          saved.lastHash === result.beforeHash
-        )
-          saved.lastHash = result.afterHash;
+        if (result.conflict) return result;
+        if (result.incomplete) return { ...result, state: await state() };
+        if (result.libraryOnly)
+          return {
+            ...(await state()),
+            syncMessage:
+              'Addon collection shared. Open WoW once, then close it to sync this client’s settings.',
+          };
+        const { installed, ...updates } = result;
+        Object.assign(runtime.config, updates);
+        await persist();
+      } finally {
+        send({});
       }
-      const result = await setupSync.run({
-        root: runtime.config.root,
-        account: runtime.config.account,
-        data,
-        scope,
-        profile: syncProfile(),
-        lastHash: runtime.config.lastHash,
-        lastRemoteHash: runtime.config.lastRemoteHash,
-        choice,
-        expectedRevision,
-        device: runtime.config.device,
-        request,
-        onProgress: send,
-      });
-      if (result.conflict) return result;
-      if (result.incomplete) return { ...result, state: await state() };
-      if (result.libraryOnly)
-        return {
-          ...(await state()),
-          syncMessage:
-            'Addon collection shared. Open WoW once, then close it to sync this client’s settings.',
-        };
-      const { installed, ...updates } = result;
-      Object.assign(runtime.config, updates);
-      await persist();
-    } finally {
-      send({});
-    }
-    return state();
-  });
+      return state();
+    },
+  );
   handle('disconnect', async () => {
     await session.disconnect();
     return state();

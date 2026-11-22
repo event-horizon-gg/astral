@@ -88,7 +88,12 @@ export default function LibraryPage({
       <div className="list-controls">
         <div className="tabs">
           {['All addons', 'Updates', 'Manual'].map((t) => (
-            <button key={t} className={filter === t ? 'selected' : ''} onClick={() => setFilter(t)}>
+            <button
+              key={t}
+              aria-pressed={filter === t}
+              className={filter === t ? 'selected' : ''}
+              onClick={() => setFilter(t)}
+            >
               {t}
               {t === 'Updates' && updates > 0 && <span>{updates}</span>}
             </button>
@@ -142,7 +147,7 @@ export default function LibraryPage({
               <span className="version" title={a.version}>
                 {a.id === 'rio' ? (a.version.match(/v\d{12}/) || [a.version])[0] : a.version}
               </span>
-              {(a.repo || a.bundled) && (
+              {
                 <span className={'status-label ' + a.status}>
                   {a.release?.error ? (
                     <>
@@ -167,16 +172,18 @@ export default function LibraryPage({
                   ) : a.status === 'local' ? (
                     'Development'
                   ) : a.status === 'manual' ? (
-                    'Manual source'
+                    'Manual update'
                   ) : (
                     'Not checked'
                   )}
                 </span>
-              )}
+              }
               <button
                 className="row-action"
                 disabled={busy || (s.running && a.status === 'update')}
-                aria-label={a.status === 'update' ? 'Update ' + a.name : 'Details for ' + a.name}
+                aria-label={
+                  a.status === 'update' ? 'Update ' + a.name : 'Details for ' + a.name
+                }
                 onClick={() => (a.status === 'update' ? update(a) : setSelected(a))}
               >
                 {a.status === 'update' ? (
@@ -190,7 +197,9 @@ export default function LibraryPage({
         ) : (
           <div className="empty">
             <Package size={28} />
-            <h3>{s.addons.length ? 'No addons match that search' : 'Choose your WoW folder'}</h3>
+            <h3>
+              {s.addons.length ? 'No addons match that search' : 'Choose your WoW folder'}
+            </h3>
             {s.addons.length > 0 && (
               <button
                 className="button secondary"

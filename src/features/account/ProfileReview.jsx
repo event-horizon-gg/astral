@@ -1,6 +1,7 @@
 import React from 'react';
 import Dialog from '../../components/Dialog.jsx';
-export default function ProfileReview({ plan, name, busy, onClose, onApply }) {
+import SetupComparison from '../../components/SetupComparison.jsx';
+export default function ProfileReview({ plan, name, busy, onClose, onApply, onRefresh }) {
   if (!plan) return null;
   const label = (value) => (value === null ? 'Varies by character' : value ? 'On' : 'Off');
   return (
@@ -9,23 +10,42 @@ export default function ProfileReview({ plan, name, busy, onClose, onApply }) {
       busy={busy}
       onClose={onClose}
       labelledBy="profile-review-title"
+      feedbackCommands={['applyProfile', 'previewProfile']}
     >
       <h2 id="profile-review-title">{name ? `Switch to ${name}?` : 'Apply addon choices?'}</h2>
-      {plan.initialized && name && <p>This profile starts with your current setup.</p>}
-      <p>
-        {plan.changedSettings.length} UI or binding files will change. Your current setup is saved
-        before applying.
-      </p>
-      {plan.packages?.length > 0 && <p>Install: {plan.packages.map((a) => a.name).join(', ')}.</p>}
+      {plan.initialized && name && <span className="mini-tag">New local setup</span>}
+      <SetupComparison
+        rows={(plan.comparison || []).filter((row) => row.changed && row.id !== 'choices')}
+        showFiles={false}
+        localLabel="Current"
+        remoteLabel={name || 'After applying'}
+      />
+      {plan.packages?.length > 0 && (
+        <section className="profile-packages">
+          <h3>Addons to install</h3>
+          <ul>
+            {plan.packages.map((a) => (
+              <li key={a.id || a.folder}>{a.name}</li>
+            ))}
+          </ul>
+        </section>
+      )}
       {plan.handheld && (
-        <p>
-          {plan.handheld === 'retail'
-            ? 'ConsolePort will be enabled and the four desktop action bars hidden.'
-            : 'The four desktop action bars will be hidden. The native controller HUD stays visible.'}
-        </p>
+        <div className="control-row profile-bar-policy">
+          <strong>Desktop action bars</strong>
+          <span>Hidden</span>
+        </div>
+      )}
+      {plan.handheld === 'forever' && (
+        <div className="control-row">
+          <strong>Native controller HUD</strong>
+          <span>Kept</span>
+        </div>
       )}
       {plan.missing?.length > 0 && (
-        <p role="alert">Connect or install first: {plan.missing.map((a) => a.name).join(', ')}.</p>
+        <p role="alert">
+          Connect or install first: {plan.missing.map((a) => a.name).join(', ')}.
+        </p>
       )}
       {plan.changes.length > 0 ? (
         <div className="control-list">
@@ -38,16 +58,10 @@ export default function ProfileReview({ plan, name, busy, onClose, onApply }) {
             </div>
           ))}
         </div>
-      ) : (
-        <p>
-          {plan.packages?.length
-            ? 'Existing addon choices stay the same.'
-            : 'Addon choices stay the same.'}
-        </p>
-      )}
+      ) : null}
       {plan.changedSettings.length > 0 && (
         <details>
-          <summary>Changed settings</summary>
+          <summary>Changed settings · {plan.changedSettings.length}</summary>
           <ul>
             {plan.changedSettings.map((file) => (
               <li key={file}>{file}</li>
@@ -55,16 +69,17 @@ export default function ProfileReview({ plan, name, busy, onClose, onApply }) {
           </ul>
         </details>
       )}
+      <p className="change-consequence">Your current setup will be saved before applying.</p>
       <div className="modal-actions">
         <button className="button secondary" disabled={busy} onClick={onClose}>
           Cancel
         </button>
         <button
           className="button primary"
-          disabled={busy || !!plan.missing?.length}
-          onClick={onApply}
+          disabled={busy || (!plan.stale && !!plan.missing?.length)}
+          onClick={plan.stale ? onRefresh : onApply}
         >
-          {name ? 'Save and switch' : 'Apply choices'}
+          {plan.stale ? 'Review again' : name ? 'Save and switch' : 'Apply choices'}
         </button>
       </div>
     </Dialog>

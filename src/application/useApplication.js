@@ -21,11 +21,21 @@ export default function useApplication(api) {
   const [dialog, setDialog] = useState(null);
   const toastTimer = useRef(null),
     automaticIssue = useRef(null);
-  const notify = useCallback((message, error = false) => {
-    setToast({ message, error });
+  const notify = useCallback((message, error = false, command = null) => {
+    setToast((current) => (current?.error && !error ? current : { message, error, command }));
     clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 6500);
+    if (!error)
+      toastTimer.current = setTimeout(
+        () => setToast((current) => (current?.error ? current : null)),
+        6500,
+      );
   }, []);
+  useEffect(() => {
+    setDialog(null);
+    setToast(null);
+    setCommandErrors({});
+    automaticIssue.current = null;
+  }, [s.root, s.account, s.flavor, s.syncProfile, s.accountName, s.signedIn]);
   useEffect(() => () => clearTimeout(toastTimer.current), []);
   const client = useMemo(
     () =>
@@ -33,6 +43,7 @@ export default function useApplication(api) {
         state(value) {
           setState({ ...value, loaded: true });
           setLoadError(null);
+          setToast((current) => (current?.command === 'state' ? null : current));
         },
         busy: setBusy,
         before(name) {
@@ -40,7 +51,7 @@ export default function useApplication(api) {
         },
         error(message, name) {
           setCommandErrors((errors) => ({ ...errors, [name]: message }));
-          notify(message, true);
+          notify(message, true, name);
         },
         refreshError: setLoadError,
         message: notify,
@@ -49,16 +60,12 @@ export default function useApplication(api) {
             const signature = JSON.stringify([result.scope, result.revision, result.missing]);
             if (automaticIssue.current === signature) return;
             automaticIssue.current = signature;
-            notify(
-              result.incomplete
-                ? 'Some addons need a connected source. Your current setup was kept.'
-                : 'Both setups changed. Choose which one to keep.',
-              true,
-            );
           }
           setDialog(result);
         },
         result(name, result) {
+          if (!(name === 'sync' && (result.conflict || result.incomplete)))
+            setToast((current) => (current?.command === name ? null : current));
           if (name === 'sync' && !result.conflict && !result.incomplete)
             automaticIssue.current = null;
         },
@@ -81,12 +88,12 @@ export default function useApplication(api) {
     }
     client.refresh().catch((error) => {
       setLoadError(errorMessage(error));
-      notify(errorMessage(error), true);
+      notify(errorMessage(error), true, 'state');
     });
     return client.subscribe({
       progress(value) {
         setProgress(value);
-        if (value.kind === 'sync-paused') notify(value.message, true);
+        if (value.kind === 'sync-paused') notify(value.message, true, 'sync');
         if (value.kind === 'sync-ready') client.execute('sync', 'auto');
       },
       changed() {

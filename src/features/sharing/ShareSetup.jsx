@@ -39,6 +39,7 @@ export default function ShareSetup({ share, s, busy, call, notify, onClose }) {
       busy={busy}
       onClose={onClose}
       labelledBy="share-setup-title"
+      feedbackCommands={['exportSetup', 'reviewSetupImport', 'applySetupImport']}
       onSubmit={async (event) => {
         event.preventDefault();
         if (blocked) return;
@@ -60,7 +61,9 @@ export default function ShareSetup({ share, s, busy, call, notify, onClose }) {
         }
       }}
     >
-      <h2 id="share-setup-title">{importing ? `Import ${share.info.name}?` : 'Export setup'}</h2>
+      <h2 id="share-setup-title">
+        {importing ? `Import ${share.info.name}?` : 'Export setup'}
+      </h2>
       <div className="share-context">
         <span>{s.flavor === 'forever' ? 'WoW Forever' : 'WoW Retail'}</span>
         <span>
@@ -144,8 +147,8 @@ export default function ShareSetup({ share, s, busy, call, notify, onClose }) {
       {plan && (
         <>
           <p>
-            {plan.changedSettings.length} settings files will change. Your current settings will be
-            backed up.
+            {plan.changedSettings.length} settings files will change. Your current settings will
+            be backed up.
           </p>
           {include.settings && <p>Account-wide addon settings will also be replaced.</p>}
           {plan.packages.length > 0 && (

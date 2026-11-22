@@ -23,7 +23,15 @@ export default function CloudPanel({ s, call, client, busy, notify }) {
     error,
     refresh: load,
   } = useResource({
-    key: [s.signedIn, s.accountName, s.root, s.account, s.flavor, s.syncProfile, s.syncRevision],
+    key: [
+      s.signedIn,
+      s.accountName,
+      s.root,
+      s.account,
+      s.flavor,
+      s.syncProfile,
+      s.syncRevision,
+    ],
     enabled: s.signedIn && client.available,
     load: () => client.read('cloudInfo'),
   });
@@ -111,7 +119,9 @@ export default function CloudPanel({ s, call, client, busy, notify }) {
                         </p>
                         <p>
                           {h.device_label || 'Earlier backup'}
-                          {h.files !== null && h.files !== undefined ? ` · ${h.files} items` : ''}
+                          {h.files !== null && h.files !== undefined
+                            ? ` · ${h.files} items`
+                            : ''}
                         </p>
                       </div>
                       <button
@@ -158,7 +168,12 @@ export default function CloudPanel({ s, call, client, busy, notify }) {
         </>
       )}
       {confirm && (
-        <Dialog busy={busy} onClose={() => setConfirm(null)} label="Confirm cloud change">
+        <Dialog
+          busy={busy}
+          onClose={() => setConfirm(null)}
+          label="Confirm cloud change"
+          feedbackCommands={['restoreCloud', 'revokeDevice', 'deleteCloud']}
+        >
           <button
             className="icon-button modal-close"
             aria-label="Cancel cloud change"
@@ -188,9 +203,9 @@ export default function CloudPanel({ s, call, client, busy, notify }) {
               <History size={26} />
               <h2>Restore version {confirm.item.revision}?</h2>
               <p>
-                Make the backup from {date(confirm.item.created)} your current cloud setup and apply
-                it here. Astral saves a local backup first. Other computers will see this restored
-                version on their next sync.
+                Make the backup from {date(confirm.item.created)} your current cloud setup and
+                apply it here. Astral saves a local backup first. Other computers will see this
+                restored version on their next sync.
               </p>
             </>
           ) : (
@@ -206,7 +221,11 @@ export default function CloudPanel({ s, call, client, busy, notify }) {
             </>
           )}
           <div className="modal-actions">
-            <button className="button secondary" disabled={busy} onClick={() => setConfirm(null)}>
+            <button
+              className="button secondary"
+              disabled={busy}
+              onClick={() => setConfirm(null)}
+            >
               Cancel
             </button>
             <button

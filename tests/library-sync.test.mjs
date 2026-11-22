@@ -30,7 +30,10 @@ async function fixture(t, client = 'retail') {
 async function addon(f, name) {
   const dir = path.join(f.root, 'Interface', 'AddOns', name);
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, name + '.toc'), '## Interface: 120105, 16001\n## Version: 1\n');
+  await fs.writeFile(
+    path.join(dir, name + '.toc'),
+    '## Interface: 120105, 16001\n## Version: 1\n',
+  );
 }
 function service(initial = {}) {
   const records = new Map(Object.entries(initial)),
@@ -60,6 +63,60 @@ const apiFor = (f, events = []) => ({
     for (const name of def.folders || [def.folder]) await addon(f, name);
     return { version: '1' };
   },
+});
+test('conflicts review validated settings without writes and reject a changed local copy', async (t) => {
+  const f = await fixture(t);
+  const remote = await settings.capture(f.root, f.account, f.data);
+  await fs.writeFile(path.join(f.base, 'bindings-cache.wtf'), 'new local bindings');
+  const server = service({
+    '/profiles/retail/current': {
+      ...remote,
+      revision: 3,
+      updated: '2026-11-22T10:00:00Z',
+      deviceLabel: 'Other PC',
+    },
+  });
+  const result = await sync.run({
+    ...f,
+    ...server,
+    api: apiFor(f),
+    lastHash: 'previous-local',
+    lastRemoteHash: 'previous-cloud',
+  });
+  assert.equal(result.conflict, true);
+  assert.equal(result.comparison.remote.device, 'Other PC');
+  assert.equal(result.comparison.rows.find((row) => row.id === 'bindings').changed, true);
+  assert.equal(JSON.stringify(result).includes('new local bindings'), false);
+  assert.equal(server.writes.length, 0);
+  await fs.writeFile(path.join(f.base, 'bindings-cache.wtf'), 'changed after review');
+  await assert.rejects(
+    sync.run({
+      ...f,
+      ...server,
+      api: apiFor(f),
+      choice: 'cloud',
+      expectedRevision: 3,
+      expectedLocalHash: result.localHash,
+    }),
+    /setup changed/,
+  );
+  assert.equal(server.writes.length, 0);
+  assert.equal(
+    await fs.readFile(path.join(f.base, 'bindings-cache.wtf'), 'utf8'),
+    'changed after review',
+  );
+});
+test('a conflict cannot display an unverified cloud payload', async (t) => {
+  const f = await fixture(t);
+  const remote = await settings.capture(f.root, f.account, f.data);
+  const server = service({
+    '/profiles/retail/current': { ...remote, hash: '0'.repeat(64), revision: 2 },
+  });
+  await assert.rejects(
+    sync.run({ ...f, ...server, api: apiFor(f), lastHash: 'old', lastRemoteHash: 'different' }),
+    /checksum/,
+  );
+  assert.equal(server.writes.length, 0);
 });
 test('a client-wide collection installs packages across Regular and Handheld without removing local addons', async (t) => {
   const f = await fixture(t);
@@ -261,7 +318,8 @@ test('controller settings and all ConsolePort modules round-trip without changin
   await change('regular', 'handheld');
   let captured = settings.decode((await settings.capture(f.root, f.account, f.data)).payload);
   assert.equal(captured.input.GamePadEnable, '1');
-  for (const folder of cp.folders) assert.equal(captured.addonSelection.scopes[''][folder], true);
+  for (const folder of cp.folders)
+    assert.equal(captured.addonSelection.scopes[''][folder], true);
   assert.equal(captured.addonSelection.scopes[''].AstralHandheldHUD, false);
   assert.ok(captured.files.some((f) => f.path === 'SavedVariables/ConsolePort.lua'));
   assert.match(
@@ -280,7 +338,8 @@ test('controller settings and all ConsolePort modules round-trip without changin
   assert.match(config, /SET GamePadEnable "0"/);
   assert.doesNotMatch(config, /GamePadEmulateShift/);
   captured = settings.decode((await settings.capture(f.root, f.account, f.data)).payload);
-  for (const folder of cp.folders) assert.equal(captured.addonSelection.scopes[''][folder], false);
+  for (const folder of cp.folders)
+    assert.equal(captured.addonSelection.scopes[''][folder], false);
   assert.equal(
     await fs.readFile(path.join(f.base, 'bindings-cache.wtf'), 'utf8'),
     'regular bindings',
@@ -292,7 +351,10 @@ test('controller settings and all ConsolePort modules round-trip without changin
   );
   assert.equal(gamepad.parse(await gamepad.read(f.root)).GamePadEmulateShift, 'PADLTRIGGER');
   assert.throws(() => gamepad.validate({ RenderScale: '0.5' }), /Invalid/);
-  assert.throws(() => gamepad.validate({ GamePadEnable: '1"\nSET RenderScale "0.5' }), /Invalid/);
+  assert.throws(
+    () => gamepad.validate({ GamePadEnable: '1"\nSET RenderScale "0.5' }),
+    /Invalid/,
+  );
 });
 test('first-party profile helper installs through the transactional installer without network', async (t) => {
   const f = await fixture(t);
@@ -326,7 +388,10 @@ test('inactive-client package sync preserves its UI, bindings and addon choices'
     await fs.readFile(path.join(f.base, 'bindings-cache.wtf'), 'utf8'),
     'regular bindings',
   );
-  assert.match(await fs.readFile(path.join(f.base, 'AddOns.txt'), 'utf8'), /HandyNotes: disabled/);
+  assert.match(
+    await fs.readFile(path.join(f.base, 'AddOns.txt'), 'utf8'),
+    /HandyNotes: disabled/,
+  );
   assert.equal(
     server.writes.some((w) => w.route.endsWith('/current')),
     false,
@@ -338,7 +403,9 @@ test('disabled manual addons do not block profile sync', async (t) => {
   const cloud = settings.decode((await settings.capture(f.root, f.account, f.data)).payload);
   cloud.library.push(item('UnknownAddon'));
   cloud.addonSelection.scopes[''].UnknownAddon = false;
-  const server = service({ '/profiles/retail/current': { ...format.encode(cloud), revision: 2 } });
+  const server = service({
+    '/profiles/retail/current': { ...format.encode(cloud), revision: 2 },
+  });
   const result = await sync.run({ ...f, ...server, choice: 'cloud', api: apiFor(f) });
   assert.equal(result.incomplete, undefined);
   assert.equal(result.syncProfilePending, false);
@@ -376,6 +443,12 @@ test('remote file metadata cannot opt an account file into Config.wtf writes', a
   const before = await gamepad.read(f.root);
   const bundle = settings.decode((await settings.capture(f.root, f.account, f.data)).payload);
   bundle.files[0].installation = true;
-  await settings.apply(f.root, f.account, format.encode(bundle).payload, f.data, async () => false);
+  await settings.apply(
+    f.root,
+    f.account,
+    format.encode(bundle).payload,
+    f.data,
+    async () => false,
+  );
   assert.equal(await gamepad.read(f.root), before);
 });

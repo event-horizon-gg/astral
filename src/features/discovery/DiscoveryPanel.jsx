@@ -63,7 +63,11 @@ export default function DiscoveryPanel({ s, busy, call, notify, AddonIcon, onLib
   const list = [...known, ...results.filter((a) => !ids.has(a.repo?.toLowerCase()))].filter(
     (a) =>
       source === 'all' ||
-      (source === 'github' ? !!a.repo : source === 'astral' ? !!a.bundled : !a.repo && !a.bundled),
+      (source === 'github'
+        ? !!a.repo
+        : source === 'astral'
+          ? !!a.bundled
+          : !a.repo && !a.bundled),
   );
   const open = async (a) => {
     setPreview(null);
@@ -88,7 +92,9 @@ export default function DiscoveryPanel({ s, busy, call, notify, AddonIcon, onLib
       setResults([]);
     }
   };
-  const missingSuite = (s.suite?.addons || []).filter((id) => !s.addons.some((a) => a.id === id));
+  const missingSuite = (s.suite?.addons || []).filter(
+    (id) => !s.addons.some((a) => a.id === id),
+  );
   return (
     <>
       {s.suite && missingSuite.length > 0 && (
@@ -115,7 +121,9 @@ export default function DiscoveryPanel({ s, busy, call, notify, AddonIcon, onLib
             </button>
           </div>
           <p>
-            {missingSuite.map((id) => s.catalog.find((a) => a.id === id)?.name || id).join(', ')}
+            {missingSuite
+              .map((id) => s.catalog.find((a) => a.id === id)?.name || id)
+              .join(', ')}
           </p>
           {s.running && <p>Close WoW before installing.</p>}
         </section>
@@ -219,6 +227,7 @@ export default function DiscoveryPanel({ s, busy, call, notify, AddonIcon, onLib
             setReview(null);
           }}
           label="Review addon release"
+          feedbackCommands={['inspectProject', 'installProject']}
         >
           <button
             className="icon-button modal-close"
@@ -252,8 +261,8 @@ export default function DiscoveryPanel({ s, busy, call, notify, AddonIcon, onLib
               </label>
               {!review.assets.length && (
                 <p className="inline-note warning">
-                  The author has not published a packaged ZIP release. Source-code archives cannot
-                  be installed as addons.
+                  The author has not published a packaged ZIP release. Source-code archives
+                  cannot be installed as addons.
                 </p>
               )}
               <div className="modal-actions">
@@ -280,7 +289,8 @@ export default function DiscoveryPanel({ s, busy, call, notify, AddonIcon, onLib
                   <div key={d.folder}>
                     <strong>{d.name}</strong>
                     <span>
-                      {d.version} · {d.replaces ? 'Replaces installed files' : 'New addon folder'}
+                      {d.version} ·{' '}
+                      {d.replaces ? 'Replaces installed files' : 'New addon folder'}
                     </span>
                   </div>
                 ))}
@@ -291,7 +301,9 @@ export default function DiscoveryPanel({ s, busy, call, notify, AddonIcon, onLib
                 </div>
               )}
               {s.running && (
-                <p className="inline-note warning">Close World of Warcraft before installing.</p>
+                <p className="inline-note warning">
+                  Close World of Warcraft before installing.
+                </p>
               )}
               <p className="control-hint">
                 Existing addon files are backed up. Your saved settings stay in place.

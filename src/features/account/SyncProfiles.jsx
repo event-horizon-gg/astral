@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import Dialog from '../../components/Dialog.jsx';
 import useResource, { useRequestScope } from '../../application/useResource.js';
 import {
@@ -10,7 +10,9 @@ import {
 } from './profile-cache.js';
 import ProfileReview from './ProfileReview.jsx';
 
-export default function SyncProfiles({ s, busy, call, client }) {
+const ProfilesContext = createContext(null);
+export const useProfiles = () => useContext(ProfilesContext);
+export function ProfilesProvider({ s, busy, call, client, children }) {
   const [editing, setEditing] = useState(null),
     [name, setName] = useState('');
   const [refresh, setRefresh] = useState(0),
@@ -25,6 +27,15 @@ export default function SyncProfiles({ s, busy, call, client }) {
     onValue: (profiles) => saveProfileNames(localStorage, s.root, s.account, profiles),
   });
   const options = profiles || defaults;
+  useEffect(() => {
+    setPlan(null);
+    setEditing(null);
+  }, [requests]);
+  const preview = async (target) => {
+    const result = await requests.run(() => call('previewProfile', target));
+    if (result)
+      setPlan({ ...result, name: options.find((p) => p.id === target)?.name || 'profile' });
+  };
   const start = (type, profile) => {
     if (type === 'manage' && !editing) setRefresh((value) => value + 1);
     setName(type === 'rename' ? profile.name : '');
@@ -45,55 +56,20 @@ export default function SyncProfiles({ s, busy, call, client }) {
   };
 
   return (
-    <>
-      <label className="sync-profile-picker">
-        Profile
-        <select
-          value={active}
-          disabled={busy || s.running || !s.account}
-          onChange={async (event) => {
-            const target = event.target.value;
-            const result = await requests.run(() => call('previewProfile', target));
-            if (result)
-              setPlan({
-                ...result,
-                name: options.find((profile) => profile.id === target)?.name || 'profile',
-              });
-          }}
-        >
-          {!options.some((profile) => profile.id === active) && (
-            <option value={active} disabled>
-              {profiles ? 'Profile unavailable' : 'Selected profile'}
-            </option>
-          )}
-          {options.map((profile) => (
-            <option key={profile.id} value={profile.id}>
-              {profile.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      {defaults.find((profile) => profile.id === active)?.reviewSetup && s.account && (
-        <button
-          className="text-button"
-          disabled={busy || s.running}
-          onClick={async () => {
-            const result = await requests.run(() => call('previewProfile', active));
-            if (result)
-              setPlan({
-                ...result,
-                name:
-                  options.find((profile) => profile.id === active)?.name ||
-                  defaults.find((profile) => profile.id === active)?.name,
-              });
-          }}
-        >
-          Review Handheld setup
-        </button>
-      )}
-      {!s.account && (
-        <p className="control-hint">Open WoW once, then close it to set up profiles.</p>
-      )}
+    <ProfilesContext.Provider
+      value={{
+        s,
+        busy,
+        options,
+        active,
+        profiles,
+        error,
+        preview,
+        start,
+        overlayOpen: !!plan || !!editing,
+      }}
+    >
+      {children}
       <ProfileReview
         plan={plan}
         name={plan?.name}
@@ -103,21 +79,19 @@ export default function SyncProfiles({ s, busy, call, client }) {
           setPlan(null);
         }}
         onApply={async () => {
-          await call('applyProfile', plan.token);
-          setPlan(null);
+          const result = await call('applyProfile', plan.token);
+          if (result) setPlan(null);
+          else setPlan((current) => (current ? { ...current, stale: true } : null));
         }}
+        onRefresh={() => preview(plan.target)}
       />
-      {s.signedIn && (
-        <button
-          className="text-button profile-manager-button"
-          disabled={busy}
-          onClick={() => start('manage')}
-        >
-          Manage profiles
-        </button>
-      )}
       {editing && (
-        <Dialog busy={busy} onClose={() => setEditing(null)} labelledBy="sync-profile-title">
+        <Dialog
+          busy={busy}
+          onClose={() => setEditing(null)}
+          labelledBy="sync-profile-title"
+          feedbackCommands={['createSyncProfile', 'renameSyncProfile', 'deleteSyncProfile']}
+        >
           {editing.type === 'manage' ? (
             <>
               <h2 id="sync-profile-title">
@@ -190,8 +164,8 @@ export default function SyncProfiles({ s, busy, call, client }) {
               </h2>
               {editing.type === 'delete' ? (
                 <p>
-                  This permanently removes the profile and its cloud backups. Local WoW files stay
-                  on your computers.
+                  This permanently removes the profile and its cloud backups. Local WoW files
+                  stay on your computers.
                 </p>
               ) : (
                 <label className="sync-profile-picker">
@@ -229,6 +203,34 @@ export default function SyncProfiles({ s, busy, call, client }) {
           )}
         </Dialog>
       )}
-    </>
+    </ProfilesContext.Provider>
+  );
+}
+
+export default function SyncProfiles() {
+  const model = useProfiles();
+  if (!model) return null;
+  const { s, busy, active, options, preview, start } = model;
+  return (
+    <div className="profile-summary-controls">
+      <strong>{options.find((p) => p.id === active)?.name || 'Selected profile'}</strong>
+      {s.signedIn && (
+        <button className="text-button" disabled={busy} onClick={() => start('manage')}>
+          Manage profiles
+        </button>
+      )}
+      {defaults.find((p) => p.id === active)?.reviewSetup && s.account && (
+        <button
+          className="text-button"
+          disabled={busy || s.running}
+          onClick={() => preview(active)}
+        >
+          Review Handheld setup
+        </button>
+      )}
+      {!s.account && (
+        <p className="control-hint">Open WoW once, then close it to set up profiles.</p>
+      )}
+    </div>
   );
 }

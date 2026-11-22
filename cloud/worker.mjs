@@ -46,7 +46,9 @@ async function limit(request, env) {
   return r.count <= 30;
 }
 async function session(request, env) {
-  const token = request.headers.get('Authorization')?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
+  const token = request.headers
+    .get('Authorization')
+    ?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
   if (!token) return null;
   return query(
     env,
@@ -71,7 +73,11 @@ export async function route(request, env) {
     });
   if (request.headers.get('Origin') && request.headers.get('Origin') !== env.PUBLIC_ORIGIN)
     return json({ error: 'Origin not allowed.' }, 403);
-  if (!env.PUBLIC_ORIGIN?.startsWith('https://') || !env.BNET_CLIENT_ID || !env.BNET_CLIENT_SECRET)
+  if (
+    !env.PUBLIC_ORIGIN?.startsWith('https://') ||
+    !env.BNET_CLIENT_ID ||
+    !env.BNET_CLIENT_SECRET
+  )
     return json({ error: 'Astral’s Battle.net integration has not been configured.' }, 503);
   const cleanupRequest =
     (p === '/account/data' || p.startsWith('/devices/') || p === '/auth/logout') &&
@@ -132,9 +138,14 @@ export async function route(request, env) {
   }
   if (p === '/auth/callback' && request.method === 'GET') {
     const state = url.searchParams.get('state'),
-      cookie = request.headers.get('Cookie')?.match(/(?:^|;\s*)astral_oauth=([A-Za-z0-9_-]+)/)?.[1];
+      cookie = request.headers
+        .get('Cookie')
+        ?.match(/(?:^|;\s*)astral_oauth=([A-Za-z0-9_-]+)/)?.[1];
     if (!state || cookie !== state || !url.searchParams.get('code'))
-      return page({ kind: 'error', message: 'Sign-in was cancelled or could not be verified.' });
+      return page({
+        kind: 'error',
+        message: 'Sign-in was cancelled or could not be verified.',
+      });
     // Consume browser state atomically without removing the device pairing.
     // Polls must remain pending while the external identity requests are in flight.
     const pair = await query(
@@ -220,7 +231,11 @@ export async function route(request, env) {
       await hash(b.verifier),
     ).first();
     if (!consumed) return json({ error: 'Sign-in already completed.' }, 410);
-    const user = await query(env, 'SELECT name FROM users WHERE id=?', consumed.user_id).first();
+    const user = await query(
+      env,
+      'SELECT name FROM users WHERE id=?',
+      consumed.user_id,
+    ).first();
     return json({ token: await unseal(env, consumed.sealed_token), name: user.name });
   }
   const who = await session(request, env);
@@ -258,10 +273,18 @@ export async function route(request, env) {
       'SELECT content FROM chunks WHERE snapshot_id=? ORDER BY position',
       profile.snapshot_id,
     ).all();
+    const snapshot = await query(
+      env,
+      'SELECT device_label FROM snapshots WHERE id=? AND user_id=? AND flavor=?',
+      profile.snapshot_id,
+      who.user_id,
+      flavor,
+    ).first();
     return json({
       revision: profile.revision,
       hash: profile.hash,
       updated: profile.updated,
+      deviceLabel: snapshot?.device_label || null,
       payload: result.results.map((r) => r.content).join(''),
     });
   }
@@ -276,7 +299,9 @@ export default {
       return await route(request, env);
     } catch (error) {
       if (
-        /free tier|daily.*limit|maximum.*size|exceeded.*(?:quota|limit)/i.test(error.message || '')
+        /free tier|daily.*limit|maximum.*size|exceeded.*(?:quota|limit)/i.test(
+          error.message || '',
+        )
       )
         return json(
           {

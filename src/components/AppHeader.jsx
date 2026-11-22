@@ -23,6 +23,7 @@ import wowForeverIcon from '../../assets/games/wow-forever.png';
 import { localTime as time } from '../application/format.js';
 import { pages } from '../application/navigation.js';
 import { navigationIcons } from './navigation-icons.js';
+import ProfilePicker from '../features/account/ProfilePicker.jsx';
 export default function AppHeader({
   page,
   s,
@@ -48,7 +49,10 @@ export default function AppHeader({
   };
   useEffect(() => {
     const dismiss = (event) => {
-      if (!accountRef.current?.contains(event.target) && !toolsRef.current?.contains(event.target))
+      if (
+        !accountRef.current?.contains(event.target) &&
+        !toolsRef.current?.contains(event.target)
+      )
         setPopover(null);
     };
     const escape = (event) => {
@@ -71,7 +75,7 @@ export default function AppHeader({
         onClick={() => navigate('Addons')}
         aria-label="Astral library"
       >
-        <span className="eclipse-mark" aria-hidden="true" />
+        <span className={'eclipse-mark' + (busy ? ' working' : '')} aria-hidden="true" />
         <strong>Astral</strong>
       </button>
       <nav className="primary-nav" aria-label="Main navigation">
@@ -113,10 +117,11 @@ export default function AppHeader({
             ))}
           </select>
         </div>
+        <ProfilePicker onManage={() => navigate('Your setup')} overlayOpen={overlayOpen} />
         <button
           className="icon-button"
-          aria-label="Quick find"
-          title="Quick find · Cmd/Ctrl K"
+          aria-label="Go to"
+          title="Go to · Cmd/Ctrl K"
           onClick={onCommand}
         >
           <Search size={18} />

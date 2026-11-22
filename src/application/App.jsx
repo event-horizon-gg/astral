@@ -18,6 +18,8 @@ import SettingsPage from '../features/settings/SettingsPage.jsx';
 import ShareSetup from '../features/sharing/ShareSetup.jsx';
 import useSharing from '../features/sharing/useSharing.js';
 import { localTime } from './format.js';
+import { ProfilesProvider } from '../features/account/SyncProfiles.jsx';
+import FeedbackContext from '../components/FeedbackContext.jsx';
 
 export default function App({ api = globalThis.window?.astral }) {
   const application = useApplication(api);
@@ -35,15 +37,25 @@ export default function App({ api = globalThis.window?.astral }) {
     setDialog,
   } = application;
   const navigation = useNavigation(s);
-  const { page, selected, setSelected, command, setCommand, query, setQuery, filter, setFilter } =
-    navigation;
+  const {
+    page,
+    selected,
+    setSelected,
+    command,
+    setCommand,
+    query,
+    setQuery,
+    filter,
+    setFilter,
+  } = navigation;
   const navigate = (page) => {
     setDialog(null);
     navigation.navigate(page);
   };
   const [theme, setTheme] = useTheme();
   const library = useLibrary({ s, client, call, notify, setSelected });
-  const { queueBusy, queueResult, setQueueResult, check, update, importZip, updateAll } = library;
+  const { queueBusy, queueResult, setQueueResult, check, update, importZip, updateAll } =
+    library;
   const sharing = useSharing(s, call);
   const search = useRef(null);
   const busy = requestBusy || queueBusy || progress.kind === 'update' || !s.loaded;
@@ -77,136 +89,148 @@ export default function App({ api = globalThis.window?.astral }) {
     return () => window.removeEventListener('keydown', keydown);
   }, []);
   return (
-    <div
-      className={
-        'app editorial' + (client.available && s.platform === 'darwin' ? ' native-mac' : '')
-      }
-    >
-      <div className="workspace">
-        <AppHeader
-          page={page}
-          s={s}
-          busy={busy}
-          theme={theme}
-          setTheme={setTheme}
-          setQuery={setQuery}
-          setSelected={setSelected}
-          call={call}
-          onNavigate={navigate}
-          onCommand={() => setCommand(true)}
-          onShare={sharing.open}
-          overlayOpen={command || !!dialog || !!sharing.share}
-        />
-        <main data-page={page}>
-          <PageHeader
-            page={page}
-            s={s}
-            busy={busy}
-            updates={updates}
-            check={check}
-            updateAll={updateAll}
-            navigate={navigate}
-            api={client.available}
-            progress={progress}
-          />
-          {page === 'Addons' && (
-            <LibraryPage
+    <FeedbackContext.Provider value={{ toast, onDismiss: application.dismissToast }}>
+      <ProfilesProvider
+        key={JSON.stringify([s.root, s.account, s.flavor, s.accountName])}
+        s={s}
+        busy={busy}
+        call={call}
+        client={client}
+      >
+        <div
+          className={
+            'app editorial' + (client.available && s.platform === 'darwin' ? ' native-mac' : '')
+          }
+        >
+          <div className="workspace">
+            <AppHeader
+              page={page}
               s={s}
               busy={busy}
-              loadError={loadError}
-              queueResult={queueResult}
-              setQueueResult={setQueueResult}
-              updateAll={updateAll}
-              filter={filter}
-              setFilter={setFilter}
-              updates={updates}
-              search={search}
-              query={query}
+              theme={theme}
+              setTheme={setTheme}
               setQuery={setQuery}
-              filtered={filtered}
+              setSelected={setSelected}
+              call={call}
+              onNavigate={navigate}
+              onCommand={() => setCommand(true)}
+              onShare={sharing.open}
+              overlayOpen={command || !!dialog || !!sharing.share}
+            />
+            <main data-page={page}>
+              <PageHeader
+                page={page}
+                s={s}
+                busy={busy}
+                updates={updates}
+                check={check}
+                updateAll={updateAll}
+                navigate={navigate}
+                api={client.available}
+                progress={progress}
+              />
+              {page === 'Addons' && (
+                <LibraryPage
+                  s={s}
+                  busy={busy}
+                  loadError={loadError}
+                  queueResult={queueResult}
+                  setQueueResult={setQueueResult}
+                  updateAll={updateAll}
+                  filter={filter}
+                  setFilter={setFilter}
+                  updates={updates}
+                  search={search}
+                  query={query}
+                  setQuery={setQuery}
+                  filtered={filtered}
+                  selected={selected}
+                  setSelected={setSelected}
+                  progress={progress}
+                  update={update}
+                  call={call}
+                />
+              )}
+              {page === 'Discover' && (
+                <DiscoveryPanel
+                  s={s}
+                  busy={busy}
+                  call={call}
+                  client={client}
+                  notify={notify}
+                  AddonIcon={AddonIcon}
+                  onLibrary={(name) => {
+                    setQuery(name);
+                    navigate('Addons');
+                  }}
+                />
+              )}
+              {page === 'Your setup' && (
+                <AccountPage
+                  s={s}
+                  busy={busy}
+                  call={call}
+                  client={client}
+                  notify={notify}
+                  time={localTime}
+                  connectionError={commandErrors.connect}
+                />
+              )}
+              {page === 'Sources' && <SourcesPage s={s} call={call} />}
+              {page === 'Activity' && (
+                <ActivityPage
+                  s={s}
+                  busy={busy}
+                  call={call}
+                  notify={notify}
+                  setDialog={setDialog}
+                  navigate={navigate}
+                  update={update}
+                />
+              )}
+              {page === 'Settings' && (
+                <SettingsPage s={s} busy={busy} call={call} notify={notify} />
+              )}
+            </main>
+          </div>
+          {selected && (
+            <AddonDrawer
               selected={selected}
               setSelected={setSelected}
-              progress={progress}
+              s={s}
+              busy={busy}
+              call={call}
               update={update}
-              call={call}
-            />
-          )}
-          {page === 'Discover' && (
-            <DiscoveryPanel
-              s={s}
-              busy={busy}
-              call={call}
-              client={client}
-              notify={notify}
-              AddonIcon={AddonIcon}
-              onLibrary={(name) => {
-                setQuery(name);
-                navigate('Addons');
-              }}
-            />
-          )}
-          {page === 'Your setup' && (
-            <AccountPage
-              s={s}
-              busy={busy}
-              call={call}
-              client={client}
-              notify={notify}
-              time={localTime}
-              connectionError={commandErrors.connect}
-            />
-          )}
-          {page === 'Sources' && <SourcesPage s={s} call={call} />}
-          {page === 'Activity' && (
-            <ActivityPage
-              s={s}
-              busy={busy}
-              call={call}
-              notify={notify}
+              importZip={importZip}
+              check={check}
+              selectedBackup={selectedBackup}
+              selectedFailure={selectedFailure}
               setDialog={setDialog}
-              navigate={navigate}
-              update={update}
             />
           )}
-          {page === 'Settings' && <SettingsPage s={s} busy={busy} call={call} notify={notify} />}
-        </main>
-      </div>
-      {selected && (
-        <AddonDrawer
-          selected={selected}
-          setSelected={setSelected}
-          s={s}
-          busy={busy}
-          call={call}
-          update={update}
-          importZip={importZip}
-          check={check}
-          selectedBackup={selectedBackup}
-          selectedFailure={selectedFailure}
-          setDialog={setDialog}
-        />
-      )}
-      {sharing.share && (
-        <ShareSetup
-          share={sharing.share}
-          s={s}
-          busy={busy}
-          call={call}
-          notify={notify}
-          onClose={sharing.close}
-        />
-      )}
-      <AppDialogs
-        dialog={dialog}
-        command={command}
-        setDialog={setDialog}
-        setCommand={setCommand}
-        navigate={navigate}
-        call={call}
-        notify={notify}
-        busy={busy}
-      />
-      <Notification toast={toast} onDismiss={application.dismissToast} />
-    </div>
+          {sharing.share && (
+            <ShareSetup
+              share={sharing.share}
+              s={s}
+              busy={busy}
+              call={call}
+              notify={notify}
+              onClose={sharing.close}
+            />
+          )}
+          <AppDialogs
+            dialog={dialog}
+            command={command}
+            setDialog={setDialog}
+            setCommand={setCommand}
+            navigate={navigate}
+            call={call}
+            notify={notify}
+            busy={busy}
+          />
+          <Notification toast={toast} onDismiss={application.dismissToast} />
+        </div>
+      </ProfilesProvider>
+    </FeedbackContext.Provider>
   );
 }

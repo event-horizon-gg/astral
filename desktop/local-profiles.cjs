@@ -9,6 +9,7 @@ const selection = require('./addon-selection.cjs');
 const policy = require('./profile-policy.cjs');
 const packages = require('./library-sync.cjs');
 const setup = require('./setup-application.cjs');
+const comparison = require('./setup-comparison.cjs');
 const { validId } = require('../shared/profiles.cjs');
 function location(data, root, account, id) {
   if (!validId(id)) throw Error('Unknown profile.');
@@ -75,7 +76,11 @@ async function prepare({ data, root, account, from, to, edits = {} }) {
       JSON.stringify({
         current: current.hash,
         target: target.hash,
-        inventory: inventory.addons.map(({ id, modules, version }) => ({ id, modules, version })),
+        inventory: inventory.addons.map(({ id, modules, version }) => ({
+          id,
+          modules,
+          version,
+        })),
       }),
     )
     .digest('hex');
@@ -88,6 +93,7 @@ async function prepare({ data, root, account, from, to, edits = {} }) {
     changes,
     changedSettings,
     rows: after,
+    comparison: comparison.compare(currentBundle, bundle),
   };
 }
 async function apply({
@@ -105,7 +111,8 @@ async function apply({
 }) {
   if (await running()) throw Error('Close WoW before changing profiles.');
   const plan = await prepare({ data, root, account, from, to, edits });
-  if (plan.fingerprint !== expected) throw Error('The setup changed. Review the profile again.');
+  if (plan.fingerprint !== expected)
+    throw Error('The setup changed. Review the profile again.');
   if (plan.packages.manual.length)
     throw Error(
       'Install or connect these addons before switching: ' +
