@@ -1,0 +1,8 @@
+{
+  "name": "Astral",
+  "pitch": "Your WoW addons and interface, at home on every computer.",
+  "description": "A desktop addon manager for World of Warcraft Retail and Forever. Astral updates itself too; Shinjuku sees whichever version is installed.",
+  "accentColor": "#8E6BFF",
+  "icon": "assets/icon.png",
+  "screenshots": []
+}
