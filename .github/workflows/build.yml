@@ -76,7 +76,7 @@ jobs:
     needs: release
     permissions:
       contents: write
-    uses: event-horizon-gg/shinjuku-catalog/.github/workflows/release.yml@main
+    uses: event-horizon-gg/shinjuku-release/.github/workflows/release.yml@main
     with:
       node-version: "24"
       build-command: npm ci && npm run build && npx electron-builder --config electron-builder.config.cjs --mac dir --arm64 --publish never --config.mac.identity=- --config.directories.output=release
