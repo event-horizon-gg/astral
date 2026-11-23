@@ -71,3 +71,16 @@ jobs:
           gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[].id' | while read -r id; do
             gh api --method DELETE "repos/$GH_REPO/actions/artifacts/$id"
           done
+  shinjuku:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    permissions:
+      contents: write
+    uses: event-horizon-gg/shinjuku-release/.github/workflows/release.yml@main
+    with:
+      node-version: "24"
+      build-command: npm ci && npm run build && npx electron-builder --config electron-builder.config.cjs --mac dir --arm64 --publish never --config.mac.identity=- --config.directories.output=release
+      app-path: release/mac-arm64/Astral.app
+    secrets:
+      catalog-app-id: ${{ secrets.SHINJUKU_CATALOG_APP_ID }}
+      catalog-app-key: ${{ secrets.SHINJUKU_CATALOG_APP_KEY }}

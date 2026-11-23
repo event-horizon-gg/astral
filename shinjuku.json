@@ -1,0 +1,8 @@
+{
+  "name": "Astral",
+  "pitch": "Your WoW addons and interface, at home on every computer.",
+  "description": "An addon manager for World of Warcraft Retail and Forever. It finds your installed addons, updates them with a backup first, and lets you roll back from Activity. It also syncs your addon settings, keybindings and layouts between computers, and keeps Raider.IO and other addons current once a day while WoW is closed.",
+  "accentColor": "#8E6BFF",
+  "icon": "assets/icon.png",
+  "screenshots": []
+}

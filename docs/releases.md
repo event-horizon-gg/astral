@@ -1,6 +1,6 @@
 # Releases
 
-Public source and release assets live at https://github.com/theedward/astral.
+Public source and release assets live at https://github.com/event-horizon-gg/astral.
 
 1. Run `npm ci`, `npm test` and `npm run build`.
 2. Review the change and update `package.json`, `package-lock.json` and `CHANGELOG.md`.

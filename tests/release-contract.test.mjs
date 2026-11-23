@@ -51,7 +51,7 @@ test('the actual release signer produces assets accepted by both installed-platf
     assert.equal(verified.asset.sha256, crypto.createHash('sha256').update(expected).digest('hex'));
     assert.equal(
       verified.asset.url,
-      'https://github.com/theedward/astral/releases/download/v2.3.4/' + file,
+      'https://github.com/event-horizon-gg/astral/releases/download/v2.3.4/' + file,
     );
   }
 });

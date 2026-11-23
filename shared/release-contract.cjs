@@ -1,4 +1,4 @@
-const REPOSITORY = 'theedward/astral';
+const REPOSITORY = 'event-horizon-gg/astral';
 const INSTALLER_PATTERN = 'Astral-${version}-${os}-${arch}.${ext}';
 const DOWNLOAD_BASE = `https://github.com/${REPOSITORY}/releases/download/`;
 const MAX_INSTALLER_BYTES = 600 * 1024 * 1024;

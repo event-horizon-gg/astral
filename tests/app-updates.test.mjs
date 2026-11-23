@@ -12,11 +12,11 @@ const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
 const bytes = Buffer.from('a test application package');
 const manifest = {
   schema: 1,
-  repository: 'theedward/astral',
+  repository: 'event-horizon-gg/astral',
   version: '0.6.0',
   assets: {
     'darwin-arm64': {
-      url: 'https://github.com/theedward/astral/releases/download/v0.6.0/Astral-0.6.0-mac-arm64.zip',
+      url: 'https://github.com/event-horizon-gg/astral/releases/download/v0.6.0/Astral-0.6.0-mac-arm64.zip',
       size: bytes.length,
       sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
     },
