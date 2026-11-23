@@ -74,6 +74,8 @@ jobs:
   shinjuku:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: release
+    permissions:
+      contents: write
     uses: event-horizon-gg/shinjuku-catalog/.github/workflows/release.yml@main
     with:
       node-version: "24"
