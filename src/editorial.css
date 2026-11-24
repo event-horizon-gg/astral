@@ -1439,6 +1439,32 @@ input[type='checkbox'] {
   max-width: 29%;
   margin: 0;
 }
+/* The Event Horizon mark: drawn from the watermark's alpha in the theme's text colour,
+   in the empty column under the "Astral updates" heading. */
+.settings-list section.about-section {
+  min-height: 260px;
+}
+.settings-list .studio-mark {
+  position: absolute;
+  left: -18px;
+  bottom: 18px;
+  width: 190px;
+  height: 190px;
+  background-color: var(--text);
+  opacity: 0.07;
+  -webkit-mask: var(--studio-mark) center / contain no-repeat;
+  mask: var(--studio-mark) center / contain no-repeat;
+  pointer-events: none;
+}
+@media (max-width: 780px) {
+  /* The heading stacks above the controls here, so there is no empty column. */
+  .settings-list section.about-section {
+    min-height: 0;
+  }
+  .settings-list .studio-mark {
+    display: none;
+  }
+}
 .settings-list section > p {
   font-size: 12px;
   color: var(--muted);

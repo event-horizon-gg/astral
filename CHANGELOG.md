@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.2
+
+- Settings now carries a faint Event Horizon mark in the empty column under "Astral updates". It is drawn from the logo's outline in the theme's text colour, so it suits both light and dark, sits behind no text, and is hidden on narrow windows where the heading stacks above the controls.
+
 ## 0.9.0
 
 - Share Retail and Forever setups as `.astral` files, including supported addon settings, keybindings and optional controller settings. Preview imports, map characters and back up current settings before applying.

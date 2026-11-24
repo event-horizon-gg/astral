@@ -2,6 +2,7 @@ import Select from '../../components/Select.jsx';
 import React from 'react';
 import { localTime as time } from '../../application/format.js';
 import { Check, FolderOpen } from 'lucide-react';
+import eventHorizonMark from '../../../assets/brand/event-horizon-watermark.png';
 export default function SettingsPage({ s, busy, call, notify }) {
   return (
     <div className="settings-list">
@@ -73,8 +74,13 @@ export default function SettingsPage({ s, busy, call, notify }) {
           </span>
         </div>
       </section>
-      <section>
+      <section className="about-section">
         <h3>Astral updates</h3>
+        <span
+          className="studio-mark"
+          aria-hidden="true"
+          style={{ '--studio-mark': `url(${eventHorizonMark})` }}
+        />
         <p>Version {s.appVersion || '0.5.3'}</p>
         <label className="setting-label">
           Check daily
