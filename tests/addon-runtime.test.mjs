@@ -11,7 +11,12 @@ async function run(file) {
     const source = await fs.readFile(new URL(file, import.meta.url), 'utf8');
     lua.lua_pushstring(state, to_luastring(root.replaceAll('\\', '/').replace(/\/$/, '')));
     lua.lua_setglobal(state, to_luastring('ASTRAL_SOURCE_ROOT'));
-    const status = lauxlib.luaL_loadbuffer(state, to_luastring(source), null, to_luastring(file));
+    const status = lauxlib.luaL_loadbuffer(
+      state,
+      to_luastring(source),
+      null,
+      to_luastring(file),
+    );
     if (status !== lua.LUA_OK) throw Error(to_jsstring(lua.lua_tostring(state, -1)));
     if (lua.lua_pcall(state, 0, 0, 0) !== lua.LUA_OK)
       throw Error(to_jsstring(lua.lua_tostring(state, -1)));
@@ -24,3 +29,5 @@ test('in-game desktop/handheld transitions preserve profiles, controller bars an
   run('./lua/forever-profile-bars.lua'));
 test('Forever initialization preserves live table identity, independent bars and later manual choices', () =>
   run('./lua/forever-style.lua'));
+test('Astral Info samples stats once a second and safely augments modern/legacy mount tooltips', () =>
+  run('./lua/info.lua'));

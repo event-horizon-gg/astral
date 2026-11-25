@@ -1,0 +1,10 @@
+## Interface: 120105, 16001
+## Title: Astral Info
+## Notes: FPS, home/world latency, and mount details in player tooltips. /ainfo
+## Author: Astral
+## Version: 0.1.0
+## SavedVariables: AstralInfoDB
+Settings.lua
+Performance.lua
+MountTooltip.lua
+Info.lua
