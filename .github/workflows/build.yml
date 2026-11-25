@@ -57,7 +57,7 @@ jobs:
           pattern: astral-*
           path: release
           merge-multiple: true
-      - name: Prepare draft release for local signing
+      - name: Prepare draft release for signing
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -71,6 +71,25 @@ jobs:
           gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[].id' | while read -r id; do
             gh api --method DELETE "repos/$GH_REPO/actions/artifacts/$id"
           done
+  publish:
+    # Signs astral-update.json and publishes the draft. The key lives only in the `release`
+    # environment: version tags only, and each run waits for the owner's approval.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Sign the update manifest and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASTRAL_RELEASE_PRIVATE_KEY: ${{ secrets.ASTRAL_RELEASE_PRIVATE_KEY }}
+        run: node scripts/publish-release.mjs
   shinjuku:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: release
