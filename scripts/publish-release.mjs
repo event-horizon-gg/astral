@@ -1,4 +1,4 @@
-// Signs and publishes the draft CI prepared. Runs in CI's approved `publish` job, with the key in
+// Signs and publishes the draft CI prepared. Runs in CI's `publish` job, with the key in
 // ASTRAL_RELEASE_PRIVATE_KEY, or locally with the key file as the argument.
 import fs from 'node:fs/promises';
 import os from 'node:os';
